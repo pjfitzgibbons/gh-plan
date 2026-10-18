@@ -59,7 +59,7 @@ const git = (cwd, ...args) => run("git", args, cwd);
 
 // Start issue id, or reopen its worktree. Safe to repeat: each step runs only when it has something
 // to do. confirm(blockers) is asked only before a new worktree; false stops with nothing changed.
-// Returns { dir, branch, created, notes }, or null when Peter said no.
+// Returns { dir, branch, created, started, notes }, or null when Peter said no.
 async function start({ redmine, checkouts, id, confirm }) {
   if (!Number.isInteger(id) || id <= 0) throw new Error(`Start needs an issue number, not ${JSON.stringify(id)}`);
   const issue = await redmine.issue(id);
@@ -106,12 +106,16 @@ async function start({ redmine, checkouts, id, confirm }) {
     notes.push(`Made ${branch} from origin/${base} in ${dir}.`);
   }
 
-  if (fs.existsSync(path.join(found.dir, "uv.lock")) && !fs.existsSync(path.join(found.dir, ".venv"))) {
+  // A sync that failed part way can leave .venv behind, so it runs again until the issue is In
+  // Progress, which it becomes only after a sync succeeds.
+  const starting = issue.status.name !== "In Progress";
+  const venv = fs.existsSync(path.join(found.dir, ".venv"));
+  if (fs.existsSync(path.join(found.dir, "uv.lock")) && (starting || !venv)) {
     await run("uv", ["sync", "--quiet"], found.dir);
     notes.push("Synced the uv environment.");
   }
 
-  if (issue.status.name !== "In Progress") {
+  if (starting) {
     await redmine.update(id, {
       status_id: await redmine.statusId("In Progress"),
       ...(issue.start_date ? {} : { start_date: new Date().toLocaleDateString("sv") }),
@@ -119,7 +123,8 @@ async function start({ redmine, checkouts, id, confirm }) {
     });
     notes.push(`#${id} is In Progress.`);
   }
-  return { ...found, created, notes };
+  // started: this Start finished the work's setup, here or after an earlier one stopped part way.
+  return { ...found, created, started: created || starting, notes };
 }
 
 module.exports = { slug, branchName, worktreeDir, blockerIds, existingWorktree, expandHome, start };

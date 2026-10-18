@@ -7,11 +7,16 @@ const fs = require("fs");
 const path = require("path");
 const { Redmine } = require("./redmine");
 const { start } = require("./start");
+const { stackedBelowFirst } = require("./layout");
 
-// A new window can't be handed a task directly, so Start leaves one here, in the extension's global
+// A new window can't be handed a task directly, so Start leaves one in the extension's global
 // storage, which every window shares; the new window's activation picks it up and starts Claude.
-const HANDOFF = "start-handoff.json";
+// One file per worktree, so a second Start before the first window opens doesn't replace the first's.
 const HANDOFF_FRESH_MS = 2 * 60 * 1000;
+
+function handoffFile(storage, dir) {
+  return path.join(storage, `handoff-${crypto.createHash("sha256").update(dir).digest("hex").slice(0, 16)}.json`);
+}
 
 function redmine() {
   const config = vscode.workspace.getConfiguration("plan");
@@ -77,11 +82,12 @@ class NextUp {
     }
     if (!result) return;
     if (result.notes.length) vscode.window.showInformationMessage(`Plan: ${result.notes.join(" ")}`);
-    // Claude starts only in a window opened for a new worktree; reopening one changes nothing.
-    if (result.created) {
+    // Claude starts only in a window opened by the Start that finished setting the work up, including
+    // one that finished what a stopped Start began; reopening started work changes nothing.
+    if (result.started) {
       fs.mkdirSync(this.storage, { recursive: true });
       fs.writeFileSync(
-        path.join(this.storage, HANDOFF),
+        handoffFile(this.storage, result.dir),
         JSON.stringify({ dir: result.dir, prompt: `Work on Redmine #${id}`, at: Date.now() })
       );
     }
@@ -141,14 +147,15 @@ async function confirmBlockers(blockers) {
 
 // In the window Start opened: start Claude beside, once, if the handoff is fresh and for this folder.
 async function takeHandoff(storage) {
-  const file = path.join(storage, HANDOFF);
+  const folder = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+  if (!folder) return;
+  const file = handoffFile(storage, folder);
   let handoff;
   try {
     handoff = JSON.parse(fs.readFileSync(file, "utf8"));
   } catch {
     return;
   }
-  const folder = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
   if (folder !== handoff.dir) return;
   fs.rmSync(file, { force: true });
   if (Date.now() - handoff.at > HANDOFF_FRESH_MS) return;
@@ -185,10 +192,8 @@ async function openHandover(dir) {
   );
   if (files.every((file) => open.has(file))) return;
   // The pair stacks inside the leftmost group, or the only one; groups to its right stay as they are.
-  // Column numbers follow the grid, so the leftmost group is 1 and, once split, the one below it 2.
-  // Layout orientation 0 lays groups side by side, 1 top and bottom, alternating as they nest.
-  const layout = await vscode.commands.executeCommand("vscode.getEditorLayout");
-  const stacked = layout.orientation === 0 ? (layout.groups[0].groups || []).length >= 2 : layout.groups.length >= 2;
+  // A group already directly below the leftmost is column 2, and is reused.
+  const stacked = stackedBelowFirst(await vscode.commands.executeCommand("vscode.getEditorLayout"));
   const [commit, body] = files.map((file) => vscode.Uri.file(file));
   await vscode.window.showTextDocument(commit, { viewColumn: 1, preview: false });
   // A new group goes below the active one, which is now the leftmost, and takes focus.

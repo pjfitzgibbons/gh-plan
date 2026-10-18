@@ -104,13 +104,14 @@ test("Start makes the branch and worktree once, and a second Start changes nothi
   assert.equal(first.branch, "feat/80-start-from-the-panel");
   assert.equal(first.dir, worktreeDir(s.checkout, 80));
   assert.equal(first.created, true);
+  assert.equal(first.started, true);
   assert.equal(s.git(first.dir, "branch", "--show-current").trim(), first.branch);
   assert.equal(s.updates.length, 1);
   assert.equal(s.updates[0].status_id, 2);
   assert.match(s.updates[0].notes, /feat\/80-start-from-the-panel/);
 
   const second = await start({ ...s, id: 80, confirm });
-  assert.deepEqual({ dir: second.dir, branch: second.branch, created: second.created }, { dir: first.dir, branch: first.branch, created: false });
+  assert.deepEqual({ dir: second.dir, branch: second.branch, created: second.created, started: second.started }, { dir: first.dir, branch: first.branch, created: false, started: false });
   assert.deepEqual(second.notes, []);
   assert.equal(s.updates.length, 1);
 });
@@ -124,6 +125,7 @@ test("a Start stopped after the worktree finishes on the next Start", async (t) 
   s.redmine.update = update;
   const again = await start({ ...s, id: 80, confirm: () => true });
   assert.equal(again.created, false);
+  assert.equal(again.started, true, "the resumed Start hands over to Claude");
   assert.deepEqual(again.notes, ["#80 is In Progress."]);
 });
 
@@ -142,4 +144,32 @@ test("the worktree goes beside the repo root, even when the map names a folder i
   const result = await start({ ...s, checkouts: { demo: inside }, id: 80, confirm: () => true });
   assert.equal(result.dir, path.join(path.dirname(s.checkout), "repo.worktrees", "80"));
   assert.ok(path.relative(s.checkout, result.dir).startsWith(".."), `${result.dir} is inside ${s.checkout}`);
+});
+
+test("a sync that left .venv behind runs again on the next Start", async (t) => {
+  const s = sandbox(t);
+  const fs = require("fs");
+  const path = require("path");
+  s.issues[50].status = { name: "Closed", is_closed: true };
+  // A uv that records each run, makes .venv, and fails the first time, as a broken install would.
+  const bin = fs.mkdtempSync(path.join(path.dirname(s.checkout), "bin-"));
+  const log = path.join(bin, "runs");
+  fs.writeFileSync(path.join(bin, "uv"), `#!/bin/sh\necho run >> "${log}"\nmkdir -p .venv\n[ -f "${log}.ok" ] || { touch "${log}.ok"; exit 1; }\n`, { mode: 0o755 });
+  const PATH = process.env.PATH;
+  process.env.PATH = `${bin}:${PATH}`;
+  t.after(() => (process.env.PATH = PATH));
+  fs.writeFileSync(path.join(s.checkout, "uv.lock"), "");
+  s.git(s.checkout, "add", "uv.lock");
+  s.git(s.checkout, "-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "--quiet", "-m", "uv.lock");
+  s.git(s.checkout, "push", "--quiet", "origin", "main");
+
+  await assert.rejects(start({ ...s, id: 80, confirm: () => true }), /uv sync/);
+  assert.deepEqual(s.updates, []);
+  const again = await start({ ...s, id: 80, confirm: () => true });
+  assert.equal(fs.readFileSync(log, "utf8"), "run\nrun\n");
+  assert.ok(again.notes.includes("Synced the uv environment."));
+  assert.equal(s.updates.length, 1);
+  // Started now, with .venv there: reopening syncs no more.
+  await start({ ...s, id: 80, confirm: () => true });
+  assert.equal(fs.readFileSync(log, "utf8"), "run\nrun\n");
 });
