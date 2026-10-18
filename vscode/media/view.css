@@ -1,0 +1,130 @@
+/* Sized for a sidebar: one line per row, the subject cut short until the row is open. VS Code's own
+   theme variables colour it, so it follows light, dark and high contrast. */
+body {
+  margin: 0;
+  padding: 0 0 8px;
+  color: var(--vscode-foreground);
+  background: var(--vscode-sideBar-background);
+  font-family: var(--vscode-font-family);
+  font-size: var(--vscode-font-size);
+}
+a {
+  color: var(--vscode-textLink-foreground);
+  text-decoration: none;
+}
+a:hover {
+  text-decoration: underline;
+}
+#status {
+  margin: 8px 12px;
+  color: var(--vscode-descriptionForeground);
+}
+#status:empty {
+  display: none;
+}
+.error {
+  color: var(--vscode-errorForeground);
+}
+
+summary {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  padding: 3px 8px 3px 4px;
+  cursor: pointer;
+  list-style: none;
+}
+summary::-webkit-details-marker {
+  display: none;
+}
+summary::before {
+  content: "▸";
+  flex: none;
+  width: 10px;
+  color: var(--vscode-descriptionForeground);
+}
+details[open] > summary::before {
+  content: "▾";
+}
+summary:hover {
+  background: var(--vscode-list-hoverBackground);
+}
+summary:focus-visible {
+  outline: 1px solid var(--vscode-focusBorder);
+  outline-offset: -1px;
+}
+.child > summary {
+  padding-left: 18px;
+}
+.id {
+  flex: none;
+}
+/* A ghost pill: the text colour at low strength behind it, so it reads in every theme. */
+.repo {
+  flex: none;
+  min-width: 2ch;
+  padding: 0 4px;
+  border-radius: 6px;
+  text-align: center;
+  font-family: var(--vscode-editor-font-family);
+  font-size: 0.8em;
+  color: var(--vscode-descriptionForeground);
+  background: color-mix(in srgb, var(--vscode-foreground) 12%, transparent);
+}
+.points {
+  flex: none;
+  min-width: 1ch;
+  color: var(--vscode-descriptionForeground);
+}
+.subject {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+details[open] > summary .subject {
+  white-space: normal;
+}
+.badge {
+  flex: none;
+  padding: 0 5px;
+  border-radius: 8px;
+  font-size: 0.85em;
+  color: var(--vscode-badge-foreground);
+  background: var(--vscode-badge-background);
+}
+
+section {
+  margin: 0 8px 6px 18px;
+  padding: 2px 0 2px 8px;
+  border-left: 2px solid var(--vscode-tree-indentGuidesStroke, var(--vscode-panel-border));
+  overflow-wrap: anywhere;
+}
+section p {
+  margin: 4px 0;
+}
+.meta,
+.when {
+  color: var(--vscode-descriptionForeground);
+}
+.text {
+  white-space: pre-wrap;
+  margin: 6px 0;
+}
+code {
+  font-family: var(--vscode-editor-font-family);
+  font-size: 0.95em;
+}
+h4 {
+  margin: 10px 0 2px;
+  font-size: 1em;
+}
+.children,
+.notes {
+  margin: 4px 0;
+  padding-left: 14px;
+}
+.notes .text {
+  margin: 0 0 6px;
+}

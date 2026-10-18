@@ -1,0 +1,54 @@
+{
+  "name": "gh-plan",
+  "displayName": "GH Plan",
+  "description": "Redmine's Next up query in a narrow sidebar panel; each issue opens in place.",
+  "version": "0.1.1",
+  "publisher": "pjfitzgibbons",
+  "license": "UNLICENSED",
+  "private": true,
+  "engines": { "vscode": "^1.90.0" },
+  "main": "./extension.js",
+  "contributes": {
+    "viewsContainers": {
+      "activitybar": [{ "id": "plan", "title": "Plan", "icon": "media/plan.svg" }]
+    },
+    "views": {
+      "plan": [{ "type": "webview", "id": "plan.nextUp", "name": "Next up" }]
+    },
+    "commands": [{ "command": "plan.refresh", "title": "Refresh", "category": "Plan", "icon": "$(refresh)" }],
+    "menus": {
+      "view/title": [{ "command": "plan.refresh", "when": "view == plan.nextUp", "group": "navigation" }]
+    },
+    "configuration": {
+      "title": "GH Plan",
+      "properties": {
+        "plan.redmineUrl": {
+          "type": "string",
+          "default": "http://127.0.0.1:3010",
+          "description": "The Redmine the panel reads."
+        },
+        "plan.project": {
+          "type": "string",
+          "default": "plan",
+          "description": "The identifier of the project whose query the panel shows."
+        },
+        "plan.query": {
+          "type": "string",
+          "default": "Next up",
+          "description": "The name of the saved issue query the panel shows, in its order."
+        },
+        "plan.projectMarkers": {
+          "type": "object",
+          "additionalProperties": { "type": "string" },
+          "default": { "gh-plan": "Pl", "tempotag": "tt", "ms-security-docs": "ms" },
+          "description": "The short marker each row shows for its repo, by Redmine project identifier. A project not listed shows the first two letters of its identifier."
+        },
+        "plan.keychainService": {
+          "type": "string",
+          "default": "redmine-gh-plan",
+          "description": "The macOS Keychain item (service name) that holds your Redmine API key."
+        }
+      }
+    }
+  }
+}
