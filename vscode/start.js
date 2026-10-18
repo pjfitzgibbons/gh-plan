@@ -217,4 +217,4 @@ async function startIn({ redmine, id, confirm, handOff, issue, checkout, common 
   return result;
 }
 
-module.exports = { ACTION, checkId, slug, branchName, worktreeDir, blockerIds, issueBranch, existingWorktree, expandHome, start };
+module.exports = { ACTION, checkId, slug, branchName, worktreeDir, blockerIds, issueBranch, existingWorktree, expandHome, run, git, start };

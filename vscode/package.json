@@ -1,8 +1,8 @@
 {
   "name": "gh-plan",
   "displayName": "GH Plan",
-  "description": "Redmine's Next up query in a narrow sidebar panel; each issue opens in place, and starts in its own worktree.",
-  "version": "0.3.8",
+  "description": "Redmine's Next up query in a narrow sidebar panel; each issue opens in place, starts in its own worktree, and ships from its review.",
+  "version": "0.4.1",
   "publisher": "pjfitzgibbons",
   "license": "UNLICENSED",
   "private": true,
@@ -18,10 +18,25 @@
     "views": {
       "plan": [{ "type": "webview", "id": "plan.nextUp", "name": "Next up" }]
     },
-    "commands": [{ "command": "plan.refresh", "title": "Refresh", "category": "Plan", "icon": "$(refresh)" }],
+    "commands": [
+      { "command": "plan.refresh", "title": "Refresh", "category": "Plan", "icon": "$(refresh)" },
+      { "command": "plan.ship", "title": "Ship", "category": "Plan", "icon": "$(diff-multiple)" },
+      { "command": "plan.go", "title": "Go", "category": "Plan", "icon": "$(rocket)" }
+    ],
     "menus": {
-      "view/title": [{ "command": "plan.refresh", "when": "view == plan.nextUp", "group": "navigation" }]
+      "view/title": [{ "command": "plan.refresh", "when": "view == plan.nextUp", "group": "navigation" }],
+      "editor/title": [
+        { "command": "plan.ship", "when": "resourcePath =~ /\\/\\.tmp\\/[1-9][0-9]*\\/(commit\\.txt|pr-body\\.md)$/", "group": "navigation" },
+        { "command": "plan.go", "when": "plan.shipArmed && (activeEditor == multiDiffEditor || resourcePath =~ /\\/\\.tmp\\/[1-9][0-9]*\\/(commit\\.txt|pr-body\\.md)$/)", "group": "navigation" }
+      ],
+      "commandPalette": [
+        { "command": "plan.ship", "when": "resourcePath =~ /\\/\\.tmp\\/[1-9][0-9]*\\/(commit\\.txt|pr-body\\.md)$/" },
+        { "command": "plan.go", "when": "plan.shipArmed" }
+      ]
     },
+    "taskDefinitions": [
+      { "type": "plan", "required": ["issue"], "properties": { "issue": { "type": "integer", "description": "The issue pr ships." } } }
+    ],
     "configuration": {
       "title": "GH Plan",
       "properties": {
@@ -51,6 +66,11 @@
           "additionalProperties": { "type": "string" },
           "default": { "gh-plan": "~/programming/gh-plan", "tempotag": "~/programming/tempotag" },
           "description": "The main checkout of each repo, by Redmine project identifier. Start makes an issue's worktree beside it, in <repo>.worktrees/<n>."
+        },
+        "plan.pr": {
+          "type": "string",
+          "default": "~/.local/bin/pr",
+          "description": "The pr script Ship runs on Go, by its path."
         },
         "plan.keychainService": {
           "type": "string",

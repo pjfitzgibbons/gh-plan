@@ -6,8 +6,9 @@ const crypto = require("crypto");
 const fs = require("fs");
 const path = require("path");
 const { Redmine } = require("./redmine");
-const { ACTION, checkId, start } = require("./start");
+const { ACTION, checkId, start, expandHome } = require("./start");
 const { stackedBelowFirst } = require("./layout");
+const { reviewFile, check, pullRequest, linkPullRequest } = require("./ship");
 
 // A new window can't be handed a task directly, so Start leaves one in the extension's global
 // storage, which every window shares; the worktree's window picks it up when it opens, or at once if
@@ -246,6 +247,101 @@ function watchHandoff(context, storage) {
   context.subscriptions.push(watcher);
 }
 
+// Ship, from the title bar of an issue's commit.txt or pr-body.md: save both, check them, and open
+// the working tree's changes, whose title bar then holds Go. With nothing to commit, Go sits on the
+// review files instead. Only Go runs pr; once pr succeeds, the issue's Pull requests field links
+// its PR.
+let armed = null;
+
+function arm(review) {
+  armed = review;
+  return vscode.commands.executeCommand("setContext", "plan.shipArmed", Boolean(review));
+}
+
+// Saves the issue's review files, unsaved edits included, and checks what pr will find; null, with
+// the reason shown, when pr can't run.
+async function prepare(uri) {
+  const review = reviewFile((uri || vscode.window.activeTextEditor?.document.uri)?.fsPath || "");
+  if (!review) {
+    vscode.window.showErrorMessage("Plan: Ship works from an issue's .tmp/<n>/commit.txt or .tmp/<n>/pr-body.md");
+    return null;
+  }
+  const { root, id } = review;
+  for (const doc of vscode.workspace.textDocuments) {
+    const other = reviewFile(doc.uri.fsPath);
+    if (doc.isDirty && other && other.root === root && other.id === id) await doc.save();
+  }
+  let found;
+  try {
+    found = await check(root, id);
+  } catch (error) {
+    vscode.window.showErrorMessage(`Plan: #${id} can't ship. ${error.message}`);
+    return null;
+  }
+  if (found.problems.length) {
+    vscode.window.showErrorMessage(`Plan: #${id} can't ship: ${found.problems.join("; ")}. Nothing ran.`);
+    return null;
+  }
+  return { ...review, ...found };
+}
+
+async function ship(uri) {
+  const ready = await prepare(uri);
+  await arm(ready && { root: ready.root, id: ready.id });
+  if (!ready) return;
+  if (ready.dirty) {
+    await vscode.commands.executeCommand("git.viewChanges");
+    vscode.window.showInformationMessage(`Plan: #${ready.id}'s changes are open; the rocket runs pr ${ready.id}.`);
+  } else {
+    vscode.window.showInformationMessage(`Plan: nothing to commit; the rocket pushes ${ready.branch} and updates its PR.`);
+  }
+}
+
+async function go() {
+  if (!armed) {
+    vscode.window.showErrorMessage("Plan: press Ship on an issue's review files first.");
+    return;
+  }
+  const { root, id } = armed;
+  const found = await prepare(vscode.Uri.file(`${root}/.tmp/${id}/pr-body.md`));
+  await arm(null);
+  if (!found) return;
+
+  const exitCode = await runPr(root, id);
+  if (exitCode !== 0) {
+    vscode.window.showErrorMessage(`Plan: pr ${id} stopped (exit ${exitCode}); its terminal says why. Ship and Go again once it's fixed.`);
+    return;
+  }
+  try {
+    const pr = await pullRequest(root, found.branch);
+    const linked = await linkPullRequest({ redmine: redmine(), id, pr });
+    vscode.window.showInformationMessage(`Plan: #${id} ${linked ? "now links" : "already links"} ${pr.url}`);
+  } catch (error) {
+    vscode.window.showErrorMessage(`Plan: #${id} shipped, but Redmine wasn't told. ${error.message} Ship and Go again to retry.`);
+  }
+}
+
+// pr <id> in its own terminal, in the worktree; resolves to its exit code. pr is run by its path: a
+// login shell's PATH finds /usr/bin/pr, the paginator, first.
+function runPr(root, id) {
+  const pr = expandHome(vscode.workspace.getConfiguration("plan").get("pr"));
+  const folder = vscode.workspace.getWorkspaceFolder(vscode.Uri.file(root)) || vscode.TaskScope.Workspace;
+  const task = new vscode.Task(
+    { type: "plan", issue: id }, folder, `pr ${id}`, "plan",
+    new vscode.ProcessExecution(pr, [String(id)], { cwd: root })
+  );
+  task.presentationOptions = { reveal: vscode.TaskRevealKind.Always, panel: vscode.TaskPanelKind.Dedicated, clear: true };
+  return new Promise((resolve, reject) => {
+    const ended = vscode.tasks.onDidEndTaskProcess((event) => {
+      const { definition } = event.execution.task;
+      if (definition.type !== "plan" || definition.issue !== id) return;
+      ended.dispose();
+      resolve(event.exitCode);
+    });
+    vscode.tasks.executeTask(task).then(undefined, (error) => (ended.dispose(), reject(error)));
+  });
+}
+
 function activate(context) {
   const view = new NextUp(context);
   fs.mkdirSync(view.storage, { recursive: true });
@@ -254,7 +350,13 @@ function activate(context) {
   watchHandover(context);
   context.subscriptions.push(
     vscode.window.registerWebviewViewProvider("plan.nextUp", view),
-    vscode.commands.registerCommand("plan.refresh", () => view.refresh())
+    vscode.commands.registerCommand("plan.refresh", () => view.refresh()),
+    vscode.commands.registerCommand("plan.ship", (uri) =>
+      ship(uri).catch((error) => vscode.window.showErrorMessage(`Plan: Ship failed. ${error.message}`))
+    ),
+    vscode.commands.registerCommand("plan.go", () =>
+      go().catch((error) => vscode.window.showErrorMessage(`Plan: Go failed. ${error.message}`))
+    )
   );
 }
 
