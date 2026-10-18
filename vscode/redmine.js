@@ -1,4 +1,4 @@
-// Redmine's REST API, read-only, for the panel. No vscode import, so it runs under plain node too.
+// Redmine's REST API, for the panel and for Start. No vscode import, so it runs under plain node too.
 // The API key comes from the macOS Keychain each time it is needed; it is never stored here.
 const { execFile } = require("child_process");
 
@@ -18,13 +18,28 @@ class Redmine {
   }
 
   async get(path) {
+    return (await this.send("GET", path)).json();
+  }
+
+  async send(method, path, body) {
     const { url, service } = this.settings;
-    const response = await fetch(url + path, { headers: { "X-Redmine-API-Key": await apiKey(service) } });
+    const headers = { "X-Redmine-API-Key": await apiKey(service) };
+    if (body) headers["Content-Type"] = "application/json";
+    let response;
+    try {
+      response = await fetch(url + path, { method, headers, body: body && JSON.stringify(body) });
+    } catch (error) {
+      throw new Error(`Redmine can't be reached at ${url}: ${error.cause?.code || error.message}`);
+    }
     if (response.status === 401) {
       throw new Error(`Redmine refused the key in Keychain item "${service}" (401); store your API key from My account`);
     }
-    if (!response.ok) throw new Error(`Redmine ${path}: HTTP ${response.status}`);
-    return response.json();
+    if (!response.ok) {
+      // A refused write says why in errors[]; a read only has its status.
+      const reasons = await response.json().then((r) => r.errors || [], () => []);
+      throw new Error(`Redmine ${method} ${path}: HTTP ${response.status}${reasons.length ? `: ${reasons.join("; ")}` : ""}`);
+    }
+    return response;
   }
 
   // The saved query's issues, in its order, with what a row shows.
@@ -55,6 +70,24 @@ class Redmine {
   async issue(id) {
     const { issue } = await this.get(`/issues/${Number(id)}.json?include=children,relations,journals`);
     return issue;
+  }
+
+  // An issue names its project by id; the checkout map is keyed by identifier.
+  async projectIdentifier(id) {
+    const { project } = await this.get(`/projects/${Number(id)}.json`);
+    return project.identifier;
+  }
+
+  async statusId(name) {
+    const { issue_statuses } = await this.get("/issue_statuses.json");
+    const found = issue_statuses.find((s) => s.name === name);
+    if (!found) throw new Error(`no issue status "${name}" in Redmine`);
+    return found.id;
+  }
+
+  // fields as Redmine's issue PUT takes them; notes becomes a journal entry.
+  async update(id, fields) {
+    await this.send("PUT", `/issues/${Number(id)}.json`, { issue: fields });
   }
 }
 

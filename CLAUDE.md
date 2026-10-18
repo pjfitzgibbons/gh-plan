@@ -24,7 +24,7 @@ settings: what this repo needs is here or in `.claude/`.
   `plan: start <id>` commit and makes the worktree and branch.
 - **An item's body:** `python3 ~/.claude/skills/gh-issues/scripts/outline.py .tracker/items/<id>.md`,
   from inside the repo.
-- **A PR:** `gh pc` creates it, `gh pb` updates its body, from `.tmp/pr-<id>-body.md`.
+- **A PR:** `gh pc` creates it, `gh pb` updates its body, from `.tmp/<id>/pr-body.md`.
 - **`plan next` and `plan ready`:** the `plan` skill is broken; read `.tracker/ready.yml` instead.
 
 ## Done differently

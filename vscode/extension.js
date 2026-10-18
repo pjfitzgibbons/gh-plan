@@ -1,8 +1,17 @@
 // The Next up panel: a webview in the Plan sidebar. The webview makes no request itself; it asks
-// this host for the list and for each issue, and hands every link click back to open in a tab.
+// this host for the list and for each issue, hands every link click back to open in a tab, and asks
+// it to start an issue.
 const vscode = require("vscode");
 const crypto = require("crypto");
+const fs = require("fs");
+const path = require("path");
 const { Redmine } = require("./redmine");
+const { start } = require("./start");
+
+// A new window can't be handed a task directly, so Start leaves one here, in the extension's global
+// storage, which every window shares; the new window's activation picks it up and starts Claude.
+const HANDOFF = "start-handoff.json";
+const HANDOFF_FRESH_MS = 2 * 60 * 1000;
 
 function redmine() {
   const config = vscode.workspace.getConfiguration("plan");
@@ -15,8 +24,9 @@ function redmine() {
 }
 
 class NextUp {
-  constructor(extensionUri) {
-    this.media = vscode.Uri.joinPath(extensionUri, "media");
+  constructor(context) {
+    this.media = vscode.Uri.joinPath(context.extensionUri, "media");
+    this.storage = context.globalStorageUri.fsPath;
   }
 
   resolveWebviewView(view) {
@@ -43,7 +53,40 @@ class NextUp {
           await vscode.commands.executeCommand("workbench.action.browser.open", message.url);
         }
         return;
+      case "start":
+        return this.start(message.id);
     }
+  }
+
+  async start(id) {
+    // The issue number is the only thing taken from the webview.
+    if (!Number.isInteger(id) || id <= 0) {
+      vscode.window.showErrorMessage(`Plan: Start needs an issue number, not ${JSON.stringify(id)}`);
+      return;
+    }
+    const config = vscode.workspace.getConfiguration("plan");
+    let result;
+    try {
+      result = await vscode.window.withProgress(
+        { location: vscode.ProgressLocation.Notification, title: `Starting #${id}` },
+        () => start({ redmine: redmine(), checkouts: config.get("checkouts"), id, confirm: confirmBlockers })
+      );
+    } catch (error) {
+      vscode.window.showErrorMessage(`Plan: #${id} didn't start. ${error.message}`);
+      return;
+    }
+    if (!result) return;
+    if (result.notes.length) vscode.window.showInformationMessage(`Plan: ${result.notes.join(" ")}`);
+    // Claude starts only in a window opened for a new worktree; reopening one changes nothing.
+    if (result.created) {
+      fs.mkdirSync(this.storage, { recursive: true });
+      fs.writeFileSync(
+        path.join(this.storage, HANDOFF),
+        JSON.stringify({ dir: result.dir, prompt: `Work on Redmine #${id}`, at: Date.now() })
+      );
+    }
+    await vscode.commands.executeCommand("vscode.openFolder", vscode.Uri.file(result.dir), { forceNewWindow: true });
+    this.refresh();
   }
 
   async refresh() {
@@ -86,8 +129,77 @@ class NextUp {
   }
 }
 
+async function confirmBlockers(blockers) {
+  const list = blockers.map((b) => `#${b.id} ${b.subject} (${b.status})`).join("\n");
+  const choice = await vscode.window.showWarningMessage(
+    blockers.length === 1 ? "An open issue blocks this one" : `${blockers.length} open issues block this one`,
+    { modal: true, detail: `${list}\n\nStart anyway?` },
+    "Start anyway"
+  );
+  return choice === "Start anyway";
+}
+
+// In the window Start opened: start Claude beside, once, if the handoff is fresh and for this folder.
+async function takeHandoff(storage) {
+  const file = path.join(storage, HANDOFF);
+  let handoff;
+  try {
+    handoff = JSON.parse(fs.readFileSync(file, "utf8"));
+  } catch {
+    return;
+  }
+  const folder = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+  if (folder !== handoff.dir) return;
+  fs.rmSync(file, { force: true });
+  if (Date.now() - handoff.at > HANDOFF_FRESH_MS) return;
+  try {
+    // Undocumented: Claude Code's own command, (prompt, args, location), read from its source (2.1.301).
+    await vscode.commands.executeCommand("claude-vscode.terminal.open", handoff.prompt, [], "beside");
+  } catch (error) {
+    vscode.window.showErrorMessage(`Plan: couldn't start Claude Code: ${error.message}`);
+  }
+}
+
+// When an issue's commit message and PR body for pr are both written, in .tmp/<n>/, they open for
+// review in the leftmost editor group: the commit message above, the PR body below. Once both are
+// open, a save moves nothing.
+function watchHandover(context) {
+  const watcher = vscode.workspace.createFileSystemWatcher("**/.tmp/*/{commit.txt,pr-body.md}");
+  const timers = new Map();
+  // The two files land moments apart; wait for the writes to settle.
+  const changed = (uri) => {
+    const dir = path.dirname(uri.fsPath);
+    clearTimeout(timers.get(dir));
+    timers.set(dir, setTimeout(() => (timers.delete(dir), openHandover(dir)), 500));
+  };
+  watcher.onDidCreate(changed);
+  watcher.onDidChange(changed);
+  context.subscriptions.push(watcher);
+}
+
+async function openHandover(dir) {
+  const files = ["commit.txt", "pr-body.md"].map((name) => path.join(dir, name));
+  if (!files.every((file) => fs.existsSync(file))) return;
+  const open = new Set(
+    vscode.window.tabGroups.all.flatMap((g) => g.tabs).map((t) => t.input?.uri?.fsPath).filter(Boolean)
+  );
+  if (files.every((file) => open.has(file))) return;
+  // The pair stacks inside the leftmost group, or the only one; groups to its right stay as they are.
+  // Column numbers follow the grid, so the leftmost group is 1 and, once split, the one below it 2.
+  // Layout orientation 0 lays groups side by side, 1 top and bottom, alternating as they nest.
+  const layout = await vscode.commands.executeCommand("vscode.getEditorLayout");
+  const stacked = layout.orientation === 0 ? (layout.groups[0].groups || []).length >= 2 : layout.groups.length >= 2;
+  const [commit, body] = files.map((file) => vscode.Uri.file(file));
+  await vscode.window.showTextDocument(commit, { viewColumn: 1, preview: false });
+  // A new group goes below the active one, which is now the leftmost, and takes focus.
+  if (!stacked) await vscode.commands.executeCommand("workbench.action.newGroupBelow");
+  await vscode.window.showTextDocument(body, { viewColumn: stacked ? 2 : vscode.ViewColumn.Active, preview: false });
+}
+
 function activate(context) {
-  const view = new NextUp(context.extensionUri);
+  const view = new NextUp(context);
+  takeHandoff(view.storage);
+  watchHandover(context);
   context.subscriptions.push(
     vscode.window.registerWebviewViewProvider("plan.nextUp", view),
     vscode.commands.registerCommand("plan.refresh", () => view.refresh())
