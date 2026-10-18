@@ -57,9 +57,13 @@ function run(command, args, cwd) {
 }
 const git = (cwd, ...args) => run("git", args, cwd);
 
+// Written in the worktree's own git dir, outside its tree, once its setup has all succeeded.
+const SET_UP = "plan-set-up";
+
 // Start issue id, or reopen its worktree. Safe to repeat: each step runs only when it has something
 // to do. confirm(blockers) is asked only before a new worktree; false stops with nothing changed.
-// Returns { dir, branch, created, started, notes }, or null when Peter said no.
+// Returns { dir, branch, created, started, notes }, or null when Peter said no. started: this Start
+// finished the worktree's setup, here or after an earlier one stopped part way.
 async function start({ redmine, checkouts, id, confirm }) {
   if (!Number.isInteger(id) || id <= 0) throw new Error(`Start needs an issue number, not ${JSON.stringify(id)}`);
   const issue = await redmine.issue(id);
@@ -76,6 +80,9 @@ async function start({ redmine, checkouts, id, confirm }) {
   const notes = [];
   let found = existingWorktree(await git(checkout, "worktree", "list", "--porcelain"), id);
   let created = false;
+  if (found && !fs.existsSync(found.dir)) {
+    throw new Error(`git still lists ${found.dir} as a worktree, but it's gone; run git worktree prune in ${checkout}, then Start again`);
+  }
   if (!found) {
     const blockers = [];
     for (const blocker of blockerIds(issue)) {
@@ -84,11 +91,8 @@ async function start({ redmine, checkouts, id, confirm }) {
     }
     if (blockers.length && !(await confirm(blockers))) return null;
 
-    try {
-      await git(checkout, "fetch", "--quiet", "origin");
-    } catch (error) {
-      notes.push(`The fetch failed, so the branch starts from the last fetch: ${error.message}`);
-    }
+    // A branch starts from the latest base or not at all; a failed fetch stops before anything changes.
+    await git(checkout, "fetch", "--quiet", "origin");
     let base = "main";
     await git(checkout, "show-ref", "--verify", "--quiet", "refs/remotes/origin/develop").then(() => (base = "develop"), () => {});
     const dir = worktreeDir(checkout, id);
@@ -106,16 +110,16 @@ async function start({ redmine, checkouts, id, confirm }) {
     notes.push(`Made ${branch} from origin/${base} in ${dir}.`);
   }
 
-  // A sync that failed part way can leave .venv behind, so it runs again until the issue is In
-  // Progress, which it becomes only after a sync succeeds.
-  const starting = issue.status.name !== "In Progress";
-  const venv = fs.existsSync(path.join(found.dir, ".venv"));
-  if (fs.existsSync(path.join(found.dir, "uv.lock")) && (starting || !venv)) {
+  // A sync or update that failed part way can leave .venv behind or the status unchanged, so setup
+  // is done only once the marker, written last, is there.
+  const marker = path.join((await git(found.dir, "rev-parse", "--path-format=absolute", "--git-dir")).trim(), SET_UP);
+  const started = !fs.existsSync(marker);
+  if (started && fs.existsSync(path.join(found.dir, "uv.lock"))) {
     await run("uv", ["sync", "--quiet"], found.dir);
     notes.push("Synced the uv environment.");
   }
 
-  if (starting) {
+  if (issue.status.name !== "In Progress") {
     await redmine.update(id, {
       status_id: await redmine.statusId("In Progress"),
       ...(issue.start_date ? {} : { start_date: new Date().toLocaleDateString("sv") }),
@@ -123,8 +127,8 @@ async function start({ redmine, checkouts, id, confirm }) {
     });
     notes.push(`#${id} is In Progress.`);
   }
-  // started: this Start finished the work's setup, here or after an earlier one stopped part way.
-  return { ...found, created, started: created || starting, notes };
+  if (started) fs.writeFileSync(marker, `${new Date().toISOString()}\n`);
+  return { ...found, created, started, notes };
 }
 
 module.exports = { slug, branchName, worktreeDir, blockerIds, existingWorktree, expandHome, start };

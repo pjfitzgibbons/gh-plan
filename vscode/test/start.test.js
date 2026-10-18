@@ -146,12 +146,10 @@ test("the worktree goes beside the repo root, even when the map names a folder i
   assert.ok(path.relative(s.checkout, result.dir).startsWith(".."), `${result.dir} is inside ${s.checkout}`);
 });
 
-test("a sync that left .venv behind runs again on the next Start", async (t) => {
-  const s = sandbox(t);
+// A uv that records each run, makes .venv, and fails the first time, as a broken install would.
+function failingUv(t, s) {
   const fs = require("fs");
   const path = require("path");
-  s.issues[50].status = { name: "Closed", is_closed: true };
-  // A uv that records each run, makes .venv, and fails the first time, as a broken install would.
   const bin = fs.mkdtempSync(path.join(path.dirname(s.checkout), "bin-"));
   const log = path.join(bin, "runs");
   fs.writeFileSync(path.join(bin, "uv"), `#!/bin/sh\necho run >> "${log}"\nmkdir -p .venv\n[ -f "${log}.ok" ] || { touch "${log}.ok"; exit 1; }\n`, { mode: 0o755 });
@@ -162,14 +160,48 @@ test("a sync that left .venv behind runs again on the next Start", async (t) => 
   s.git(s.checkout, "add", "uv.lock");
   s.git(s.checkout, "-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "--quiet", "-m", "uv.lock");
   s.git(s.checkout, "push", "--quiet", "origin", "main");
+  return () => fs.readFileSync(log, "utf8").split("\n").filter(Boolean).length;
+}
 
-  await assert.rejects(start({ ...s, id: 80, confirm: () => true }), /uv sync/);
-  assert.deepEqual(s.updates, []);
-  const again = await start({ ...s, id: 80, confirm: () => true });
-  assert.equal(fs.readFileSync(log, "utf8"), "run\nrun\n");
-  assert.ok(again.notes.includes("Synced the uv environment."));
+for (const status of ["New", "In Progress"]) {
+  test(`a sync that left .venv behind runs again on the next Start, for a ${status} issue`, async (t) => {
+    const s = sandbox(t);
+    s.issues[50].status = { name: "Closed", is_closed: true };
+    s.issues[80].status = { name: status, is_closed: false };
+    const runs = failingUv(t, s);
+    const confirm = () => true;
+
+    await assert.rejects(start({ ...s, id: 80, confirm }), /uv sync/);
+    assert.deepEqual(s.updates, []);
+    const again = await start({ ...s, id: 80, confirm });
+    assert.equal(runs(), 2);
+    assert.equal(again.created, false);
+    assert.equal(again.started, true, "the resumed Start hands over to Claude");
+    assert.ok(again.notes.includes("Synced the uv environment."));
+    assert.equal(s.updates.length, status === "New" ? 1 : 0);
+    // Set up now: reopening syncs no more and starts nothing.
+    const reopened = await start({ ...s, id: 80, confirm });
+    assert.equal(runs(), 2);
+    assert.equal(reopened.started, false);
+  });
+}
+
+test("a worktree deleted by hand is refused before Redmine changes", async (t) => {
+  const s = sandbox(t);
+  const fs = require("fs");
+  s.issues[50].status = { name: "Closed", is_closed: true };
+  const first = await start({ ...s, id: 80, confirm: () => true });
+  fs.rmSync(first.dir, { recursive: true });
+  s.issues[80].status = { name: "New", is_closed: false };
+  await assert.rejects(start({ ...s, id: 80, confirm: () => true }), /git worktree prune/);
   assert.equal(s.updates.length, 1);
-  // Started now, with .venv there: reopening syncs no more.
-  await start({ ...s, id: 80, confirm: () => true });
-  assert.equal(fs.readFileSync(log, "utf8"), "run\nrun\n");
+});
+
+test("a failed fetch makes no branch", async (t) => {
+  const s = sandbox(t);
+  s.issues[50].status = { name: "Closed", is_closed: true };
+  s.git(s.checkout, "remote", "set-url", "origin", "/nonexistent/origin.git");
+  await assert.rejects(start({ ...s, id: 80, confirm: () => true }), /git fetch/);
+  assert.equal(s.git(s.checkout, "branch", "--list", "feat/80-*"), "");
+  assert.deepEqual(s.updates, []);
 });

@@ -32,6 +32,8 @@ class NextUp {
   constructor(context) {
     this.media = vscode.Uri.joinPath(context.extensionUri, "media");
     this.storage = context.globalStorageUri.fsPath;
+    // Starts under way, by issue: a second click joins the first rather than racing it.
+    this.starting = new Map();
   }
 
   resolveWebviewView(view) {
@@ -63,12 +65,19 @@ class NextUp {
     }
   }
 
-  async start(id) {
+  start(id) {
     // The issue number is the only thing taken from the webview.
     if (!Number.isInteger(id) || id <= 0) {
       vscode.window.showErrorMessage(`Plan: Start needs an issue number, not ${JSON.stringify(id)}`);
       return;
     }
+    if (!this.starting.has(id)) {
+      this.starting.set(id, this.startOnce(id).finally(() => this.starting.delete(id)));
+    }
+    return this.starting.get(id);
+  }
+
+  async startOnce(id) {
     const config = vscode.workspace.getConfiguration("plan");
     let result;
     try {
@@ -83,13 +92,12 @@ class NextUp {
     if (!result) return;
     if (result.notes.length) vscode.window.showInformationMessage(`Plan: ${result.notes.join(" ")}`);
     // Claude starts only in a window opened by the Start that finished setting the work up, including
-    // one that finished what a stopped Start began; reopening started work changes nothing.
-    if (result.started) {
+    // one that finished what a stopped Start began, or by an Open after Claude failed to start;
+    // otherwise reopening started work changes nothing.
+    const file = handoffFile(this.storage, result.dir);
+    if (result.started || fs.existsSync(file)) {
       fs.mkdirSync(this.storage, { recursive: true });
-      fs.writeFileSync(
-        handoffFile(this.storage, result.dir),
-        JSON.stringify({ dir: result.dir, prompt: `Work on Redmine #${id}`, at: Date.now() })
-      );
+      fs.writeFileSync(file, JSON.stringify({ dir: result.dir, prompt: `Work on Redmine #${id}`, at: Date.now() }));
     }
     await vscode.commands.executeCommand("vscode.openFolder", vscode.Uri.file(result.dir), { forceNewWindow: true });
     this.refresh();
@@ -146,6 +154,7 @@ async function confirmBlockers(blockers) {
 }
 
 // In the window Start opened: start Claude beside, once, if the handoff is fresh and for this folder.
+// A handoff Claude didn't take stays, so the issue's Open button can try again.
 async function takeHandoff(storage) {
   const folder = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
   if (!folder) return;
@@ -156,15 +165,15 @@ async function takeHandoff(storage) {
   } catch {
     return;
   }
-  if (folder !== handoff.dir) return;
-  fs.rmSync(file, { force: true });
-  if (Date.now() - handoff.at > HANDOFF_FRESH_MS) return;
+  if (folder !== handoff.dir || Date.now() - handoff.at > HANDOFF_FRESH_MS) return;
   try {
     // Undocumented: Claude Code's own command, (prompt, args, location), read from its source (2.1.301).
     await vscode.commands.executeCommand("claude-vscode.terminal.open", handoff.prompt, [], "beside");
   } catch (error) {
-    vscode.window.showErrorMessage(`Plan: couldn't start Claude Code: ${error.message}`);
+    vscode.window.showErrorMessage(`Plan: couldn't start Claude Code: ${error.message}. To retry, reload this window, or press Open on the issue in Next up.`);
+    return;
   }
+  fs.rmSync(file, { force: true });
 }
 
 // When an issue's commit message and PR body for pr are both written, in .tmp/<n>/, they open for
