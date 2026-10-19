@@ -52,7 +52,11 @@ function existingWorktree(porcelain, id, dir) {
   for (const [i, block] of porcelain.split("\n\n").entries()) {
     const lines = block.split("\n");
     const at = lines[0].replace(/^worktree /, "");
-    const branch = lines.map((l) => l.replace(/^branch refs\/heads\//, "")).find((l, j) => j > 0 && pattern.test(l));
+    const headBranch = lines.find((l) => l.startsWith("branch refs/heads/"))?.slice("branch refs/heads/".length);
+    const branch = headBranch && pattern.test(headBranch) ? headBranch : null;
+    if (!branch && i > 0 && at === dir && headBranch) {
+      throw new Error(`${at} is checked out on ${headBranch}, not a branch for #${id}; switch it back, then Start again`);
+    }
     if (branch || (i > 0 && at === dir)) return { dir: at, branch: branch || null, main: i === 0 };
   }
   return null;
