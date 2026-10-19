@@ -27,6 +27,7 @@ a:hover {
 }
 
 summary {
+  position: relative;
   display: flex;
   align-items: baseline;
   gap: 6px;
@@ -48,6 +49,34 @@ details[open] > summary::before {
 }
 summary:hover {
   background: var(--vscode-list-hoverBackground);
+}
+/* Start sits over the row's right end, shown on hover or keyboard focus, so the subject keeps the
+   width the rest of the time. */
+.start {
+  position: absolute;
+  right: 6px;
+  top: 50%;
+  transform: translateY(-50%);
+  padding: 1px 8px;
+  border: none;
+  border-radius: 2px;
+  font: inherit;
+  font-size: 0.9em;
+  color: var(--vscode-button-foreground);
+  background: var(--vscode-button-background);
+  cursor: pointer;
+  opacity: 0;
+}
+summary:hover .start,
+summary:focus-within .start {
+  opacity: 1;
+}
+.start:hover {
+  background: var(--vscode-button-hoverBackground);
+}
+.start:focus-visible {
+  outline: 1px solid var(--vscode-focusBorder);
+  outline-offset: 1px;
 }
 summary:focus-visible {
   outline: 1px solid var(--vscode-focusBorder);

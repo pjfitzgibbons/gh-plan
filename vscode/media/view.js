@@ -26,18 +26,22 @@
       );
   }
 
-  // A link never toggles its row: the click is handed to the host, which opens a new tab.
+  // A link or the Start button never toggles its row: a link is handed to the host, which opens a
+  // new tab, and Start asks the host to start the issue.
   document.addEventListener(
     "click",
     (event) => {
-      const link = event.target.closest("a[href]");
+      const link = event.target.closest("a[href], button.start");
       if (!link) return;
       event.preventDefault();
       event.stopPropagation();
-      vscode.postMessage({ type: "open", url: link.href });
+      if (link.matches("button")) vscode.postMessage({ type: "start", id: Number(link.dataset.id) });
+      else vscode.postMessage({ type: "open", url: link.href });
     },
     true
   );
+
+  // New issues start; In Progress ones reopen their worktree, which is the same request.
 
   function row(issue, nested) {
     const details = document.createElement("details");
@@ -49,6 +53,7 @@
         <span class="points">${escape(issue.points)}</span>
         <span class="subject">${escape(issue.subject)}</span>
         ${issue.status === "New" ? "" : `<span class="badge">${escape(issue.status)}</span>`}
+        ${issue.action ? `<button class="start" data-id="${Number(issue.id)}" title="${escape(issue.action)} #${Number(issue.id)} in its worktree">${escape(issue.action)}</button>` : ""}
       </summary>
       <section>Loading…</section>`;
     details.addEventListener("toggle", () => {

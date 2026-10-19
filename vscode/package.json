@@ -1,13 +1,16 @@
 {
   "name": "gh-plan",
   "displayName": "GH Plan",
-  "description": "Redmine's Next up query in a narrow sidebar panel; each issue opens in place.",
-  "version": "0.1.1",
+  "description": "Redmine's Next up query in a narrow sidebar panel; each issue opens in place, and starts in its own worktree.",
+  "version": "0.3.8",
   "publisher": "pjfitzgibbons",
   "license": "UNLICENSED",
   "private": true,
   "engines": { "vscode": "^1.90.0" },
   "main": "./extension.js",
+  "activationEvents": ["onStartupFinished"],
+  "scripts": { "test": "node --test", "lint": "eslint ." },
+  "devDependencies": { "@eslint/js": "9.39.5", "eslint": "9.39.5", "globals": "16.5.0" },
   "contributes": {
     "viewsContainers": {
       "activitybar": [{ "id": "plan", "title": "Plan", "icon": "media/plan.svg" }]
@@ -42,6 +45,12 @@
           "additionalProperties": { "type": "string" },
           "default": { "gh-plan": "Pl", "tempotag": "tt", "ms-security-docs": "ms" },
           "description": "The short marker each row shows for its repo, by Redmine project identifier. A project not listed shows the first two letters of its identifier."
+        },
+        "plan.checkouts": {
+          "type": "object",
+          "additionalProperties": { "type": "string" },
+          "default": { "gh-plan": "~/programming/gh-plan", "tempotag": "~/programming/tempotag" },
+          "description": "The main checkout of each repo, by Redmine project identifier. Start makes an issue's worktree beside it, in <repo>.worktrees/<n>."
         },
         "plan.keychainService": {
           "type": "string",

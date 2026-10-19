@@ -177,14 +177,14 @@ offline. Freeze is dry by default, and a start or stop names its item
 <a id="process-boundary"></a>
 ### 6.2 Process boundary
 
-`gh.py`, `git.py` and the adapters in `timekeeping/` are the only modules that spawn a process or
-open a network connection. Everything else is pure and testable without a network or a repo
+`gh.py`, `git.py` and the adapters in `timekeeping/` are the only Python modules, and
+`vscode/redmine.js` and `vscode/start.js` the only extension modules, that spawn a process or open
+a network connection. Everything else is pure and testable without a network or a repo
 ([ADR 0004](adr/0004-python-no-docker.md), [ADR 0006](adr/0006-tracked-time.md),
 [design 0001, *Layout*](design/0001-phase-1.md#layout)).
 
 - `git.py` makes every call to git: reading history for finish dates, building and pushing tool
-  commits, and listing the branches on `origin` for `ready.yml`. A `git push` of the tool's own
-  commits is the only write that leaves the machine.
+  commits, and listing the branches on `origin` for `ready.yml`.
 - `gh.py` reads a repo's pull requests through the `gh` CLI, only to add each PR's number and link
   to reports ([`I5`](requirements.md)). It never writes. `gh` is already authenticated, so the tool
   holds no token, as [`G3`](requirements.md) requires. A library such as PyGithub, Octokit or httpx
@@ -192,6 +192,10 @@ open a network connection. Everything else is pure and testable without a networ
 - Each `timekeeping/` adapter reads one vendor's time tracker behind the `TimeSource` interface.
   It reads and never writes
   ([design 0002, *The TimeSource interface*](design/0002-tracked-time.md#interface)).
+- `vscode/redmine.js` makes every call to Redmine's REST API: it reads the panel's issues and
+  writes Start's status change and journal note. It reads the API key from the macOS Keychain on
+  each call, so no repo holds it ([`G3`](requirements.md)).
+- `vscode/start.js` runs git and `uv` for Start: it fetches, adds the worktree and syncs it.
 
 The tool finds the default branch from `refs/remotes/origin/HEAD`, so it needs no GitHub read for
 that either.
@@ -372,13 +376,11 @@ matter as a table above the body, which covers reading.
    is `plan: start <id>` or `plan: stop <id>` (§7.4).
 4. `started` is written once and never changed or removed. `plan stop` sets the item back to Todo
    and leaves `started` as the record of the false start, and a later start keeps it (§7.1, §7.2).
-5. The tool's only remote write is a `git push` of its own commits. It never writes through
-   GitHub's API (§6.2). Outside the tool, a plan-board card Peter presses may push an item branch, open
-   or update its PR with `gh pc` or `gh pb`, and request Copilot's review of a PR it opens; no
-   agent runs one
-   ([ADR 0009](adr/0009-plan-board.md)).
-6. `gh.py`, `git.py` and the `timekeeping/` adapters are the only modules that spawn a process or
-   open a network connection (§6.2).
+5. Retired, so the invariants after it keep their numbers. Invariant 6 bounds remote writes,
+   which include Redmine's REST API ([ADR 0011](adr/0011-redmine-is-the-tracker.md)).
+6. `gh.py`, `git.py` and the `timekeeping/` adapters are the only Python modules, and
+   `vscode/redmine.js` and `vscode/start.js` the only extension modules, that spawn a process or
+   open a network connection. Every call to Redmine goes through `redmine.js` (§6.2).
 7. Estimates are `Literal[1, 2, 3, 5]`. 8 and 13 are refusal codes meaning "split this" and cannot
    be represented ([`B3`](requirements.md)).
 8. An item has at most one lane ([`D4`](requirements.md)).

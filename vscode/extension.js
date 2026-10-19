@@ -1,8 +1,25 @@
 // The Next up panel: a webview in the Plan sidebar. The webview makes no request itself; it asks
-// this host for the list and for each issue, and hands every link click back to open in a tab.
+// this host for the list and for each issue, hands every link click back to open in a tab, and asks
+// it to start an issue.
 const vscode = require("vscode");
 const crypto = require("crypto");
+const fs = require("fs");
+const path = require("path");
 const { Redmine } = require("./redmine");
+const { ACTION, checkId, start } = require("./start");
+const { stackedBelowFirst } = require("./layout");
+
+// A new window can't be handed a task directly, so Start leaves one in the extension's global
+// storage, which every window shares; the worktree's window picks it up when it opens, or at once if
+// it was open already, and starts Claude.
+// One file per worktree, so a second Start before the first window opens doesn't replace the first's.
+// A handoff is kept until Claude starts, so a reload can retry it; after a day, opening that
+// worktree no longer starts Claude unasked.
+const HANDOFF_FRESH_MS = 24 * 60 * 60 * 1000;
+
+function handoffFile(storage, dir) {
+  return path.join(storage, `handoff-${crypto.createHash("sha256").update(dir).digest("hex").slice(0, 16)}.json`);
+}
 
 function redmine() {
   const config = vscode.workspace.getConfiguration("plan");
@@ -15,8 +32,11 @@ function redmine() {
 }
 
 class NextUp {
-  constructor(extensionUri) {
-    this.media = vscode.Uri.joinPath(extensionUri, "media");
+  constructor(context) {
+    this.media = vscode.Uri.joinPath(context.extensionUri, "media");
+    this.storage = context.globalStorageUri.fsPath;
+    // Starts under way, by issue: a second click joins the first rather than racing it.
+    this.starting = new Map();
   }
 
   resolveWebviewView(view) {
@@ -43,6 +63,52 @@ class NextUp {
           await vscode.commands.executeCommand("workbench.action.browser.open", message.url);
         }
         return;
+      case "start":
+        return this.start(message.id);
+    }
+  }
+
+  start(id) {
+    // The issue number is the only thing taken from the webview.
+    try {
+      checkId(id);
+    } catch (error) {
+      vscode.window.showErrorMessage(`Plan: ${error.message}`);
+      return;
+    }
+    if (!this.starting.has(id)) {
+      this.starting.set(id, this.startOnce(id).finally(() => this.starting.delete(id)));
+    }
+    return this.starting.get(id);
+  }
+
+  async startOnce(id) {
+    const config = vscode.workspace.getConfiguration("plan");
+    try {
+      // Claude starts only in a window opened by the Start that finished setting the work up, including
+      // one that finished what a stopped Start began, or by an Open after Claude failed to start;
+      // otherwise reopening started work changes nothing. Setup isn't finished until the handoff is
+      // written, so a failed write is retried by the next Start.
+      const handOff = (result) => {
+        const file = handoffFile(this.storage, result.dir);
+        fs.mkdirSync(this.storage, { recursive: true });
+        // Written aside and renamed in, so a watching window never reads it half written.
+        fs.writeFileSync(`${file}.tmp`, JSON.stringify({ dir: result.dir, prompt: `Work on Redmine #${id}`, at: Date.now() }));
+        fs.renameSync(`${file}.tmp`, file);
+      };
+      const result = await vscode.window.withProgress(
+        { location: vscode.ProgressLocation.Notification, title: `Starting #${id}` },
+        () => start({ redmine: redmine(), checkouts: config.get("checkouts"), id, confirm: confirmBlockers, handOff })
+      );
+      if (!result) return;
+      if (result.notes.length) vscode.window.showInformationMessage(`Plan: ${result.notes.join(" ")}`);
+      // An Open after Claude failed to start rewrites the kept handoff, fresh, for the watching window.
+      if (!result.started && fs.existsSync(handoffFile(this.storage, result.dir))) handOff(result);
+      await vscode.commands.executeCommand("vscode.openFolder", vscode.Uri.file(result.dir), { forceNewWindow: true });
+    } catch (error) {
+      vscode.window.showErrorMessage(`Plan: #${id} didn't start. ${error.message}`);
+    } finally {
+      this.refresh();
     }
   }
 
@@ -54,6 +120,7 @@ class NextUp {
       const issues = (await client.list()).map((issue) => ({
         ...issue,
         marker: markers[issue.project] || issue.project.slice(0, 2),
+        action: ACTION[issue.status],
       }));
       this.post({ type: "list", base: client.settings.url, issues });
     } catch (error) {
@@ -86,8 +153,105 @@ class NextUp {
   }
 }
 
+async function confirmBlockers(blockers) {
+  const list = blockers.map((b) => `#${b.id} ${b.subject} (${b.status})`).join("\n");
+  const choice = await vscode.window.showWarningMessage(
+    blockers.length === 1 ? "An open issue blocks this one" : `${blockers.length} open issues block this one`,
+    { modal: true, detail: `${list}\n\nStart anyway?` },
+    "Start anyway"
+  );
+  return choice === "Start anyway";
+}
+
+// In the worktree's window: start Claude beside, once, if the handoff is fresh and for this folder.
+// A handoff Claude didn't take stays, so the issue's Open button can try again.
+let taking = false;
+async function takeHandoff(storage) {
+  const folder = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+  if (!folder || taking) return;
+  taking = true;
+  try {
+    await takeHandoffFor(storage, folder);
+  } finally {
+    taking = false;
+  }
+}
+
+async function takeHandoffFor(storage, folder) {
+  const file = handoffFile(storage, folder);
+  let handoff;
+  try {
+    handoff = JSON.parse(fs.readFileSync(file, "utf8"));
+  } catch {
+    return;
+  }
+  if (folder !== handoff.dir) return;
+  if (Date.now() - handoff.at > HANDOFF_FRESH_MS) {
+    fs.rmSync(file, { force: true });
+    return;
+  }
+  try {
+    // Undocumented: Claude Code's own command, (prompt, args, location), read from its source (2.1.301).
+    await vscode.commands.executeCommand("claude-vscode.terminal.open", handoff.prompt, [], "beside");
+  } catch (error) {
+    vscode.window.showErrorMessage(`Plan: couldn't start Claude Code: ${error.message}. To retry, reload this window, or press Open on the issue in Next up.`);
+    return;
+  }
+  fs.rmSync(file, { force: true });
+}
+
+// When an issue's commit message and PR body for pr are both written, in .tmp/<n>/, they open for
+// review in the leftmost editor group: the commit message above, the PR body below. Once both are
+// open, a save moves nothing.
+function watchHandover(context) {
+  const watcher = vscode.workspace.createFileSystemWatcher("**/.tmp/*/{commit.txt,pr-body.md}");
+  const timers = new Map();
+  // The two files land moments apart; wait for the writes to settle.
+  const changed = (uri) => {
+    const dir = path.dirname(uri.fsPath);
+    clearTimeout(timers.get(dir));
+    timers.set(dir, setTimeout(() => (timers.delete(dir), openHandover(dir)), 500));
+  };
+  watcher.onDidCreate(changed);
+  watcher.onDidChange(changed);
+  context.subscriptions.push(watcher);
+}
+
+async function openHandover(dir) {
+  const files = ["commit.txt", "pr-body.md"].map((name) => path.join(dir, name));
+  if (!files.every((file) => fs.existsSync(file))) return;
+  const open = new Set(
+    vscode.window.tabGroups.all.flatMap((g) => g.tabs).map((t) => t.input?.uri?.fsPath).filter(Boolean)
+  );
+  if (files.every((file) => open.has(file))) return;
+  // The pair stacks inside the leftmost group, or the only one; groups to its right stay as they are.
+  // A group already directly below the leftmost is column 2, and is reused.
+  const stacked = stackedBelowFirst(await vscode.commands.executeCommand("vscode.getEditorLayout"));
+  const [commit, body] = files.map((file) => vscode.Uri.file(file));
+  await vscode.window.showTextDocument(commit, { viewColumn: 1, preview: false });
+  // A new group goes below the active one, which is now the leftmost, and takes focus.
+  if (!stacked) await vscode.commands.executeCommand("workbench.action.newGroupBelow");
+  await vscode.window.showTextDocument(body, { viewColumn: stacked ? 2 : vscode.ViewColumn.Active, preview: false });
+}
+
+// openFolder only focuses a window already open on the worktree, so that window watches for its
+// handoff too.
+function watchHandoff(context, storage) {
+  const folder = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+  if (!folder) return;
+  const name = path.basename(handoffFile(storage, folder));
+  const watcher = vscode.workspace.createFileSystemWatcher(new vscode.RelativePattern(vscode.Uri.file(storage), name));
+  watcher.onDidCreate(() => takeHandoff(storage));
+  watcher.onDidChange(() => takeHandoff(storage));
+  context.subscriptions.push(watcher);
+}
+
 function activate(context) {
-  const view = new NextUp(context.extensionUri);
+  const view = new NextUp(context);
+  fs.mkdirSync(view.storage, { recursive: true });
+  watchHandoff(context, view.storage);
+  takeHandoff(view.storage);
+  watchHandover(context);
   context.subscriptions.push(
     vscode.window.registerWebviewViewProvider("plan.nextUp", view),
     vscode.commands.registerCommand("plan.refresh", () => view.refresh())
