@@ -6,388 +6,315 @@
 - [2. Definitions](#definitions)
 - [3. Storage](#storage)
 - [4. Plans](#plans)
-  - [4.1 Member repos](#members)
+  - [4.1 Projects and versions](#members)
   - [4.2 Dependencies and parents](#dependencies)
 - [5. Identity](#identity)
 - [6. Components](#components)
-  - [6.1 Core and front ends](#front-ends)
+  - [6.1 Redmine and its clients](#front-ends)
   - [6.2 Process boundary](#process-boundary)
   - [6.3 Platform](#platform)
 - [7. Operations](#operations)
   - [7.1 Start](#start)
-  - [7.2 Stop](#stop)
+  - [7.2 Ship and Go](#ship)
   - [7.3 Finish](#finish)
   - [7.4 Tool commits](#tool-commits)
-  - [7.5 Freeze](#freeze)
-  - [7.6 `ready.yml`](#ready-file)
+  - [7.5 Baselines](#freeze)
+  - [7.6 Next up](#ready-file)
 - [8. Failure modes](#failure-modes)
 - [9. Views](#views)
 - [10. Invariants](#invariants)
 
 **Requirements:** [`requirements.md`](requirements.md) · **Decisions:** [`adr/`](adr/) ·
-**Design:** [design 0001](design/0001-phase-1.md), [design 0002](design/0002-tracked-time.md),
-[design 0003](design/0003-plan-board.md)
+**Failure modes by command:** [`failure-modes.md`](failure-modes.md)
 
 <a id="purpose"></a>
 ## 1. Purpose
 
-GH Plan is a file-native tracker. Each item is a Markdown file with YAML front matter, committed in
-the repo it belongs to, beside the code and docs it plans. The file holds the whole item: its
-title, its description, its planning fields and its dependencies. Git records its history and its
-progress. GitHub Issues is not used, and pull requests are the one GitHub integration
-([ADR 0008](adr/0008-file-native-items.md)).
-
-GitHub Projects v2 was the planning layer this replaces. Its fields live on the project item instead
-of the issue, it has no dependency field and no readable rank, some fields are display-only, a board
-cannot group by labels, and writing project fields trips a secondary rate limit at about twenty
-mutations. Keeping Issues underneath and planning in files beside them meant syncing two halves of
-every item, with only one half in the repo's history. Forking an existing tool would mean owning
-someone else's data model; the [alternatives survey](alternatives-survey.md) records where each
-candidate fell short.
-
-The tool (`gh-plan`, product GH Plan, CLI `plan`) lives in its own repo. Its data lives in
-`.tracker/` in each repo being planned ([ADR 0002](adr/0002-tracker-per-repo.md)). It has no
-comments, notifications, auth, multi-user support, permissions or email.
+GH Plan plans work across several repos in Redmine, which runs outside them
+([ADR 0011](adr/0011-redmine-is-the-tracker.md)). The gh-plan repo is the setup around it:
+Redmine 7.0 in Docker with its projects, fields and workflow (`redmine/`), the lane board plugin,
+and a VS Code extension (`vscode/`) that starts, ships and finishes an issue from a panel. `pr`,
+the gh-issues skill's script, commits, pushes and opens or updates the pull request. GitHub Issues
+is not used, and pull requests are the one GitHub integration.
 
 <a id="definitions"></a>
 ## 2. Definitions
 
 | Term | Definition |
 |---|---|
-| Tracker | A local CLI plus an optional localhost web UI over the files in `.tracker/` |
-| Item | One Markdown file, `.tracker/items/<id>.md`, or `.tracker/archive/<id>.md` once Done (a reopened item moves back to `items/`), in the repo the item belongs to. YAML front matter holds its fields and the body holds its description. Committed. The source of truth |
-| ID | `<prefix>-<word>`, such as `pl-bakor`: the repo's prefix and a random pronounceable five-letter word (§5) |
-| Plan | A `.tracker/` and the items it reads. Every repo's `.tracker/` is a plan of its own items; one that lists member repos spans theirs too (§4) |
-| Member repo | A repo a plan lists by path in its config, whose items the plan reads in place |
-| Default branch | The branch GitHub has configured for the repo: `main`, or `develop` under git-flow. It carries the tracker's current state |
-| Tool commit | A commit the tool makes straight to the default branch, `plan: start <id>` or `plan: stop <id>`. The only commits that do not arrive through a pull request (§7.4) |
-| Start | The tool commit that sets an item In Progress and records `started`. An item's actual start ([`C5`](requirements.md)) |
-| Finish | The first-parent commit on the default branch that makes an item Done. Its committer date is the item's actual finish |
-| Index | `.tracker/.cache/index.db`, SQLite, built from the item files and local git history. Derived, gitignored, rebuildable |
-| Time source | An external time tracker, read through one adapter per vendor. Optional ([ADR 0006](adr/0006-tracked-time.md)) |
-| Snapshot | The total tracked time for an item, written into its file by the write that sets it Done, with the tracker and tag it came from |
-| Lane | A contention domain. Items in a lane touch the same files, so they run one at a time. Single-valued |
-| Milestone | A `.tracker/milestones/<id>.md` file with an exit criterion. One in a plan that lists member repos can span them |
-| Baseline | A frozen start/finish pair, written once per milestone at its checkpoint and changed only by a deliberate rebaseline |
-| needs-triage | An item with no estimate or lane. A warning, not an error |
-| Freeze | Compute and write baselines for one milestone. Explicit, dry by default (§7.5) |
-| `ready.yml` | `.tracker/ready.yml`, the committed answer to `plan ready`: the next ready items, and the branches in flight ([`D6`](requirements.md)) |
+| Issue | A Redmine issue, `#<n>`, numbered across every project. The unit of planned work |
+| Project | One Redmine project per repo, under the parent project `plan` (§4.1) |
+| Version | A milestone: a Redmine version in `plan`, shared with its tree, so it can span repos |
+| Default branch | The branch GitHub has configured for the repo: `main`, or `develop` under git-flow. It carries the code |
+| Tool commit | None: the tool makes no commits of its own, and every commit reaches the default branch through a pull request (§7.4) |
+| Start | Setting an issue In Progress from Next up, which makes its branch and worktree and records its start date (§7.1) |
+| Round | One pass of review: the commit message, PR body, review replies and Done ticks in `.tmp/<n>/` that `pr` sends (§7.2) |
+| Finish | The squash merge of the issue's PR, then Done, which closes the issue (§7.3) |
+| Lane | A contention domain, the `Lane` custom field. Issues in a lane touch the same files, so they run one at a time. Single-valued |
+| Points | The estimate, the `Points` custom field: 1, 2, 3, 5, 8 or 13 |
+| Baseline | `Baseline start` and `Baseline finish`, a frozen pair of dates on an issue, changed only by the administrator (§7.5) |
+| Icebox | An open status for issues not planned yet. Next up and the lane board leave it out |
+| Next up | Redmine's public saved query in `plan`: open issues, Icebox left out, in `Ordinal` order (§7.6) |
 
 <a id="storage"></a>
 ## 3. Storage
 
-Committed item files are the source of truth and SQLite is a disposable index
-([ADR 0001](adr/0001-git-is-the-database.md)). `.tracker/` lives in the repo being planned
-([ADR 0002](adr/0002-tracker-per-repo.md)) and is found by walking up from the working directory
-([design 0001, *Discovery*](design/0001-phase-1.md#discovery)).
+Redmine's database is the source of truth. It is SQLite, `redmine.db` in the named volume
+`gh-plan-redmine_db`, with attachments in `gh-plan-redmine_files`
+([`redmine/README.md`](../redmine/README.md), *Where the data lives*). It holds every issue with its
+fields, relations and journal. The repos it plans hold no tracker files.
 
-```
-repo/.tracker/
-  items/pl-bakor.md     ← one file per item: YAML front matter, Markdown body. The source of truth. Committed
-  milestones/beta.md    ← one file per milestone: front matter, then the exit criterion. Committed
-  config.yml            ← prefix, points_per_week, hours_per_point, lanes, repos, time_source
-  focus.yml             ← the one fast-tracked feature, present only while a focus is set
-  ready.yml             ← the committed answer to plan ready, regenerated by every tool write
-  .cache/index.db       ← SQLite. Derived, gitignored, deletable, rebuilt in seconds
-  out/                  ← generated HTML. Gitignored
-  .gitignore            ← ignores .cache/ and out/. Written by plan init. Committed, so every tracker carries the rule
-```
+Each repo's `.git` is mounted read-only into the container, so Redmine reads its commits and links
+each one that names `#<n>` to that issue. The `Pull requests` field holds each PR of an issue as a
+Markdown link.
 
-Nothing authoritative lives in the database. SQLite lets commands and the web UI sort, filter and
-join without re-parsing every item file. Drop it at any time and `plan reindex` rebuilds it from
-the committed files and the local git history, without the network.
+A checkout's `.tmp/` is ignored by git. `.tmp/<n>/` holds a round's files for issue `<n>` until
+`pr` sends and deletes them, and the extension's Done refuses to remove a worktree that still holds
+any it hasn't sent.
 
-One file per item and one per milestone means concurrent edits to different items merge cleanly,
-and `git log -p` on one file is that item's history. Every committed tracker file is YAML, or
-Markdown with YAML front matter, in one canonical form that every tool write produces
-([ADR 0007](adr/0007-tracker-files-are-yaml.md)). The schemas are in
-[design 0001, *Data model*](design/0001-phase-1.md#data-model) and
-[design 0002, *Data model*](design/0002-tracked-time.md#data-model).
+The two keys live only in the macOS Keychain: the REST API key in `redmine-gh-plan`, and the
+repository web service's key in `redmine-sys-api` ([`G3`](requirements.md)). A scheduled export of
+every issue and its journal, which [`G1`](requirements.md) needs, and a backup of the database are
+not built yet.
 
 <a id="plans"></a>
 ## 4. Plans
 
 <a id="members"></a>
-### 4.1 Member repos
+### 4.1 Projects and versions
 
-Every repo's `.tracker/` is a plan, and a repo is planned on its own with no other repo present.
-A `.tracker/` whose config lists member repos by path also spans them: it reads their item files in
-place, keeps its own items like any repo, and holds the milestones that span repos
-([`A1`, `A2`](requirements.md), [ADR 0008](adr/0008-file-native-items.md)). Sibling repos find
-the plan through the root pointer (#77).
-
-A milestone named on an item is looked up in the item's own repo first, then in the plan that lists
-the repo as a member. A repo can keep milestones of its own beside that plan's. One with the same ID
-as a plan milestone hides the plan's for that repo's items, and `plan validate` reports it.
-
-A member missing on disk is reported, and the plan is answered without it. Prefixes are unique
-within a plan, and a plan whose members share one fails `plan validate`. A change that touches
-several repos, such as moving items into a shared milestone, is one commit per repo; nothing makes
-them atomic.
+One Redmine holds the plan. The private parent project `plan` has one sub-project per repo,
+`gh-plan` and `tempotag`, each with the issue tracking, repository, Gantt, calendar and lane board
+modules, and each repo is registered as its project's Git repository. Milestones are versions in
+`plan`, shared with its tree, so one version spans every repo ([`A1`, `A2`](requirements.md)).
+`redmine/setup.rb` makes all of this, and running it again changes nothing that already matches.
 
 <a id="dependencies"></a>
 ### 4.2 Dependencies and parents
 
-Dependencies are `blocked_by` in the item file, a list of `"<id> - <title>"` strings, so the data
-behind `plan why` reads without a tool ([`E1`, `G7`](requirements.md)). The ID is authoritative,
-and the tool rewrites the title part on every write. A dependency can name an item in another repo
-of the same plan. The tool checks every write for a cycle across the whole plan
-([`E2`](requirements.md)). A repo validated on its own reports a reference to another repo as
-unresolved, not as an error.
+A dependency is Redmine's `blocks` relation. Cross-project relations are on, so an issue can be
+blocked by one in another repo's project, and Redmine refuses a relation that would close a cycle
+([`E1`, `E2`](requirements.md)). Start warns when an open issue blocks the one being started.
 
-A parent is `parent: <id>` on the child ([`A4`](requirements.md)). A child is an item like any
-other, with its own estimate, lane, baseline and dependencies, and a parent with children carries
-no estimate, so the roll-up the index computes does not double-count ([`A5`](requirements.md)).
-An item is worked only in its own repo, because its branch and its start commit live there. When
-an item also needs a change in another repo, that change is a child item in the other repo, with
-`parent` naming the first item, and it is started and finished there.
+A child is a sub-task ([`A4`](requirements.md)). The lane board totals the points of leaf issues
+only, so a parent never counts its sub-tasks twice ([`A5`](requirements.md)). An issue is worked
+in its own project's repo, so a change it needs in another repo is a sub-task in that repo's
+project.
 
 <a id="identity"></a>
 ## 5. Identity
 
-An ID is the repo's prefix and a random word, such as `pl-bakor`. The word alternates consonant and
-vowel, five letters long, from 16 consonants and 5 vowels: about 102,000 words per repo, less a
-blocklist of words that read badly. The prefix is set in the repo's config and names the repo, so
-an ID means the same item in any plan that includes it. The ID is the file's name, and nothing
-inside the file repeats it ([design 0001, *Identity*](design/0001-phase-1.md#identity)).
+An issue is `#<n>`, numbered by Redmine across every project. Its branch is `<type>/<n>-<slug>`,
+with `feat/`, `fix/` or `chore/`, and its worktree is `<repo>.worktrees/<n>` beside the main
+checkout. A commit message names the issue with `refs #<n>`, which links the commit, or
+`fixes #<n>`, which also closes the issue when Redmine fetches the commit. GitHub also links `#<n>`
+in a commit message to the repo's own issue or pull request `<n>`, so a reference can point at
+both 🔍.
 
-The tool picks a word no existing file uses, so two worktrees creating items at once are unlikely to
-collide ([`D5`](requirements.md)) and no counter needs merging. When two branches do pick the same
-word, the second merge conflicts on the new file and `plan validate` reports a duplicate ID.
-
-An ID is rarely typed in full. Inside its own repo the prefix may be left off. Any unique prefix of
-the word is enough (`bak`), and so is a unique word from the title. Commands run on a branch named
-for an item take its ID from the branch, and shell completion offers IDs with their titles.
+An issue imported from a repo's former `.tracker/` keeps its old ID in the searchable `Old ID`
+field.
 
 <a id="components"></a>
 ## 6. Components
 
 <a id="front-ends"></a>
-### 6.1 Core and front ends
+### 6.1 Redmine and its clients
 
-One core library has two front ends: the CLI and a web UI. Neither shells out to the other. The web
-UI is a server bound to localhost that renders the same templates as `plan render`
-([ADR 0005](adr/0005-generated-html-charts.md)); its stack is not chosen.
+Redmine serves the web UI, the REST API and the repository web service. Everything else is a
+client of one of them:
 
-Reads are implicit and writes are deliberate. Every query reads the files and local git, so it works
-offline. Freeze is dry by default, and a start or stop names its item
-([design 0001, *Reads and writes*](design/0001-phase-1.md#reads-and-writes),
-[*Commands*](design/0001-phase-1.md#commands)).
+- **The extension** shows Next up in a panel, and holds the Start, Open, Ship, Go and Done
+  buttons ([`vscode/README.md`](../vscode/README.md)).
+- **`pr`** commits, pushes, opens or updates the PR, posts review replies, applies Done ticks to
+  the issue's description, and cleans up after a merge. It and its Python scripts live in
+  `~/.claude/skills/gh-issues/scripts/`, outside this repo.
+- **The setup scripts**, `setup.rb`, `import.rb` and `backfill.rb`, run inside the container with
+  `rails runner`, on the database directly, so they need no API key.
+- **The lane board plugin** adds the Lanes tab. It only reads.
+- **`redmine-get`**, in `~/.local/bin/`, sends one GET with the Keychain key, so an agent can read
+  issues without seeing the key.
 
 <a id="process-boundary"></a>
 ### 6.2 Process boundary
 
-`gh.py`, `git.py` and the adapters in `timekeeping/` are the only Python modules, and
-`vscode/redmine.js` and `vscode/start.js` the only extension modules, that spawn a process or open
-a network connection. Everything else is pure and testable without a network or a repo
-([ADR 0004](adr/0004-python-no-docker.md), [ADR 0006](adr/0006-tracked-time.md),
-[design 0001, *Layout*](design/0001-phase-1.md#layout)).
+`vscode/redmine.js` and `vscode/start.js` are the only extension modules that spawn a process or
+open a network connection, apart from Go's `pr`, which `vscode/extension.js` runs as a VS Code
+task in a terminal of its own. The rest of the extension is plain functions, testable without a
+network or a repo.
 
-- `git.py` makes every call to git: reading history for finish dates, building and pushing tool
-  commits, and listing the branches on `origin` for `ready.yml`.
-- `gh.py` reads a repo's pull requests through the `gh` CLI, only to add each PR's number and link
-  to reports ([`I5`](requirements.md)). It never writes. `gh` is already authenticated, so the tool
-  holds no token, as [`G3`](requirements.md) requires. A library such as PyGithub, Octokit or httpx
-  would need a token.
-- Each `timekeeping/` adapter reads one vendor's time tracker behind the `TimeSource` interface.
-  It reads and never writes
-  ([design 0002, *The TimeSource interface*](design/0002-tracked-time.md#interface)).
-- `vscode/redmine.js` makes every call to Redmine: through the REST API it reads the panel's
-  issues and writes Start's and Done's status changes and journal notes, and through the
-  repository web service it has Redmine fetch a project's commits after a merge. It reads both
-  keys, the API key and the web service's, from the macOS Keychain on each call, so no repo holds
-  either ([`G3`](requirements.md)).
+- `vscode/redmine.js` makes every call to Redmine. Through the REST API it reads the panel's
+  issues and writes Start's and Done's status changes, Ship's PR link and their journal notes.
+  Through the repository web service it has Redmine fetch a project's commits after a merge. It
+  reads both keys from the Keychain on each call, so no repo holds either ([`G3`](requirements.md)).
 - `vscode/start.js` runs git, `gh` and `uv` for Start, Ship and Done: it fetches, adds and removes
   worktrees, syncs them, reads PRs, and pulls and deletes merged branches.
 
-The tool finds the default branch from `refs/remotes/origin/HEAD`, so it needs no GitHub read for
-that either.
+`gh` is already authenticated, so nothing holds a GitHub token ([`G3`](requirements.md)); a library
+such as Octokit would need one. Outside the repo, `pr` writes to GitHub through `gh` and to Redmine
+through the REST API, with the same Keychain keys.
 
 <a id="platform"></a>
 ### 6.3 Platform
 
 | Layer | Choice | Why |
 |---|---|---|
-| Language | Python 3.14+ (the floor is the one version CI tests) | [ADR 0004](adr/0004-python-no-docker.md) |
-| Item state and history | subprocess to `git` | [ADR 0008](adr/0008-file-native-items.md) |
-| Pull request links | subprocess to `gh`, read-only | requirement [`G3`](requirements.md) |
-| Time tracker access | one adapter per vendor behind `TimeSource` | [ADR 0006](adr/0006-tracked-time.md) |
-| Tracker files | YAML 1.2 via ruamel.yaml, and Markdown with YAML front matter | [ADR 0007](adr/0007-tracker-files-are-yaml.md) |
-| Index | SQLite via stdlib `sqlite3` | [ADR 0001](adr/0001-git-is-the-database.md) |
-| Validation | Pydantic v2 | [ADR 0004](adr/0004-python-no-docker.md) |
-| CLI | Typer | [ADR 0004](adr/0004-python-no-docker.md) |
-| Charts | generated HTML: CSS Grid for bars and lanes, inline SVG for dependency arrows | [ADR 0005](adr/0005-generated-html-charts.md) |
-| Web UI | a localhost server rendering the chart templates; stack not chosen | [ADR 0005](adr/0005-generated-html-charts.md) |
-| Packaging | `uv run`, no Docker on the run path; an optional `Dockerfile` for CI | [ADR 0004](adr/0004-python-no-docker.md) |
+| Tracker | Redmine 7.0, pinned to an exact tag, in Docker on localhost | [ADR 0011](adr/0011-redmine-is-the-tracker.md) |
+| Database | SQLite, in a named volume | [ADR 0011](adr/0011-redmine-is-the-tracker.md) |
+| Theme | Opale, pinned by URL | [`redmine/README.md`](../redmine/README.md) |
+| Plugin and setup | Ruby, on Redmine's plugin API and `rails runner` | [ADR 0011](adr/0011-redmine-is-the-tracker.md) |
+| Editor integration | A VS Code extension in JavaScript, tested with `node --test` | [`vscode/README.md`](../vscode/README.md) |
+| Pull requests | Subprocess to `gh` | Requirement [`G3`](requirements.md) |
+| Keys | The macOS Keychain | Requirement [`G3`](requirements.md) |
 
 <a id="operations"></a>
 ## 7. Operations
 
 ```
-   item branch  feat/pl-bakor-slug                        default branch (main)
-   ───────────────────────────────                        ─────────────────────
-                                    (1) START, tool commit
-   plan start / post-checkout ───────────────────────────▶ plan: start pl-bakor
-                                                            status: In Progress · started
-   branch is created from,  ◀──────────────────────────────┘
-   or fast-forwarded onto, the start
-
-   work · status: Done · actual_time   (2) FINISH, the squash merge of the PR
-   ───────────────────────────────────────────────────────▶ the first-parent commit
-                                                            that makes it Done
-
-                                    (3) STOP, tool commit, abandons a start
-   plan stop ─────────────────────────────────────────────▶ plan: stop pl-bakor
-                                                            status: Todo · started kept
+   Next up                       worktree <repo>.worktrees/<n>             Redmine #<n>
+   ───────                       ─────────────────────────────             ────────────
+   (1) START ──────────────────▶ branch <type>/<n>-<slug>, off the base ─▶ In Progress,
+                                                                            start date, note
+                                 work · .tmp/<n>/commit.txt, pr-body.md
+   (2) SHIP, then GO ──────────▶ pr <n>: commit, push, PR ───────────────▶ Pull requests
+                                 review rounds: replies/, issue.md ──────▶ Done ticks
+   (3) squash merge, title ends (fixes #<n>)
+   (4) DONE ───────────────────▶ worktree and branch removed, base up ───▶ commits fetched,
+                                                                            Closed, note
 ```
 
-The default branch carries the tracker's current state: whatever it says about an item is the
-item's status. The tool commits to it directly only to start or stop an item. Every other change to
-the tracker, including the finish, reaches it through a pull request, like code
-([ADR 0008](adr/0008-file-native-items.md)).
+The default branch carries the code, and every change reaches it through a pull request. An
+issue's status lives in Redmine, and only Start, Done and a fetched `fixes #<n>` commit change it.
+Every write to GitHub or Redmine happens when Peter presses a button or runs `pr`
+([ADR 0011, *Amendment: the flow*](adr/0011-redmine-is-the-tracker.md#flow)).
 
 <a id="start"></a>
 ### 7.1 Start
 
-Two signals start an item: a skill calls `plan start <id>`, or a `post-checkout` hook sees a branch
-name carrying an ID. The branch is named for the item, `<type>/<id>-<slug>`, in the item's own repo, and `<type>` follows the item's `type`: `feat`, `fix` for a bug, or `chore`.
-The tool sets `status: In Progress` and `started` (UTC, to the second), regenerates `ready.yml`,
-commits both to the default branch as `plan: start <id>`, and pushes. Offline, the commit is kept
-locally and pushed by the next `plan sync` or `git push`.
+Start shows on a New issue's row in Next up. It warns when an open issue blocks this one, then
+makes the branch `<type>/<n>-<slug>` and its worktree off the latest `origin/develop`, or
+`origin/main`, and sets the issue In Progress with a journal note. It writes the start date only
+when the issue has none, so an issue's actual start is its first ([`C5`](requirements.md)). It
+opens the worktree in a new window with Claude Code beside it.
 
-The item's branch contains its start. `plan start` commits the start first and creates the branch
-from it. The hook finds the branch already made, so it fast-forwards the branch onto the start if
-the branch has no commits of its own yet. Otherwise it writes the same change into the branch's
-working tree, and `plan validate` reports the branch as not containing its start. Because the
-branch contains its start, its own change from In Progress to Done merges without a conflict.
+If the issue's branch already exists here or on `origin`, Start reuses it on its own base. On an
+In Progress row the button is Open, which reopens the worktree, making it the same way if this
+machine has none. Start refuses an issue whose status has moved on from New or In Progress since
+the panel loaded. A lock file per issue keeps two windows from starting it at once
+([failure modes, *Start*](failure-modes.md)).
 
-`started` is written once. A second start, from another branch or after a stop, finds it set on the
-default branch and leaves it, so an item's actual start is its first start.
+<a id="ship"></a>
+### 7.2 Ship and Go
 
-<a id="stop"></a>
-### 7.2 Stop
+A round is written into `.tmp/<n>/`: `commit.txt` when the tree has changes, `pr-body.md`, a reply
+to each review thread in `replies/<comment id>.md`, and `issue.md`, the issue's description with
+Done boxes ticked. Once the PR body and something beside it are written, the extension opens them
+all for review.
 
-`plan stop <id>` abandons a start. It commits the item back to Todo on the default branch as
-`plan: stop <id>` and leaves `started` in the file as the record of the false start. A false start
-is shared as soon as it is pushed, so stopping it is a commit too.
+Ship, in the title bar of any of them, saves them and refuses by name a missing PR body, a missing
+commit message while the tree has changes, or a branch that isn't the issue's. It then opens the
+working tree's changes. Only Go runs anything: it saves and checks again, then runs `pr <n>` in a
+terminal in the worktree.
+
+`pr` commits with `commit.txt`, pushes, and opens the PR or replaces its body. It then posts each
+reply to its thread and resolves the thread, and applies the box changes in `issue.md` to the
+issue's description. It refuses any other difference, so an edit made in Redmine since is kept.
+Each file is deleted once sent, so a second `pr` sends nothing twice. After the first `pr`, the
+issue's `Pull requests` field links the PR, with a journal note.
 
 <a id="finish"></a>
 ### 7.3 Finish
 
-The finish is the merge. The branch sets `status: Done` before it merges, and the change reaches the
-default branch in the same squash commit as the work. The item's actual finish is the committer date
-of the first-parent commit on the default branch that made it Done, read from local history. An item
-worked across several branches is set Done by the last of them.
+The finish is the squash merge. GitHub makes the PR's title the squash commit's subject, so a PR
+that finishes issue `<n>` ends its title `(fixes #<n>)`, and one that does part of it
+`(refs #<n>)`. Redmine closes the issue when it fetches that commit.
 
-The write that sets `status: Done` also writes the `actual_time` snapshot when a time source is
-configured. A time source that fails does not block it: the item still reaches Done, without a
-snapshot, and `validate` warns
-([design 0002, *When the snapshot is taken*](design/0002-tracked-time.md#lifecycle)).
+Done shows beside Open on an In Progress row that links a PR. Once the PR has merged, it removes
+the issue's worktree, brings the main checkout's base up to the merge, deletes the branch, has
+Redmine fetch the commits, and closes the issue with a note linking the PR and its merge commit.
+It checks everything before it changes anything, and Done again finishes what a stopped one left
+([failure modes, *Done*](failure-modes.md)).
 
 <a id="tool-commits"></a>
 ### 7.4 Tool commits
 
-A tool commit touches only one item's `status` and `started`, plus `ready.yml`. The tool builds it
-on the tip of the default branch through a temporary index, without checking that branch out, so
-nothing else in the working tree can get into it and the working tree does not change. Its message
-is fixed, so `git log --grep '^plan:'` finds every one.
-
-Two starts can race. The tool moves the local default branch only by compare-and-swap
-(`git update-ref <ref> <new> <old>`), so two worktrees on one machine cannot overwrite each other's
-start. When a push is rejected because the default branch moved, the tool fetches and re-reads the
-item on the new tip. If the item is already started there, it does nothing. Otherwise it rebuilds
-its commit on that tip, regenerating `ready.yml`, and pushes again.
-
-Branch protection on the default branch must let the owner push. A pull request that has to be up
-to date with the default branch before merging falls one commit behind with every tool commit.
+The tool makes no commits of its own. An issue's status lives in Redmine
+([ADR 0011](adr/0011-redmine-is-the-tracker.md)): the extension's Start sets it In Progress, Done
+closes it after the merge, and a `fixes #<n>` commit closes it when Redmine fetches the commit.
+Nothing reaches the default branch except through a pull request.
 
 <a id="freeze"></a>
-### 7.5 Freeze
+### 7.5 Baselines
 
-Freeze computes start and finish dates for one milestone and writes them into its items as
-baselines. It is dry by default. A baseline is written once and never silently recomputed;
-`--rebaseline` replaces it deliberately, with a reason, and git records the change
-([`C3`, `C4`](requirements.md)). `plan validate` runs before freeze, and an unestimated item fails
-it, because it would corrupt the baseline. Freeze writes on a branch, and its baselines reach the
-default branch through a pull request.
+`Baseline start` and `Baseline finish` are date fields on each issue. `setup.rb` makes them
+read-only in workflow for every role but `Baseline editor`, a role with no members, so only the
+administrator, who takes every role in workflow checks, can change them. The journal keeps each
+change with its note ([`C3`, `C4`](requirements.md)). The administrator sets them by hand; a
+script that computes a milestone's baselines over the REST API is not built yet.
 
 <a id="ready-file"></a>
-### 7.6 `ready.yml`
+### 7.6 Next up
 
-`ready.yml` lets a viewer read what is ready on GitHub or in an editor with no tool installed
-([`D6`](requirements.md)). It lists at most 20 items `plan ready` reports, with what `ready`
-reports for each, and when it was generated. A second section lists the items in flight: each
-branch on `origin` that names an item, with the item's ID, title, `started` and the date of the
-branch's last commit. Only pushed branches are listed, so the file is the same whichever machine
-generates it.
-
-Every tool write regenerates it, tool commits included. Its as-of commit is the last commit that
-wrote it; the file cannot name the commit that contains it. Two branches that both regenerate it
-conflict on merge, and the second regenerates it again.
+Next up is a public saved query in `plan`: open issues, Icebox left out, in `Ordinal` order. It
+answers "what's next" in Redmine's web UI, in the extension's panel and over the REST API
+([`D6`](requirements.md)). The lane board marks an issue ready when it is open and every issue
+that blocks it is closed.
 
 <a id="failure-modes"></a>
 ## 8. Failure modes
 
+Each command that writes has its own table in [`failure-modes.md`](failure-modes.md). The events
+they share:
+
 | Event | Effect | Handling |
 |---|---|---|
-| Offline at start or stop | The tool commit cannot be pushed | It is kept on the local default branch and pushed by the next `plan sync` or `git push`. Every query still works |
-| Push rejected because the default branch moved | The start is not shared | Fetch, re-read the item on the new tip, and rebuild and push, or do nothing if it is already started there (§7.4) |
-| Two worktrees start at once on one machine | Both try to move the local default branch | Compare-and-swap lets one through; the other re-reads and rebuilds |
-| Branch made with commits before its start | The branch does not contain its start | The hook writes the start into the working tree; `plan validate` reports it, and the branch's Done conflicts on the `status` line at merge |
-| False start pushed | The default branch shows the item In Progress | `plan stop` commits it back to Todo; `started` stays |
-| Second start for an item already started | `started` is already set | Left as it is. `plan validate` reports a `started` later than the first tracked time for the item |
-| Two branches create the same ID | The second merge conflicts on the new file | `plan validate` reports the duplicate; one file is renamed by hand |
-| Member repo missing on disk | Its items are not read | Reported; the plan is answered without it |
-| Cross-repo `blocked_by` validated outside its plan | The other item cannot be read | Reported as unresolved, not as an error |
-| Time source unreachable when an item is set Done | No snapshot | The item still reaches Done; `validate` warns until `plan time <id> --apply` |
-| Two sessions edit different items | Two different files | Git merges cleanly, because there is one file per item |
-| Two sessions edit the same item | Ordinary git conflict | A short YAML conflict a human can read, because each key is on its own line |
-| Two branches regenerate `ready.yml` | Merge conflict on `ready.yml` | The second branch regenerates it |
-| A change across several repos half-lands | Some repos have the commit and some do not | Nothing makes it atomic; `plan validate` from the plan reports what no longer resolves |
+| Redmine is down, or the Mac is off | Next up can't load, and nothing can start or finish | Start and Done refuse before they change anything |
+| No API key in the Keychain | No call to Redmine can be made | Refused, naming the Keychain item to store the key in |
+| Redmine answers 204 but drops a status it won't allow | The status is unchanged, though the note is saved | The write reads the issue back, refuses, and names the likely rule ([failure modes](failure-modes.md#redmine-drops-a-status-it-wont-allow)) |
+| A `fixes #<n>` commit is merged | Redmine sees it only at its next fetch | Done has the web service fetch; without its key, the Repository tab does |
+| Two windows start or finish one issue | Both would change the same worktree | A lock file per issue refuses the second |
+| The issue's description is edited after `issue.md` is written | The ticks would overwrite the edit | `checklist.py` refuses any difference beyond box state, and keeps the file |
+| A round's files are still unsent at Done | Removing the worktree would delete them | Done refuses before it changes anything, and names them |
+| `#<n>` in a commit message | GitHub links it to the repo's own issue or PR `<n>` | None; Redmine's link is the one that counts 🔍 |
 
 <a id="views"></a>
 ## 9. Views
 
-The terminal views are `plan next`, `ready`, `why` and `board`, each with `--json`
-([design 0001, *next, ready, why*](design/0001-phase-1.md#next-ready-why)).
+Redmine's own pages are the views:
 
-Every chart, graph and table is also generated HTML, with no Mermaid, no JS charting
-library and no build step ([ADR 0005](adr/0005-generated-html-charts.md)):
-
-| Artifact | Technique |
+| View | Shows |
 |---|---|
-| Lane board | CSS Grid: lanes are rows, statuses are columns |
-| Timeline bars | CSS Grid: a bar is a column span; duration is `grid-column: start / span n` |
-| Dependency arrows | Inline SVG over the grid |
-| Tables, roll-ups, ready queue | plain `<table>`, server-rendered |
-| Colour and status | CSS custom properties, with a shape or label as well as colour so nothing depends on hue alone |
+| Issue list | Issues with their fields, the `Pull requests` column among the defaults |
+| Next up | The open issues in order, in Redmine and in the extension's panel (§7.6) |
+| Lanes tab | The lane board: lanes as rows and statuses as columns, each lane's open points, and a ready mark on each open issue nothing open blocks |
+| Gantt | Each project's issues and versions over time |
+| An issue's page | Its description, relations, sub-tasks, linked commits and journal |
 
-`plan render` writes the HTML to `.tracker/out/`, which is gitignored, because GitHub shows a
-committed HTML file as source. `plan serve` renders the same templates from a localhost server.
-Until the web UI exists there is no web page per item; GitHub renders the Markdown file, front
-matter as a table above the body, which covers reading.
+The Lanes tab is at `/projects/<identifier>/lanes`, and has no Icebox column
+([lane board](../redmine/plugins/lane_board/README.md)).
 
 <a id="invariants"></a>
 ## 10. Invariants
 
-1. Git is the database. SQLite is a disposable index that `plan reindex` rebuilds from the committed
-   files and local git history ([ADR 0001](adr/0001-git-is-the-database.md)).
-2. The default branch carries the tracker's current state. What it says about an item is the item's
-   status. Every change reaches it through a pull request, except the tool's `plan:` commits
-   (§7, [ADR 0008](adr/0008-file-native-items.md)).
-3. A tool commit touches only one item's `status` and `started`, plus `ready.yml`, and its message
-   is `plan: start <id>` or `plan: stop <id>` (§7.4).
-4. `started` is written once and never changed or removed. `plan stop` sets the item back to Todo
-   and leaves `started` as the record of the false start, and a later start keeps it (§7.1, §7.2).
+1. Redmine is the tracker. Its database holds every issue, with its status and history, outside
+   the repos it plans, and nothing tracker-related is committed in them
+   ([ADR 0011](adr/0011-redmine-is-the-tracker.md)).
+2. The default branch carries the code, and every change reaches it through a pull request. An
+   issue's status lives in Redmine: the extension's Start and Done set it, and a `fixes #<n>`
+   commit closes the issue when Redmine fetches it (§7.4).
+3. Retired with the tool's `plan:` commits ([ADR 0011](adr/0011-redmine-is-the-tracker.md)), so the
+   invariants after it keep their numbers.
+4. An issue's start date is written once: Start sets it only when the issue has none (§7.1).
 5. Retired, so the invariants after it keep their numbers. Invariant 6 bounds remote writes,
    which include Redmine's REST API ([ADR 0011](adr/0011-redmine-is-the-tracker.md)).
-6. `gh.py`, `git.py` and the `timekeeping/` adapters are the only Python modules, and
-   `vscode/redmine.js` and `vscode/start.js` the only extension modules, that spawn a process or
-   open a network connection. Every call to Redmine goes through `redmine.js` (§6.2).
-7. Estimates are `Literal[1, 2, 3, 5]`. 8 and 13 are refusal codes meaning "split this" and cannot
-   be represented ([`B3`](requirements.md)).
-8. An item has at most one lane ([`D4`](requirements.md)).
-9. A parent with children has no estimate ([`A5`](requirements.md)).
-10. A baseline is written only by freeze and never silently recomputed ([`C3`](requirements.md)).
-11. Tracked time is read from the time tracker and never written to it. The write that sets an item
-    Done writes the `actual_time` snapshot (§7.3, [ADR 0006](adr/0006-tracked-time.md)).
+6. `vscode/redmine.js` and `vscode/start.js` are the only extension modules that spawn a process
+   or open a network connection, apart from the VS Code task in `vscode/extension.js` that runs
+   Go's `pr`. Every call the extension makes to Redmine goes through `redmine.js` (§6.2).
+7. Points are 1, 2, 3, 5, 8 or 13. An issue above 5 points is split before it is scheduled, as a
+   practice: nothing refuses the save ([`B3`](requirements.md)).
+8. An issue has at most one lane: `Lane` is a single-valued list ([`D4`](requirements.md)).
+9. A parent's points never count twice: the lane board totals leaf issues only
+   ([`A5`](requirements.md)).
+10. Only the administrator can change a baseline, and the journal keeps each change (§7.5,
+    [`C3`](requirements.md)).
+11. Retired while tracked time is paused ([ADR 0006](adr/0006-tracked-time.md)), so the invariants
+    keep their numbers.

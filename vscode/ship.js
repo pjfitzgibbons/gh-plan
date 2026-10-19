@@ -4,20 +4,64 @@ const fs = require("fs");
 const path = require("path");
 const { run, git } = require("./start");
 
-// The issue and its checkout from a review file's path, <root>/.tmp/<n>/{commit.txt,pr-body.md};
-// null for any other file.
+// A round's files for pr, in .tmp/<n>/: beside the commit message and PR body, the review replies
+// pr posts, one <comment id>.md each, and issue.md, the issue's description with the boxes pr
+// ticks. A reply's name is digits, as pr_threads.py reads it. package.json's Ship and Go match the
+// same names.
+const ROUND = String.raw`(?:commit\.txt|pr-body\.md|issue\.md|replies\/[0-9]+\.md)`;
+const REVIEW_FILE = new RegExp(String.raw`^(.+)\/\.tmp\/([1-9][0-9]*)\/${ROUND}$`);
+const ROUND_FILE = new RegExp(`^${ROUND}$`);
+
+// The issue and its checkout from a round file's path, <root>/.tmp/<n>/<round file>; null for any
+// other file.
 function reviewFile(file) {
-  const match = /^(.+)\/\.tmp\/([1-9][0-9]*)\/(?:commit\.txt|pr-body\.md)$/.exec(file);
+  const match = REVIEW_FILE.exec(file);
   return match ? { root: match[1], id: Number(match[2]) } : null;
 }
 
-// Whether a tab's input is one Ship left open for issue id in root: a review file, a diff of a file
+function isRoundFile(file, dir) {
+  return ROUND_FILE.test(path.relative(dir, file));
+}
+
+const isFile = (file) => Boolean(fs.statSync(file, { throwIfNoEntry: false })?.isFile());
+
+// What pr has yet to send from .tmp/<n>/ (dir): issue.md, and every file in replies/ but dotfiles
+// such as .DS_Store, since pr deletes each reply it sends and refuses or skips a misnamed one. A
+// folder in replies/ is never sent, so it's left alone. Replies are in comment id order.
+function unsent(dir) {
+  const replies = path.join(dir, "replies");
+  const names = fs.statSync(replies, { throwIfNoEntry: false })?.isDirectory()
+    ? fs.readdirSync(replies).filter((name) => !name.startsWith("."))
+    : [];
+  names.sort((a, b) => (parseInt(a, 10) || Infinity) - (parseInt(b, 10) || Infinity) || a.localeCompare(b));
+  return [path.join(dir, "issue.md"), ...names.map((name) => path.join(replies, name))].filter(isFile);
+}
+
+// What pr has yet to send from every issue's .tmp/<n>/ in root, as paths relative to root.
+function unsentIn(root) {
+  const tmp = path.join(root, ".tmp");
+  const ids = fs.statSync(tmp, { throwIfNoEntry: false })?.isDirectory()
+    ? fs.readdirSync(tmp).filter((name) => /^[1-9][0-9]*$/.test(name))
+    : [];
+  return ids.flatMap((id) => unsent(path.join(tmp, id))).map((file) => path.relative(root, file));
+}
+
+// The round's files that exist, in the order they open, the PR body last so it's in front; none
+// until the PR body and something else for pr are both written.
+function roundFiles(dir) {
+  const at = (name) => path.join(dir, name);
+  if (!isFile(at("pr-body.md"))) return [];
+  const files = [at("commit.txt"), ...unsent(dir)].filter((file) => isRoundFile(file, dir) && isFile(file));
+  return files.length ? [...files, at("pr-body.md")] : [];
+}
+
+// Whether a tab's input is one Ship left open for issue id in root: a round file, a diff of a file
 // in root, or the Changes view of root. Once pr commits, the Changes view may list nothing, so an
 // empty one counts too.
 function shipTab(input, root, id) {
   const inRoot = (uri) => Boolean(uri?.fsPath) && uri.fsPath.startsWith(`${root}/`);
   if (!input) return false;
-  if (input.uri) return ["commit.txt", "pr-body.md"].some((name) => input.uri.fsPath === path.join(root, ".tmp", String(id), name));
+  if (input.uri) return isRoundFile(input.uri.fsPath, path.join(root, ".tmp", String(id)));
   if (input.modified) return inRoot(input.modified);
   if (Array.isArray(input.textDiffs)) return input.textDiffs.length === 0 || input.textDiffs.some((d) => inRoot(d.modified));
   return false;
@@ -33,6 +77,20 @@ async function check(root, id) {
   if (!fs.existsSync(path.join(root, ".tmp", String(id), "pr-body.md"))) problems.push(`.tmp/${id}/pr-body.md is missing`);
   if (dirty && !fs.existsSync(path.join(root, ".tmp", String(id), "commit.txt"))) {
     problems.push(`the tree has changes and .tmp/${id}/commit.txt is missing`);
+  }
+  // pr_threads.py would refuse these only after pr has pushed, or post two replies to one thread.
+  const dir = path.join(root, ".tmp", String(id));
+  const threads = new Map();
+  for (const file of unsent(dir).filter((file) => file !== path.join(dir, "issue.md"))) {
+    const rel = path.relative(dir, file);
+    if (!isRoundFile(file, dir)) {
+      problems.push(`.tmp/${id}/${rel} isn't a reply pr can send; name it replies/<comment id>.md`);
+      continue;
+    }
+    if (!fs.readFileSync(file, "utf8").trim()) problems.push(`.tmp/${id}/${rel} is empty`);
+    const thread = parseInt(path.basename(rel), 10);
+    if (threads.has(thread)) problems.push(`.tmp/${id}/${threads.get(thread)} and ${rel} both reply to comment ${thread}`);
+    else threads.set(thread, rel);
   }
   return { branch, dirty, problems };
 }
@@ -63,4 +121,4 @@ async function linkPullRequest({ redmine, id, pr }) {
   return true;
 }
 
-module.exports = { reviewFile, shipTab, check, pullRequest, prLink, linkPullRequest };
+module.exports = { reviewFile, isRoundFile, unsent, unsentIn, roundFiles, shipTab, check, pullRequest, prLink, linkPullRequest };

@@ -625,3 +625,32 @@ test("the commit fetch posts the web service's key in the body, and names a refu
   fs.writeFileSync(path.join(bin, "security"), "#!/bin/sh\necho wrong\n", { mode: 0o755 });
   await assert.rejects(new Redmine({ url, sysService: "test-sys" }).fetchCommits("gh-plan"), /refused the key in Keychain item "test-sys" \(403\); run setup.rb with SYS_API_KEY/);
 });
+
+test("replies or checklist ticks pr hasn't sent are refused before anything changes, not deleted with the worktree", async (t) => {
+  const s = sandbox(t);
+  const round = path.join(s.dir, ".tmp", String(ID));
+  fs.writeFileSync(path.join(round, "issue.md"), "- [x] Done\n");
+  fs.mkdirSync(path.join(round, "replies"));
+  fs.writeFileSync(path.join(round, "replies", "11.md"), "Fixed.\n");
+  fs.writeFileSync(path.join(round, "replies", "notes.md"), "Misnamed: pr refuses it, so it's still unsent.\n");
+  fs.writeFileSync(path.join(round, "replies", "12.txt"), "Misnamed: pr skips it, so it's still unsent.\n");
+  // A dotfile, such as Finder's, goes with the worktree.
+  fs.writeFileSync(path.join(round, "replies", ".DS_Store"), "");
+  // Another issue's round in the same worktree counts too.
+  const other = path.join(s.dir, ".tmp", "85");
+  fs.mkdirSync(other);
+  fs.writeFileSync(path.join(other, "issue.md"), "- [x] Done\n");
+  await assert.rejects(done(s), (e) => e.message.includes("replies or checklist ticks pr hasn't sent") &&
+    e.message.includes("python3 ~/.claude/skills/gh-issues/scripts/checklist.py") &&
+    e.message.endsWith(`\n.tmp/${ID}/issue.md\n.tmp/${ID}/replies/11.md\n.tmp/${ID}/replies/12.txt\n.tmp/${ID}/replies/notes.md\n.tmp/85/issue.md`));
+  assert.ok(fs.existsSync(path.join(round, "issue.md")));
+  assert.notEqual(s.git(s.checkout, "rev-parse", "main"), s.pr.mergeCommit.oid);
+  // Once pr has sent them, it deletes them, and Done goes ahead.
+  fs.rmSync(path.join(round, "issue.md"));
+  fs.rmSync(path.join(round, "replies", "11.md"));
+  fs.rmSync(path.join(round, "replies", "notes.md"));
+  fs.rmSync(path.join(round, "replies", "12.txt"));
+  fs.rmSync(path.join(other, "issue.md"));
+  await done(s);
+  assertDone(s);
+});

@@ -26,11 +26,11 @@
     "menus": {
       "view/title": [{ "command": "plan.refresh", "when": "view == plan.nextUp", "group": "navigation" }],
       "editor/title": [
-        { "command": "plan.ship", "when": "resourcePath =~ /\\/\\.tmp\\/[1-9][0-9]*\\/(commit\\.txt|pr-body\\.md)$/", "group": "navigation" },
-        { "command": "plan.go", "when": "plan.shipArmed && (activeEditor == multiDiffEditor || resourcePath =~ /\\/\\.tmp\\/[1-9][0-9]*\\/(commit\\.txt|pr-body\\.md)$/)", "group": "navigation" }
+        { "command": "plan.ship", "when": "resourcePath =~ /\\/\\.tmp\\/[1-9][0-9]*\\/(commit\\.txt|pr-body\\.md|issue\\.md|replies\\/[0-9]+\\.md)$/", "group": "navigation" },
+        { "command": "plan.go", "when": "plan.shipArmed && (activeEditor == multiDiffEditor || resourcePath =~ /\\/\\.tmp\\/[1-9][0-9]*\\/(commit\\.txt|pr-body\\.md|issue\\.md|replies\\/[0-9]+\\.md)$/)", "group": "navigation" }
       ],
       "commandPalette": [
-        { "command": "plan.ship", "when": "resourcePath =~ /\\/\\.tmp\\/[1-9][0-9]*\\/(commit\\.txt|pr-body\\.md)$/" },
+        { "command": "plan.ship", "when": "resourcePath =~ /\\/\\.tmp\\/[1-9][0-9]*\\/(commit\\.txt|pr-body\\.md|issue\\.md|replies\\/[0-9]+\\.md)$/" },
         { "command": "plan.go", "when": "plan.shipArmed" }
       ]
     },

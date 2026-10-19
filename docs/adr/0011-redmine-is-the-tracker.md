@@ -7,6 +7,7 @@
 - [3. Decision](#decision)
 - [4. Alternatives considered](#alternatives)
 - [5. Consequences](#consequences)
+- [6. Amendment: the flow](#flow)
 
 <a id="status"></a>
 ## 1. Status
@@ -114,3 +115,15 @@ committed in them.
 - The skills that read items or make branches (`worktask`, `gh-issues`, `post-pr`, the plan-board
   recipes) and tt's branch parsing change to Redmine issues.
 - ADR 0010 and the items that carry it out are paused, in the icebox.
+
+<a id="flow"></a>
+## 6. Amendment: the flow
+
+The buttons are in the extension's Next up panel, so the Redmine issue page needs no view hook or
+`vscode://` link. A New issue's row shows Start. An In Progress one shows Open, and Done as well
+once the issue links a PR. Ship and Go are in the title bar of the issue's review files in
+`.tmp/<n>/`. Go runs `pr`, which commits, pushes, and opens or updates the PR. It then posts each
+review reply in `.tmp/<n>/replies/` to its thread, resolves the thread, and applies the box ticks
+in `.tmp/<n>/issue.md` to the issue's description. After the merge, Done removes the worktree and
+the branch, brings the base up, has Redmine fetch the commits, and closes the issue. Every write to
+GitHub or Redmine happens when Peter presses a button or runs `pr`.
