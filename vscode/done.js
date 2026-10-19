@@ -52,6 +52,19 @@ async function branches(cwd) {
   return new Map(out.trim().split("\n").filter(Boolean).map((line) => line.split(" ")));
 }
 
+// The path in the way of a file git will add: something at the file itself, or a file where one of
+// its folders goes. null when the way is clear.
+function blocking(cwd, file) {
+  const parts = file.split("/");
+  for (let i = 1; i <= parts.length; i++) {
+    const rel = parts.slice(0, i).join("/");
+    const stat = fs.lstatSync(path.join(cwd, rel), { throwIfNoEntry: false });
+    if (!stat) return null;
+    if (i === parts.length || !stat.isDirectory()) return rel;
+  }
+  return null;
+}
+
 // Does commit oid hold nothing the PR lacks: is it the PR's merged head, or behind it, as after a
 // suggestion accepted on GitHub? A head this repo lacks is fetched from the PR's own ref, which
 // GitHub keeps after the branch is deleted, into FETCH_HEAD only; a failed fetch stops Done, rather
@@ -73,12 +86,39 @@ async function fetchHead(cwd, pr) {
   return has();
 }
 
+// The ignored paths a worktree's removal may take without asking, as plan.disposable defaults them:
+// what tools make again. "name/" is a folder of that name at any depth, "name" a file or folder.
+const DISPOSABLE = [".tmp/", "node_modules/", ".venv/", "__pycache__/", ".pytest_cache/", ".coverage", ".ruby-lsp/", "htmlcov/", "dist/", "build/"];
+
+// Is an ignored path, as git lists it ("dir/" for a whole folder), under a disposable name?
+function disposed(entry, disposable) {
+  const parts = entry.split("/").filter(Boolean);
+  const folders = entry.endsWith("/") ? parts : parts.slice(0, -1);
+  return disposable.some((name) => (name.endsWith("/") ? folders.includes(name.slice(0, -1)) : parts.includes(name)));
+}
+
+// The paths under an ignored entry that aren't disposable. git lists a folder whose files are all
+// ignored as one entry, so a folder of anything else is walked, and its disposable names dropped.
+function undisposable(dir, entry, disposable) {
+  if (disposed(entry, disposable)) return [];
+  if (!entry.endsWith("/")) return [entry];
+  return fs.readdirSync(path.join(dir, entry), { withFileTypes: true })
+    .flatMap((d) => undisposable(dir, `${entry}${d.name}${d.isDirectory() ? "/" : ""}`, disposable));
+}
+
 // A tree Done may remove or switch away from: clean, and at or behind the PR's merged head. Throws
-// naming why not. untracked: count untracked files, which a switch would carry over but a removal
-// would lose.
-async function checkMerged(dir, pr, untracked) {
-  const changes = (await git(dir, "status", "--porcelain", ...(untracked ? [] : ["--untracked-files=no"]))).trim();
+// naming why not. removing: count untracked files, which a switch would carry over but a removal
+// would lose, and ignored ones outside disposable, which git removes unasked.
+async function checkMerged(dir, pr, removing, disposable) {
+  const changes = (await git(dir, "status", "--porcelain", ...(removing ? [] : ["--untracked-files=no"]))).trim();
   if (changes) throw new Error(`${dir} has changes the merged PR lacks; commit or discard them, then Done again:\n${changes}`);
+  if (removing) {
+    const ignored = (await git(dir, "ls-files", "-z", "--others", "--ignored", "--exclude-standard", "--directory")).split("\0").filter(Boolean);
+    const kept = ignored.flatMap((entry) => undisposable(dir, entry, disposable));
+    if (kept.length) {
+      throw new Error(`${dir} has ignored files its removal would delete; move them out, or add them to plan.disposable, then Done again:\n${kept.join("\n")}`);
+    }
+  }
   const head = (await git(dir, "rev-parse", "HEAD")).trim();
   if (!(await inPullRequest(dir, head, pr))) {
     throw new Error(`${dir} is at ${head.slice(0, 7)}, with commits ${prLink(pr)}'s merged head ${pr.headRefOid.slice(0, 7)} lacks; open a new PR for them or drop them, then Done again`);
@@ -88,7 +128,7 @@ async function checkMerged(dir, pr, untracked) {
 // Finish issue id. view(cwd, url) reads the PR, from gh unless a test gives one. Returns
 // { dir, notes }: the worktree it removed, or null, and what each step did. A Done that fails part
 // way throws with that result as error.result, so Peter learns what it changed.
-async function finish({ redmine, checkouts, id, view = viewPullRequest }) {
+async function finish({ redmine, checkouts, id, view = viewPullRequest, disposable = DISPOSABLE }) {
   checkId(id, "Done");
   const issue = await redmine.issue(id);
   // The panel's row can be older than the issue.
@@ -103,7 +143,7 @@ async function finish({ redmine, checkouts, id, view = viewPullRequest }) {
   const release = lock(common, id, "Done");
   const result = { dir: null, notes: [] };
   try {
-    await finishIn({ redmine, id, project, checkout, common, pr, result });
+    await finishIn({ redmine, id, project, checkout, common, pr, result, disposable });
     return result;
   } catch (error) {
     error.result = result;
@@ -113,7 +153,7 @@ async function finish({ redmine, checkouts, id, view = viewPullRequest }) {
   }
 }
 
-async function finishIn({ redmine, id, project, checkout, common, pr, result }) {
+async function finishIn({ redmine, id, project, checkout, common, pr, result, disposable }) {
   const { notes } = result;
   const link = prLink(pr);
   const base = pr.baseRefName;
@@ -137,7 +177,7 @@ async function finishIn({ redmine, id, project, checkout, common, pr, result }) 
   const head = pr.isCrossRepository || pr.headRefName === base ? null : pr.headRefName;
   const found = trees.find((t) => !t.main && head && t.branch === head) ||
     existingWorktree(porcelain, id, worktreeDir(checkout, id), "Done");
-  if (found && fs.existsSync(found.dir)) await checkMerged(found.dir, pr, !found.main);
+  if (found && fs.existsSync(found.dir)) await checkMerged(found.dir, pr, !found.main, disposable);
   if (found && !found.main && trees.find((t) => t.dir === found.dir)?.locked) {
     throw new Error(`${found.dir} is locked; run git worktree unlock ${found.dir}, then Done again`);
   }
@@ -178,19 +218,23 @@ async function finishIn({ redmine, id, project, checkout, common, pr, result }) 
   // untracked file in its way refuses Done before the worktree goes.
   const target = (await git(checkout, "rev-parse", upstreamRef)).trim();
   if (onBase) {
-    // git overwrites an ignored file, unasked, where the merge adds a tracked one.
-    const added = (await git(checkout, "diff", "--name-only", "--diff-filter=A", "HEAD", upstreamRef)).trim().split("\n").filter(Boolean);
-    const inWay = added.filter((file) => fs.existsSync(path.join(checkout, file)));
+    // git overwrites an ignored file, unasked, where the merge adds a tracked one, or a folder on
+    // its path. A rename's new path counts as added, and -z gives each path as it is, not quoted.
+    const added = (await git(checkout, "diff", "--name-only", "-z", "--no-renames", "--diff-filter=A", "HEAD", upstreamRef)).split("\0").filter(Boolean);
+    const inWay = [...new Set(added.map((file) => blocking(checkout, file)).filter(Boolean))];
     if (inWay.length) {
       throw new Error(`${checkout} has files where ${upstream} adds tracked ones; move them aside, then Done again:\n${inWay.join("\n")}`);
     }
-    let from = local;
     if (current !== base) {
+      // The base moves first, so the switch goes straight from HEAD to the merge, the two trees the
+      // scan compared, never through the old base.
+      if (local && local !== target) {
+        await git(checkout, "update-ref", `refs/heads/${base}`, target, local);
+        notes.push(`Brought ${base} up to the merge.`);
+      }
       await git(checkout, "switch", "--quiet", base);
       notes.push(`Switched ${checkout} to ${base}.`);
-      from = (await git(checkout, "rev-parse", "HEAD")).trim();
-    }
-    if (from !== target) {
+    } else if (local !== target) {
       await git(checkout, "merge", "--quiet", "--ff-only", upstreamRef);
       notes.push(`Brought ${base} up to the merge.`);
     }
@@ -231,7 +275,14 @@ async function finishIn({ redmine, id, project, checkout, common, pr, result }) 
       continue;
     }
     if (await inPullRequest(checkout, tip, pr)) {
-      await git(checkout, "branch", "--quiet", "-D", branch);
+      // Against the tip checked, so git refuses a branch that moved since, as by a commit made in
+      // the worktree while Done ran; then its config, which update-ref leaves.
+      await git(checkout, "update-ref", "-d", `refs/heads/${branch}`, tip).catch(async (error) => {
+        const now = (await git(checkout, "rev-parse", "--verify", "--quiet", `refs/heads/${branch}`).catch(() => "")).trim();
+        if (now && now !== tip) throw new Error(`the branch ${branch} moved from ${tip.slice(0, 7)} while Done ran; check it, then Done again`);
+        throw error;
+      });
+      await git(checkout, "config", "--remove-section", `branch.${branch}`).catch(() => {});
       notes.push(`Deleted the branch ${branch}.`);
     } else {
       notes.push(`Kept the branch ${branch}: it's at ${tip.slice(0, 7)}, with commits ${link}'s merged head lacks.`);
@@ -268,4 +319,4 @@ async function finishIn({ redmine, id, project, checkout, common, pr, result }) 
   }
 }
 
-module.exports = { linkedPullRequest, doneNote, finish };
+module.exports = { linkedPullRequest, doneNote, finish, DISPOSABLE };

@@ -7,7 +7,7 @@ const os = require("os");
 const path = require("path");
 const { execFileSync } = require("child_process");
 const { worktreeDir } = require("../start");
-const { linkedPullRequest, doneNote, finish } = require("../done");
+const { linkedPullRequest, doneNote, finish, DISPOSABLE } = require("../done");
 
 const ID = 82;
 const BRANCH = "feat/82-finish-it";
@@ -315,6 +315,21 @@ test("a locked worktree is refused before anything changes, naming git worktree 
   assertDone(s);
 });
 
+test("an ignored file outside plan.disposable is refused before anything changes, not deleted with the worktree", async (t) => {
+  const s = sandbox(t);
+  // Ignored through the repo's exclude file, so the merged tree stays as the PR left it.
+  fs.appendFileSync(path.join(s.checkout, ".git", "info", "exclude"), ".env\nnode_modules\n");
+  fs.writeFileSync(path.join(s.dir, ".env"), "TOKEN=example\n");
+  fs.mkdirSync(path.join(s.dir, "lib", "node_modules", "x"), { recursive: true });
+  fs.writeFileSync(path.join(s.dir, "lib", "node_modules", "x", "index.js"), "\n");
+  await assert.rejects(done(s), (e) => e.message.includes("has ignored files its removal would delete") && e.message.endsWith("\n.env"));
+  assert.ok(fs.existsSync(path.join(s.dir, ".env")));
+  assert.notEqual(s.git(s.checkout, "rev-parse", "main"), s.pr.mergeCommit.oid);
+  // Named in plan.disposable, it goes with the worktree, as .tmp/ and node_modules/ do.
+  await finish({ redmine: s.redmine, checkouts: s.checkouts, id: ID, view: s.view, disposable: [...DISPOSABLE, ".env"] });
+  assertDone(s);
+});
+
 test("an ignored file where the merge adds a tracked one is refused, not overwritten", async (t) => {
   const s = sandbox(t);
   // The PR's file is ignored in this checkout, as when a PR starts tracking a path it ignored.
@@ -323,6 +338,80 @@ test("an ignored file where the merge adds a tracked one is refused, not overwri
   await assert.rejects(done(s), (e) => e.message.includes("has files where origin/main adds tracked ones") && e.message.endsWith("\ndone.js"));
   assert.equal(fs.readFileSync(path.join(s.checkout, "done.js"), "utf8"), "// Peter's own copy\n");
   assert.ok(fs.existsSync(s.dir));
+});
+
+test("an ignored file at a rename's new path, or with a name git would quote, is refused, not overwritten", async (t) => {
+  for (const name of ["moved.js", "café.js"]) {
+    const s = sandbox(t, { merged: false });
+    // The PR renames a file main already tracks, so git sees a rename, not an add.
+    fs.writeFileSync(path.join(s.checkout, "old.js"), "// Long enough that git pairs the rename\n".repeat(5));
+    s.git(s.checkout, "add", "old.js");
+    s.git(s.checkout, "commit", "--quiet", "-m", "old");
+    s.git(s.checkout, "push", "--quiet");
+    s.git(s.dir, "pull", "--quiet", "--rebase", "origin", "main");
+    s.git(s.dir, "mv", "old.js", name);
+    s.git(s.dir, "commit", "--quiet", "-m", "rename");
+    s.git(s.dir, "push", "--quiet", "--force");
+    s.pr.headRefOid = s.git(s.dir, "rev-parse", "HEAD");
+    s.merge();
+    fs.appendFileSync(path.join(s.checkout, ".git", "info", "exclude"), `${name}\n`);
+    fs.writeFileSync(path.join(s.checkout, name), "// Peter's own copy\n");
+    await assert.rejects(done(s), (e) => e.message.includes("has files where origin/main adds tracked ones") && e.message.includes(`\n${name}`), name);
+    assert.equal(fs.readFileSync(path.join(s.checkout, name), "utf8"), "// Peter's own copy\n");
+  }
+});
+
+test("an ignored file where the merge adds a folder is refused, not deleted", async (t) => {
+  const s = sandbox(t, { merged: false });
+  fs.mkdirSync(path.join(s.dir, "notes"));
+  fs.writeFileSync(path.join(s.dir, "notes", "a.md"), "tracked\n");
+  s.git(s.dir, "add", "notes");
+  s.git(s.dir, "commit", "--quiet", "-m", "notes");
+  s.git(s.dir, "push", "--quiet");
+  s.pr.headRefOid = s.git(s.dir, "rev-parse", "HEAD");
+  s.merge();
+  fs.appendFileSync(path.join(s.checkout, ".git", "info", "exclude"), "notes\n");
+  fs.writeFileSync(path.join(s.checkout, "notes"), "Peter's own\n");
+  await assert.rejects(done(s), (e) => e.message.includes("has files where origin/main adds tracked ones") && e.message.endsWith("\nnotes"));
+  assert.equal(fs.readFileSync(path.join(s.checkout, "notes"), "utf8"), "Peter's own\n");
+  assert.ok(fs.existsSync(s.dir));
+});
+
+test("a branch that moves while Done runs stops Done, and is kept", async (t) => {
+  const s = sandbox(t);
+  // A commit lands on the issue's branch just before the worktree goes, after Done read the tips.
+  const bin = fs.mkdtempSync(path.join(s.root, "bin-"));
+  const realGit = execFileSync("sh", ["-c", "command -v git"], { encoding: "utf8" }).trim();
+  const PATH = process.env.PATH;
+  process.env.PATH = `${bin}:${PATH}`;
+  t.after(() => (process.env.PATH = PATH));
+  fs.writeFileSync(path.join(bin, "git"), `#!/bin/sh\nif [ "$1 $2" = "worktree remove" ]; then "${realGit}" -C "${s.dir}" -c user.name=Test -c user.email=test@example.com commit --quiet --allow-empty -m late; fi\nexec "${realGit}" "$@"\n`, { mode: 0o755 });
+  await assert.rejects(done(s), new RegExp(`the branch ${BRANCH} moved from `));
+  assert.deepEqual(branches(s), [BRANCH, "main"]);
+  assert.equal(s.git(s.checkout, "log", "-1", "--format=%s", BRANCH), "late");
+});
+
+test("the issue's branch in the main checkout switches straight to the merge, never through the old base", async (t) => {
+  const s = sandbox(t, { merged: false });
+  // The old base tracks notes.txt and the PR deletes it, so neither HEAD nor the merge has it, and
+  // this checkout now keeps an ignored one there.
+  fs.writeFileSync(path.join(s.checkout, "notes.txt"), "tracked\n");
+  s.git(s.checkout, "add", "notes.txt");
+  s.git(s.checkout, "commit", "--quiet", "-m", "notes");
+  s.git(s.checkout, "push", "--quiet");
+  s.git(s.dir, "pull", "--quiet", "--rebase", "origin", "main");
+  s.git(s.dir, "rm", "--quiet", "notes.txt");
+  s.git(s.dir, "commit", "--quiet", "-m", "drop notes");
+  s.git(s.dir, "push", "--quiet", "--force");
+  s.pr.headRefOid = s.git(s.dir, "rev-parse", "HEAD");
+  s.merge();
+  onIssueBranch(s);
+  fs.appendFileSync(path.join(s.checkout, ".git", "info", "exclude"), "notes.txt\n");
+  fs.writeFileSync(path.join(s.checkout, "notes.txt"), "Peter's own\n");
+  const result = await done(s);
+  assert.equal(fs.readFileSync(path.join(s.checkout, "notes.txt"), "utf8"), "Peter's own\n");
+  assert.deepEqual(result.notes.slice(0, 2), ["Brought main up to the merge.", `Switched ${s.checkout} to main.`]);
+  assertDone(s);
 });
 
 test("a long-lived head branch in the main checkout isn't the issue's, and is never deleted", async (t) => {
@@ -483,10 +572,11 @@ const STEPS = {
   "reading the PR": { fail: (s) => failOnce(s, "view") },
   "fetching origin": { fail: (s, gitOnce) => gitOnce("fetch --quiet") },
   "removing the worktree": { fail: (s, gitOnce) => gitOnce("worktree remove") },
+  "moving the base before the switch": { prepare: onIssueBranch, fail: (s, gitOnce) => gitOnce("update-ref refs/heads/main") },
   "switching to the base": { prepare: onIssueBranch, fail: (s, gitOnce) => gitOnce("switch --quiet") },
   "fast-forwarding the base": { fail: (s, gitOnce) => gitOnce("merge --quiet") },
   "moving the base under another branch": { prepare: onSpike, on: "spike", fail: (s, gitOnce) => gitOnce("update-ref refs/heads/main") },
-  "deleting the branch": { fail: (s, gitOnce) => gitOnce("branch --quiet") },
+  "deleting the branch": { fail: (s, gitOnce) => gitOnce("update-ref -d") },
   "reading the status id": { fail: (s) => failOnce(s.redmine, "statusId") },
   "the Redmine update": { fail: (s) => failOnce(s.redmine, "update") },
 };

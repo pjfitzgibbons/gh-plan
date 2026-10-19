@@ -107,7 +107,7 @@ class NextUp {
     try {
       const result = await vscode.window.withProgress(
         { location: vscode.ProgressLocation.Notification, title: `Finishing #${id}` },
-        () => finish({ redmine: redmine(), checkouts: config.get("checkouts"), id })
+        () => finish({ redmine: redmine(), checkouts: config.get("checkouts"), id, disposable: config.get("disposable") })
       );
       vscode.window.showInformationMessage(`Plan: #${id} is done. ${said(result)}`);
     } catch (error) {

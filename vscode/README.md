@@ -43,6 +43,7 @@ issue, in the query's order.
 | `plan.project`, `plan.query` | `plan`, `Next up` | The project and saved query shown. |
 | `plan.projectMarkers` | `Pl`, `tt`, `ms` | The marker per Redmine project identifier. |
 | `plan.checkouts` | gh-plan, tempotag under `~/programming` | The main checkout per Redmine project identifier, for Start. |
+| `plan.disposable` | `.tmp/`, `node_modules/`, `.venv/`, caches, `dist/`, `build/` | The ignored files Done may delete with an issue's worktree, by name at any depth; `name/` is a folder. Done refuses a worktree holding any other. |
 | `plan.pr` | `~/.local/bin/pr` | The `pr` script Ship runs, by path: a login shell finds `/usr/bin/pr` first. |
 | `plan.keychainService` | `redmine-gh-plan` | The Keychain item holding your Redmine API key. |
 | `plan.sysKeychainService` | `redmine-sys-api` | The Keychain item holding the key of Redmine's repository web service, for Done's fetch (`redmine/README.md`, *Running the setup*). |
