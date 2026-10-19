@@ -22,6 +22,9 @@ settings: what this repo needs is here or in `.claude/`.
 
 - **Tests:** `uv run pytest`. It also runs `.claude/hooks/`, and fails under 90% coverage.
 - **The VS Code extension:** `npm test` and `npm run lint`, in `vscode/`, after `npm install`.
+- **Review findings:** fix only the silent ones, failures that leave no trace and lose work, files,
+  commits or the tracker's state. A failure that shows the user something is wrong is already
+  mitigated.
 - **Before each push:** `/code-review high` on the branch's whole diff, review fixes included. The
   PR body says it ran.
 - **Python:** `python3` on PATH. `/usr/bin/python3` is 3.9 and can't run the skill scripts.

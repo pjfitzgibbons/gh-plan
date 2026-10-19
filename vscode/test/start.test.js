@@ -268,8 +268,8 @@ test("a Start under way in another window is refused before anything changes", a
   const fs = require("fs");
   const path = require("path");
   s.issues[50].status = { name: "Closed", is_closed: true };
-  const held = path.join(s.checkout, ".git", "plan-starting-80");
-  fs.writeFileSync(held, `${process.pid}\n`);
+  const held = path.join(s.checkout, ".git", "plan-busy-80");
+  fs.writeFileSync(held, `${process.pid} Start\n`);
   await assert.rejects(start({ ...s, id: 80, confirm: () => true }), (e) => e.message.startsWith("#80 is being started in another window; if none is, delete " + held));
   assert.equal(s.git(s.checkout, "branch", "--list", "feat/80-*"), "");
   assert.deepEqual(s.updates, []);
@@ -282,8 +282,8 @@ test("a lock left by a Start that stopped is refused by name, never taken over",
   const path = require("path");
   const { spawnSync } = require("child_process");
   s.issues[50].status = { name: "Closed", is_closed: true };
-  const held = path.join(s.checkout, ".git", "plan-starting-80");
-  fs.writeFileSync(held, `${spawnSync("true").pid}\n`);
+  const held = path.join(s.checkout, ".git", "plan-busy-80");
+  fs.writeFileSync(held, `${spawnSync("true").pid} Start\n`);
   await assert.rejects(start({ ...s, id: 80, confirm: () => true }), (e) => e.message.includes(`left ${held}; delete it`));
   assert.ok(fs.existsSync(held));
   assert.deepEqual(s.updates, []);

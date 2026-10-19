@@ -50,13 +50,17 @@ details[open] > summary::before {
 summary:hover {
   background: var(--vscode-list-hoverBackground);
 }
-/* Start sits over the row's right end, shown on hover or keyboard focus, so the subject keeps the
-   width the rest of the time. */
-.start {
+/* The row's buttons sit over its right end, shown on hover or keyboard focus, so the subject keeps
+   the width the rest of the time. */
+.actions {
   position: absolute;
   right: 6px;
   top: 50%;
   transform: translateY(-50%);
+  display: flex;
+  gap: 4px;
+}
+.action {
   padding: 1px 8px;
   border: none;
   border-radius: 2px;
@@ -67,14 +71,14 @@ summary:hover {
   cursor: pointer;
   opacity: 0;
 }
-summary:hover .start,
-summary:focus-within .start {
+summary:hover .action,
+summary:focus-within .action {
   opacity: 1;
 }
-.start:hover {
+.action:hover {
   background: var(--vscode-button-hoverBackground);
 }
-.start:focus-visible {
+.action:focus-visible {
   outline: 1px solid var(--vscode-focusBorder);
   outline-offset: 1px;
 }

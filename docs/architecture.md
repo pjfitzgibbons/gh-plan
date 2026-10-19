@@ -192,10 +192,13 @@ a network connection. Everything else is pure and testable without a network or 
 - Each `timekeeping/` adapter reads one vendor's time tracker behind the `TimeSource` interface.
   It reads and never writes
   ([design 0002, *The TimeSource interface*](design/0002-tracked-time.md#interface)).
-- `vscode/redmine.js` makes every call to Redmine's REST API: it reads the panel's issues and
-  writes Start's status change and journal note. It reads the API key from the macOS Keychain on
-  each call, so no repo holds it ([`G3`](requirements.md)).
-- `vscode/start.js` runs git and `uv` for Start: it fetches, adds the worktree and syncs it.
+- `vscode/redmine.js` makes every call to Redmine: through the REST API it reads the panel's
+  issues and writes Start's and Done's status changes and journal notes, and through the
+  repository web service it has Redmine fetch a project's commits after a merge. It reads both
+  keys, the API key and the web service's, from the macOS Keychain on each call, so no repo holds
+  either ([`G3`](requirements.md)).
+- `vscode/start.js` runs git, `gh` and `uv` for Start, Ship and Done: it fetches, adds and removes
+  worktrees, syncs them, reads PRs, and pulls and deletes merged branches.
 
 The tool finds the default branch from `refs/remotes/origin/HEAD`, so it needs no GitHub read for
 that either.

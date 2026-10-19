@@ -37,9 +37,9 @@ async function check(root, id) {
   return { branch, dirty, problems };
 }
 
-// The branch's PR, as gh reports it: { url, number, title }.
-async function pullRequest(root, branch) {
-  return JSON.parse(await run("gh", ["pr", "view", branch, "--json", "url,number,title"], root));
+// The PR for ref, a branch or a PR's URL, as gh reports it: fields, by default { url, number, title }.
+async function pullRequest(root, ref, fields = "url,number,title") {
+  return JSON.parse(await run("gh", ["pr", "view", ref, "--json", fields], root));
 }
 
 // A PR as backfill.rb links it: [<repo>#<n>](<url>).

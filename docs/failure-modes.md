@@ -14,6 +14,8 @@ A cell names the line or test that answers it, or says "open" for Peter to decid
 
 A review fix re-reads the whole table. Five of PR #110's findings came from fixes that broke another row. Prefer a refusal that names its fix to automatic recovery: recovery code is new surface, and three findings came from it.
 
+Only a silent failure needs a fix or an *Open* row. That means one that leaves no trace and loses work, files, commits or the tracker's state. A refusal or an error the user sees is already handled.
+
 Before each push, `/code-review high` runs on the branch's whole diff, review fixes included, and the PR body says it ran.
 
 ## Redmine drops a status it won't allow
@@ -58,3 +60,29 @@ Found by the last local review and left unfixed: each is unlikely in use, and it
 | `plan.checkouts` names a submodule or a repo with a separate git dir | The worktree is made in the wrong place | Not a setup in use; `git worktree remove` it |
 | A subject with no ASCII letters or digits | The branch is named `feat/<n>-` | Rename the branch |
 | Each Redmine request reads the API key from the Keychain again, and blockers are fetched with their journals | A Start with several blockers is slower | None needed |
+
+## Done (PR #114)
+
+Done finishes an issue once its PR has merged. It checks everything before it changes anything: the PR is merged, the worktree holds nothing the PR lacks, `origin` holds the merge, and the base can fast-forward to it. Each later step runs only when it has something left to do, so a Done that stopped part way is finished by the next one, and a Done after success changes nothing. A Done that fails part way says what it changed before the failure. Start and Done take one lock per issue, so Open and Done on the same row exclude each other. In one window, a second click on the same button joins the first, and the other button is refused by name.
+
+| Step | Fails | Twice | At once | Stale | Guards |
+|---|---|---|---|---|---|
+| Read the issue | Nothing written; rerun | Closed is accepted, though Next up shows no Done on a closed row | — | Any status but In Progress or Closed is refused; an issue with no linked PR is refused, naming Ship | — |
+| Read the PR | Nothing written; rerun | — | — | An open PR, or one closed unmerged, is refused with nothing changed | Only the last github.com PR the *Pull requests* field links counts |
+| Lock | — | Released after every Done | A second click joins the Done under way; a Start or Open of the same issue, here or in another window, is refused | A dead holder's lock is refused by name, never taken over | Blocks recovery after a crash until the file is deleted |
+| Fetch origin | Stops before any change | No-op | git locks the repo | `origin` must be the PR's repo, must still have the base, and `origin/<base>` must hold the merge commit. A local base must be behind it, unless another worktree has it checked out. Otherwise Done stops before any change | A PR head that isn't local is fetched from `refs/pull/<n>/head` before any change; if that fetch fails, Done stops, rather than reading the head as missing |
+| Bring the base up | The next Done fast-forwards it again | A no-op | git locks the repo | The main checkout switches to the base only from the issue's branch, and changes on the base refuse Done before the worktree goes, as does the issue's branch in the main checkout while another worktree has the base. On any other branch only the base ref moves, and the note says so. A base checked out in another worktree is left for Peter to pull there, and Redmine sees the merge once he does. A listed base worktree whose folder is gone is refused, naming `git worktree prune`. The base moves only from the tip that was checked | Fast-forward only, checked before any change. A file where the merge adds a tracked one refuses Done before the switch, since git would overwrite an ignored one unasked |
+| Remove the worktree | The next Done removes it, or drops git's entry for a folder already gone. Start's setup marker goes with it | Skipped once gone | Behind the lock | The worktree on the PR's head branch, whatever its name, when the PR is from this repo and the worktree isn't the main checkout; else the one Start would find. A locked worktree is refused, naming `git worktree unlock`. Checked before any change: changes, or commits the PR's merged head lacks, refuse it; a HEAD behind that head, after a commit made on GitHub, is accepted | git refuses untracked files; ignored ones, such as `.tmp/`, go with the worktree. The base is brought up first, so git refuses an untracked file in its way before the worktree goes |
+| Delete the branch | The next Done deletes it | Skipped once gone | Behind the lock | Every branch named for the issue, and the found worktree's branch, so a Done that stopped after the worktree went still finds the worktree's own when it is named for the issue; a branch another worktree has checked out is kept and named, with `git worktree prune` when its folder is gone, and the base is never deleted. `-D` only when the tip holds nothing the PR's merged head lacks; any other tip is kept and named | — |
+| Fetch the commits | Noted, not thrown; the close goes through the API instead | Fetches nothing new | Redmine handles each fetch | — | Needs the web service's key in the Keychain; without it, Done closes the issue through the API, and the commits wait for the Repository tab |
+| Close and note | The next Done sends what's missing | Skipped when the issue is closed and a note holds the merge commit's URL | Behind the lock | Re-read after the fetch, which may have closed it. Read back after the close: a close Redmine dropped is refused, naming blockers and subtasks, and the refusal says the note was saved | — |
+
+### Open
+
+Found by the last local review and left unfixed: each fails silently, and its worst case is one an agent can read and undo.
+
+| Case | Worst case | Recovery |
+|---|---|---|
+| Another issue's `fixes #<n>` commit is fetched by Done | That issue closes, and its row leaves Next up before its own Done | Run `pr done` in that issue's worktree |
+| GitHub keeps the PR's branch after the merge (gh-plan deletes it: `delete_branch_on_merge` is on) | `origin/<branch>` survives, and a Start of the reopened issue checks out the merged branch | `git push origin --delete <branch>` |
+| Go runs `pr` in the worktree while Done removes it; Ship and Go take neither the lock nor the in-window guard | `pr` fails part way, or pushes a branch Done just deleted | Don't press Done until Go's terminal has finished; delete a re-pushed branch on GitHub |

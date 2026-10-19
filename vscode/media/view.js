@@ -26,22 +26,25 @@
       );
   }
 
-  // A link or the Start button never toggles its row: a link is handed to the host, which opens a
-  // new tab, and Start asks the host to start the issue.
+  // A link or a button never toggles its row: a link is handed to the host, which opens a new tab,
+  // and Start or Done asks the host to start or finish the issue.
   document.addEventListener(
     "click",
     (event) => {
-      const link = event.target.closest("a[href], button.start");
+      const link = event.target.closest("a[href], button[data-type]");
       if (!link) return;
       event.preventDefault();
       event.stopPropagation();
-      if (link.matches("button")) vscode.postMessage({ type: "start", id: Number(link.dataset.id) });
+      if (link.matches("button")) vscode.postMessage({ type: link.dataset.type, id: Number(link.dataset.id) });
       else vscode.postMessage({ type: "open", url: link.href });
     },
     true
   );
 
-  // New issues start; In Progress ones reopen their worktree, which is the same request.
+  // New issues start; In Progress ones reopen their worktree, which is the same request, and once
+  // they link a PR, Done finishes them after its merge.
+  const button = (type, label, title, id) =>
+    `<button class="action" data-type="${type}" data-id="${Number(id)}" title="${escape(title)}">${escape(label)}</button>`;
 
   function row(issue, nested) {
     const details = document.createElement("details");
@@ -53,7 +56,10 @@
         <span class="points">${escape(issue.points)}</span>
         <span class="subject">${escape(issue.subject)}</span>
         ${issue.status === "New" ? "" : `<span class="badge">${escape(issue.status)}</span>`}
-        ${issue.action ? `<button class="start" data-id="${Number(issue.id)}" title="${escape(issue.action)} #${Number(issue.id)} in its worktree">${escape(issue.action)}</button>` : ""}
+        <span class="actions">${[
+          issue.done ? button("done", "Done", `Finish #${Number(issue.id)} once its PR has merged`, issue.id) : "",
+          issue.action ? button("start", issue.action, `${issue.action} #${Number(issue.id)} in its worktree`, issue.id) : "",
+        ].join("")}</span>
       </summary>
       <section>Loading…</section>`;
     details.addEventListener("toggle", () => {

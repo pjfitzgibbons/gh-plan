@@ -1,18 +1,19 @@
 // Redmine's REST API, for the panel and for Start. No vscode import, so it runs under plain node too.
-// The API key comes from the macOS Keychain each time it is needed; it is never stored here.
+// The API key, and the repository web service's key, come from the macOS Keychain each time one is
+// needed; neither is stored here.
 const { execFile } = require("child_process");
 
-function apiKey(service) {
+function apiKey(service, what = "your Redmine API key") {
   return new Promise((resolve, reject) => {
     execFile("security", ["find-generic-password", "-s", service, "-w"], (error, stdout) => {
-      if (error) reject(new Error(`no Keychain item "${service}"; store your Redmine API key in it`));
+      if (error) reject(new Error(`no Keychain item "${service}"; store ${what} in it`));
       else resolve(stdout.trim());
     });
   });
 }
 
 class Redmine {
-  // settings: { url, project, query, service }
+  // settings: { url, project, query, service, sysService }
   constructor(settings) {
     this.settings = { ...settings, url: settings.url.replace(/\/+$/, "") };
   }
@@ -63,6 +64,7 @@ class Redmine {
       project: identifiers.get(issue.project.id) || issue.project.name,
       parent: issue.parent && issue.parent.id,
       points: field(issue, "Points"),
+      pullRequests: field(issue, "Pull requests"),
     }));
   }
 
@@ -85,6 +87,26 @@ class Redmine {
     return found.id;
   }
 
+  // Has Redmine read the project's new commits now, as opening its Repository tab does, so a
+  // fixes #<n> commit closes its issue. The web service takes its own key, sent in the body so
+  // Redmine's log of the request line never holds it. /sys never reloads Redmine's settings, so a
+  // key setup.rb just stored is refused until an API call or page view reloads them; Done reads the
+  // issue first.
+  async fetchCommits(project) {
+    const { url, sysService } = this.settings;
+    const key = await apiKey(sysService, "the key of Redmine's repository web service");
+    let response;
+    try {
+      response = await fetch(`${url}/sys/fetch_changesets`, { method: "POST", body: new URLSearchParams({ key, id: project }) });
+    } catch (error) {
+      throw new Error(`Redmine can't be reached at ${url}: ${error.cause?.code || error.message}`);
+    }
+    if (response.status === 403) {
+      throw new Error(`Redmine refused the key in Keychain item "${sysService}" (403); run setup.rb with SYS_API_KEY`);
+    }
+    if (!response.ok) throw new Error(`Redmine POST /sys/fetch_changesets for ${project}: HTTP ${response.status}`);
+  }
+
   // fields as Redmine's issue PUT takes them; notes becomes a journal entry.
   async update(id, fields) {
     await this.send("PUT", `/issues/${Number(id)}.json`, { issue: fields });
@@ -96,4 +118,4 @@ function field(issue, name) {
   return found && found.value ? found.value : "";
 }
 
-module.exports = { Redmine };
+module.exports = { Redmine, field };
