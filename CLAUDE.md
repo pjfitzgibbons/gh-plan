@@ -39,6 +39,9 @@ settings: what this repo needs is here or in `.claude/`.
   squash-merged.
 - **`plan:` commits go straight to `main`**, and nothing else does.
 - **An item's edits ride on its branch**, and reach `main` with the PR, like code.
+- **A PR title ends `(fixes #<n>)`** when the PR finishes Redmine issue `<n>`, and `(refs #<n>)`
+  only when it does part of it. The title becomes the squash commit's subject, and Redmine closes
+  the issue when it next fetches that commit.
 - **An AI is never an author** (the Linux kernel's
   [coding-assistants](https://docs.kernel.org/process/coding-assistants.html) rule). No
   `Co-Authored-By`, `Signed-off-by`, `Claude-Session` or "Generated with" line names an AI, in a

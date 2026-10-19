@@ -143,3 +143,7 @@ Redmine reads a repository's new commits only when someone opens its Repository 
 `fixes #<n>` commit closes the issue at that fetch, not when it is committed. The issue's
 `closed_on` is the fetch time; the commit's time is the changeset's `committed_on`.
 Opening the tab fetches now. Fetching after each merge is pl-sijil's, in the icebox.
+
+GitHub makes a PR's title the subject of its squash commit, so the title carries the keyword: a
+PR that finishes issue `<n>` ends its title `(fixes #<n>)`, and one that does part of it ends
+`(refs #<n>)`. A `refs` commit leaves the issue open, to be closed by hand.
