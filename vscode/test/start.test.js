@@ -270,13 +270,13 @@ test("a Start under way in another window is refused before anything changes", a
   s.issues[50].status = { name: "Closed", is_closed: true };
   const held = path.join(s.checkout, ".git", "plan-starting-80");
   fs.writeFileSync(held, `${process.pid}\n`);
-  await assert.rejects(start({ ...s, id: 80, confirm: () => true }), /#80 is being started in another window/);
+  await assert.rejects(start({ ...s, id: 80, confirm: () => true }), (e) => e.message.startsWith("#80 is being started in another window; if none is, delete " + held));
   assert.equal(s.git(s.checkout, "branch", "--list", "feat/80-*"), "");
   assert.deepEqual(s.updates, []);
   assert.ok(fs.existsSync(held), "another window's lock is left alone");
 });
 
-test("a lock left by a process that's gone is taken over, and released after", async (t) => {
+test("a lock left by a Start that stopped is refused by name, never taken over", async (t) => {
   const s = sandbox(t);
   const fs = require("fs");
   const path = require("path");
@@ -284,9 +284,39 @@ test("a lock left by a process that's gone is taken over, and released after", a
   s.issues[50].status = { name: "Closed", is_closed: true };
   const held = path.join(s.checkout, ".git", "plan-starting-80");
   fs.writeFileSync(held, `${spawnSync("true").pid}\n`);
-  const result = await start({ ...s, id: 80, confirm: () => true });
-  assert.equal(result.created, true);
-  assert.ok(!fs.existsSync(held));
+  await assert.rejects(start({ ...s, id: 80, confirm: () => true }), (e) => e.message.includes(`left ${held}; delete it`));
+  assert.ok(fs.existsSync(held));
+  assert.deepEqual(s.updates, []);
+  fs.rmSync(held);
+  assert.equal((await start({ ...s, id: 80, confirm: () => true })).created, true);
+  assert.ok(!fs.existsSync(held), "released after");
+});
+
+test("a git worktree add whose hook fails keeps the marker, so the next Start finishes setup", async (t) => {
+  const s = sandbox(t);
+  const fs = require("fs");
+  const path = require("path");
+  s.issues[50].status = { name: "Closed", is_closed: true };
+  const hook = path.join(s.checkout, ".git", "hooks", "post-checkout");
+  fs.writeFileSync(hook, "#!/bin/sh\nexit 1\n", { mode: 0o755 });
+  await assert.rejects(start({ ...s, id: 80, confirm: () => true }), /worktree add/);
+  fs.rmSync(hook);
+  const again = await start({ ...s, id: 80, confirm: () => true });
+  assert.equal(again.created, false);
+  assert.equal(again.started, true);
+});
+
+test("a failed handoff leaves setup unfinished, and the next Start hands off again", async (t) => {
+  const s = sandbox(t);
+  s.issues[50].status = { name: "Closed", is_closed: true };
+  const handed = [];
+  await assert.rejects(start({ ...s, id: 80, confirm: () => true, handOff: () => { throw new Error("disk full"); } }), /disk full/);
+  const again = await start({ ...s, id: 80, confirm: () => true, handOff: (r) => handed.push(r.dir) });
+  assert.equal(again.started, true);
+  assert.deepEqual(handed, [again.dir]);
+  const reopened = await start({ ...s, id: 80, confirm: () => true, handOff: (r) => handed.push(r.dir) });
+  assert.equal(reopened.started, false);
+  assert.equal(handed.length, 1);
 });
 
 test("Open finds a worktree mid-rebase by its folder, and changes nothing", async (t) => {
@@ -373,6 +403,7 @@ const STEPS = {
   "uv sync": (s, inject) => inject.uvOnce(),
   "reading the status id": (s) => failOnce(s.redmine, "statusId"),
   "the Redmine update": (s) => failOnce(s.redmine, "update"),
+  "the handoff": (s) => failOnce(s, "handOff"),
 };
 
 for (const [step, fail] of Object.entries(STEPS)) {
@@ -381,6 +412,7 @@ for (const [step, fail] of Object.entries(STEPS)) {
     s.issues[50].status = { name: "Closed", is_closed: true };
     const inject = stubs(t, s);
     const confirm = () => true;
+    s.handOff = () => {};
     fail(s, inject);
     await assert.rejects(start({ ...s, id: 80, confirm }), /injected/);
 

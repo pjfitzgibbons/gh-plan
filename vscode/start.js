@@ -73,22 +73,20 @@ function run(command, args, cwd) {
 const git = (cwd, ...args) => run("git", args, cwd);
 
 // One Start per issue across windows: an exclusive file in the repo's git dir, holding the pid of
-// the extension host that took it. One whose process is gone was left by a crash, and is taken over.
-// Returns its release.
+// the extension host that took it. One left by a crash is never taken over, since two windows
+// taking it at once could both win; the refusal names it for Peter to delete. Returns its release.
 function lock(common, id) {
   const file = path.join(common, `plan-starting-${id}`);
-  for (let tries = 0; ; tries++) {
-    try {
-      fs.writeFileSync(file, `${process.pid}\n`, { flag: "wx" });
-      return () => fs.rmSync(file, { force: true });
-    } catch (error) {
-      if (error.code !== "EEXIST") throw error;
-      // An empty file is one being written, so its holder is alive.
-      const pid = Number(fs.readFileSync(file, "utf8").trim() || NaN);
-      if (tries || !Number.isInteger(pid) || alive(pid)) throw new Error(`#${id} is being started in another window; if none is, delete ${file}`);
-      fs.rmSync(file, { force: true });
-    }
+  try {
+    fs.writeFileSync(file, `${process.pid}\n`, { flag: "wx" });
+  } catch (error) {
+    if (error.code !== "EEXIST") throw error;
+    // An empty file is one being written, so its holder is alive.
+    const pid = Number(fs.readFileSync(file, "utf8").trim() || NaN);
+    if (!Number.isInteger(pid) || alive(pid)) throw new Error(`#${id} is being started in another window; if none is, delete ${file}`);
+    throw new Error(`a Start of #${id} that stopped without finishing left ${file}; delete it, then Start again`);
   }
+  return () => fs.rmSync(file, { force: true });
 }
 
 function alive(pid) {
@@ -107,9 +105,10 @@ const settingUp = (common, id) => path.join(common, `plan-setting-up-${id}`);
 
 // Start issue id, or reopen its worktree. Safe to repeat: each step runs only when it has something
 // to do. confirm(blockers) is asked only before a new worktree; false stops with nothing changed.
+// handOff(result), when given, is the last step of setup, so a handoff that fails runs setup again.
 // Returns { dir, branch, created, started, notes }, or null when Peter said no. started: this Start
 // finished the worktree's setup, here or after an earlier one stopped part way.
-async function start({ redmine, checkouts, id, confirm }) {
+async function start({ redmine, checkouts, id, confirm, handOff = () => {} }) {
   checkId(id);
   const issue = await redmine.issue(id);
   // The panel's row can be older than the issue: one closed, iceboxed or moved on since keeps its status.
@@ -126,13 +125,13 @@ async function start({ redmine, checkouts, id, confirm }) {
 
   const release = lock(common, id);
   try {
-    return await startIn({ redmine, id, confirm, issue, checkout, common });
+    return await startIn({ redmine, id, confirm, handOff, issue, checkout, common });
   } finally {
     release();
   }
 }
 
-async function startIn({ redmine, id, confirm, issue, checkout, common }) {
+async function startIn({ redmine, id, confirm, handOff, issue, checkout, common }) {
   const notes = [];
   const dir = worktreeDir(checkout, id);
   let found = existingWorktree(await git(checkout, "worktree", "list", "--porcelain"), id, dir);
@@ -160,7 +159,6 @@ async function startIn({ redmine, id, confirm, issue, checkout, common }) {
     await git(checkout, "show-ref", "--verify", "--quiet", "refs/remotes/origin/develop").then(() => (base = "develop"), () => {});
     if (fs.existsSync(dir)) throw new Error(`${dir} exists but isn't a worktree of ${checkout}`);
     fs.mkdirSync(path.dirname(dir), { recursive: true });
-    fs.writeFileSync(settingUp(common, id), `${new Date().toISOString()}\n`);
     // The issue's branch, if it has one, here or pushed from elsewhere, is reused as it is: it may
     // hold work, so it keeps its own base.
     const refs = async (prefix) => (await git(checkout, "for-each-ref", "--format=%(refname:short)", prefix))
@@ -168,6 +166,7 @@ async function startIn({ redmine, id, confirm, issue, checkout, common }) {
     const local = await refs("refs/heads");
     const pushed = !local && (await refs("refs/remotes/origin"));
     const branch = local || pushed || branchName(issue);
+    fs.writeFileSync(settingUp(common, id), `${new Date().toISOString()}\n`);
     try {
       if (local) {
         await git(checkout, "worktree", "add", "--quiet", dir, branch);
@@ -180,8 +179,10 @@ async function startIn({ redmine, id, confirm, issue, checkout, common }) {
         notes.push(`Made ${branch} from origin/${base} in ${dir}.`);
       }
     } catch (error) {
-      // No worktree, so no setup to finish: a worktree made later by hand is set up.
-      fs.rmSync(settingUp(common, id), { force: true });
+      // A failed hook leaves the worktree made, and its setup still to finish. With no worktree,
+      // there's no setup to finish, and one made later by hand is set up.
+      const left = await git(checkout, "worktree", "list", "--porcelain").then((list) => existingWorktree(list, id, dir), () => true);
+      if (!left) fs.rmSync(settingUp(common, id), { force: true });
       throw error;
     }
     found = { dir, branch };
@@ -204,8 +205,12 @@ async function startIn({ redmine, id, confirm, issue, checkout, common }) {
     });
     notes.push(`#${id} is In Progress.`);
   }
-  if (started) fs.rmSync(marker, { force: true });
-  return { ...found, created, started, notes };
+  const result = { ...found, created, started, notes };
+  if (started) {
+    await handOff(result);
+    fs.rmSync(marker, { force: true });
+  }
+  return result;
 }
 
 module.exports = { ACTION, checkId, slug, branchName, worktreeDir, blockerIds, issueBranch, existingWorktree, expandHome, start };

@@ -85,22 +85,25 @@ class NextUp {
   async startOnce(id) {
     const config = vscode.workspace.getConfiguration("plan");
     try {
-      const result = await vscode.window.withProgress(
-        { location: vscode.ProgressLocation.Notification, title: `Starting #${id}` },
-        () => start({ redmine: redmine(), checkouts: config.get("checkouts"), id, confirm: confirmBlockers })
-      );
-      if (!result) return;
-      if (result.notes.length) vscode.window.showInformationMessage(`Plan: ${result.notes.join(" ")}`);
       // Claude starts only in a window opened by the Start that finished setting the work up, including
       // one that finished what a stopped Start began, or by an Open after Claude failed to start;
-      // otherwise reopening started work changes nothing.
-      const file = handoffFile(this.storage, result.dir);
-      if (result.started || fs.existsSync(file)) {
+      // otherwise reopening started work changes nothing. Setup isn't finished until the handoff is
+      // written, so a failed write is retried by the next Start.
+      const handOff = (result) => {
+        const file = handoffFile(this.storage, result.dir);
         fs.mkdirSync(this.storage, { recursive: true });
         // Written aside and renamed in, so a watching window never reads it half written.
         fs.writeFileSync(`${file}.tmp`, JSON.stringify({ dir: result.dir, prompt: `Work on Redmine #${id}`, at: Date.now() }));
         fs.renameSync(`${file}.tmp`, file);
-      }
+      };
+      const result = await vscode.window.withProgress(
+        { location: vscode.ProgressLocation.Notification, title: `Starting #${id}` },
+        () => start({ redmine: redmine(), checkouts: config.get("checkouts"), id, confirm: confirmBlockers, handOff })
+      );
+      if (!result) return;
+      if (result.notes.length) vscode.window.showInformationMessage(`Plan: ${result.notes.join(" ")}`);
+      // An Open after Claude failed to start rewrites the kept handoff, fresh, for the watching window.
+      if (!result.started && fs.existsSync(handoffFile(this.storage, result.dir))) handOff(result);
       await vscode.commands.executeCommand("vscode.openFolder", vscode.Uri.file(result.dir), { forceNewWindow: true });
     } catch (error) {
       vscode.window.showErrorMessage(`Plan: #${id} didn't start. ${error.message}`);
