@@ -2,7 +2,7 @@
   "name": "gh-plan",
   "displayName": "GH Plan",
   "description": "Redmine's Next up query in a narrow sidebar panel; each issue opens in place, starts in its own worktree, and ships from its review.",
-  "version": "0.4.1",
+  "version": "0.4.2",
   "publisher": "pjfitzgibbons",
   "license": "UNLICENSED",
   "private": true,

@@ -7,8 +7,7 @@ const fs = require("fs");
 const path = require("path");
 const { Redmine } = require("./redmine");
 const { ACTION, checkId, start, expandHome } = require("./start");
-const { stackedBelowFirst } = require("./layout");
-const { reviewFile, check, pullRequest, linkPullRequest } = require("./ship");
+const { reviewFile, shipTab, check, pullRequest, linkPullRequest } = require("./ship");
 
 // A new window can't be handed a task directly, so Start leaves one in the extension's global
 // storage, which every window shares; the worktree's window picks it up when it opens, or at once if
@@ -225,14 +224,8 @@ async function openHandover(dir) {
     vscode.window.tabGroups.all.flatMap((g) => g.tabs).map((t) => t.input?.uri?.fsPath).filter(Boolean)
   );
   if (files.every((file) => open.has(file))) return;
-  // The pair stacks inside the leftmost group, or the only one; groups to its right stay as they are.
-  // A group already directly below the leftmost is column 2, and is reused.
-  const stacked = stackedBelowFirst(await vscode.commands.executeCommand("vscode.getEditorLayout"));
-  const [commit, body] = files.map((file) => vscode.Uri.file(file));
-  await vscode.window.showTextDocument(commit, { viewColumn: 1, preview: false });
-  // A new group goes below the active one, which is now the leftmost, and takes focus.
-  if (!stacked) await vscode.commands.executeCommand("workbench.action.newGroupBelow");
-  await vscode.window.showTextDocument(body, { viewColumn: stacked ? 2 : vscode.ViewColumn.Active, preview: false });
+  // Both open as tabs in the leftmost group, or the only one, the PR body last and in front.
+  for (const file of files) await vscode.window.showTextDocument(vscode.Uri.file(file), { viewColumn: 1, preview: false });
 }
 
 // openFolder only focuses a window already open on the worktree, so that window watches for its
@@ -249,8 +242,8 @@ function watchHandoff(context, storage) {
 
 // Ship, from the title bar of an issue's commit.txt or pr-body.md: save both, check them, and open
 // the working tree's changes, whose title bar then holds Go. With nothing to commit, Go sits on the
-// review files instead. Only Go runs pr; once pr succeeds, the issue's Pull requests field links
-// its PR.
+// review files instead. Only Go runs pr; once pr succeeds, the review files and diffs close and the
+// issue's Pull requests field links its PR.
 let armed = null;
 
 function arm(review) {
@@ -312,6 +305,8 @@ async function go() {
     vscode.window.showErrorMessage(`Plan: pr ${id} stopped (exit ${exitCode}); its terminal says why. Ship and Go again once it's fixed.`);
     return;
   }
+  const tabs = vscode.window.tabGroups.all.flatMap((g) => g.tabs).filter((t) => shipTab(t.input, root, id));
+  await vscode.window.tabGroups.close(tabs);
   try {
     const pr = await pullRequest(root, found.branch);
     const linked = await linkPullRequest({ redmine: redmine(), id, pr });

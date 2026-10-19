@@ -11,6 +11,18 @@ function reviewFile(file) {
   return match ? { root: match[1], id: Number(match[2]) } : null;
 }
 
+// Whether a tab's input is one Ship left open for issue id in root: a review file, a diff of a file
+// in root, or the Changes view of root. Once pr commits, the Changes view may list nothing, so an
+// empty one counts too.
+function shipTab(input, root, id) {
+  const inRoot = (uri) => Boolean(uri?.fsPath) && uri.fsPath.startsWith(`${root}/`);
+  if (!input) return false;
+  if (input.uri) return ["commit.txt", "pr-body.md"].some((name) => input.uri.fsPath === path.join(root, ".tmp", String(id), name));
+  if (input.modified) return inRoot(input.modified);
+  if (Array.isArray(input.textDiffs)) return input.textDiffs.length === 0 || input.textDiffs.some((d) => inRoot(d.modified));
+  return false;
+}
+
 // What pr will find in root for issue id: its branch, whether the tree has changes, and each reason
 // it can't run yet. .tmp/ is ignored, so the review files never count as changes.
 async function check(root, id) {
@@ -51,4 +63,4 @@ async function linkPullRequest({ redmine, id, pr }) {
   return true;
 }
 
-module.exports = { reviewFile, check, pullRequest, prLink, linkPullRequest };
+module.exports = { reviewFile, shipTab, check, pullRequest, prLink, linkPullRequest };

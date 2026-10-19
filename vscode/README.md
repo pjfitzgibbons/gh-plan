@@ -15,8 +15,8 @@ issue, in the query's order.
   In Progress since the panel loaded.
 - **A link** opens in an Integrated Browser tab.
 - **Review before `pr`:** once an issue's `.tmp/<n>/commit.txt` and `.tmp/<n>/pr-body.md` are both
-  written, they open stacked in the leftmost editor group (or the only one), the commit message
-  above the PR body; groups to its right stay as they are. When both are already open, a later
+  written, they open as tabs in the leftmost editor group (or the only one), with no split; groups to
+  its right stay as they are. When both are already open, a later
   write or save changes no layout.
 - **Ship** is the diff icon in the title bar of either file. It saves both, refuses by name a
   missing PR body, a missing commit message while the tree has changes, or a branch that isn't the
@@ -24,7 +24,8 @@ issue, in the query's order.
   opens nothing.
 - **Go** is the rocket that Ship then puts in the changes' title bar, and on the review files. Only
   Go runs anything: it saves and checks again, then runs `pr <n>` in a terminal in the worktree.
-  Once `pr` succeeds, the issue's Pull requests field links the PR, with a journal note. Ship and Go
+  Once `pr` succeeds, the review files, the Changes view and any diffs of the worktree's files
+  close, and the issue's Pull requests field links the PR, with a journal note. Ship and Go
   again run `pr` again, which updates the PR body, and leave Redmine as it is once the PR is linked.
 
 ## Settings

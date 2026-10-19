@@ -6,7 +6,7 @@ const fs = require("fs");
 const os = require("os");
 const path = require("path");
 const { execFileSync } = require("child_process");
-const { reviewFile, check, prLink, linkPullRequest } = require("../ship");
+const { reviewFile, shipTab, check, prLink, linkPullRequest } = require("../ship");
 
 test("a review file names its issue and checkout; any other file names none", () => {
   assert.deepEqual(reviewFile("/work/gh-plan.worktrees/81/.tmp/81/commit.txt"), { root: "/work/gh-plan.worktrees/81", id: 81 });
@@ -20,6 +20,32 @@ test("a review file names its issue and checkout; any other file names none", ()
     "/work/repo/src/.tmp/81/commit.txt.bak",
   ]) {
     assert.equal(reviewFile(file), null, file);
+  }
+});
+
+test("Ship's tabs are the issue's review files, diffs in its checkout and its Changes view", () => {
+  const root = "/work/gh-plan.worktrees/81";
+  const uri = (fsPath) => ({ fsPath });
+  const diff = (file) => ({ original: uri(file), modified: uri(file) });
+  for (const input of [
+    { uri: uri(`${root}/.tmp/81/commit.txt`) },
+    { uri: uri(`${root}/.tmp/81/pr-body.md`) },
+    diff(`${root}/vscode/ship.js`),
+    { textDiffs: [diff(`${root}/vscode/ship.js`), diff(`${root}/README.md`)] },
+    { textDiffs: [] },
+  ]) {
+    assert.equal(shipTab(input, root, 81), true, JSON.stringify(input));
+  }
+  for (const input of [
+    undefined,
+    {},
+    { uri: uri(`${root}/vscode/ship.js`) },
+    { uri: uri(`${root}/.tmp/7/pr-body.md`) },
+    diff("/work/gh-plan/vscode/ship.js"),
+    diff(`${root}-other/README.md`),
+    { textDiffs: [diff("/work/gh-plan/README.md")] },
+  ]) {
+    assert.equal(shipTab(input, root, 81), false, JSON.stringify(input));
   }
 });
 
