@@ -42,7 +42,6 @@
   );
 
   // New issues start; In Progress ones reopen their worktree, which is the same request.
-  const ACTION = { New: "Start", "In Progress": "Open" };
 
   function row(issue, nested) {
     const details = document.createElement("details");
@@ -54,7 +53,7 @@
         <span class="points">${escape(issue.points)}</span>
         <span class="subject">${escape(issue.subject)}</span>
         ${issue.status === "New" ? "" : `<span class="badge">${escape(issue.status)}</span>`}
-        ${ACTION[issue.status] ? `<button class="start" data-id="${Number(issue.id)}" title="${ACTION[issue.status]} #${Number(issue.id)} in its worktree">${ACTION[issue.status]}</button>` : ""}
+        ${issue.action ? `<button class="start" data-id="${Number(issue.id)}" title="${escape(issue.action)} #${Number(issue.id)} in its worktree">${escape(issue.action)}</button>` : ""}
       </summary>
       <section>Loading…</section>`;
     details.addEventListener("toggle", () => {

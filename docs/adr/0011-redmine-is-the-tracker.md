@@ -64,6 +64,9 @@ committed in them.
 - What Redmine does not do is a plugin of ours, in Ruby on Redmine's plugin API: the lane
   board, the ready flag and the reality checks. Scripts outside Redmine use its REST API. The
   plugin, the scripts and the export live in gh-plan, which becomes the Redmine setup.
+- Remote writes are a `git push` of an item branch, and Redmine's REST API with the key from the
+  Keychain. The VS Code extension's Start is the first writer: it sets an issue In Progress with its start date
+  and a journal note naming the branch.
 - The estimate rule is a practice ([`B3`](../requirements.md)). An item
   above 5 points is split before it is scheduled. A reality check lists any that are not, and
   nothing refuses the save.
@@ -89,7 +92,9 @@ committed in them.
 ## 5. Consequences
 
 - The default branch takes only pull requests. `plan:` commits, `ready.yml` and the conflicts on
-  it go away, and so do architecture invariants 3 and 5, which govern the tool's commits.
+  it go away, and so does architecture invariant 3, which governs the tool's commits. Invariant 5,
+  which allowed no remote write but a `git push`, is retired. Invariant 6 names the modules that
+  may write, the extension's Redmine client among them.
 - An item is `#<n>`, numbered across every project. Branches become `<type>/<n>-<slug>`. GitHub
   also links `#<n>` in a commit message to the repo's own issue or pull request `<n>`, so a
   reference can point at both 🔍.

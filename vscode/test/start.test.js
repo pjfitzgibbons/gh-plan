@@ -41,9 +41,18 @@ test("an issue's worktree is found by number, whatever its slug", () => {
     "worktree /work/gh-plan.worktrees/80\nHEAD 2222\nbranch refs/heads/feat/80-old-slug",
     "worktree /work/gh-plan.worktrees/800\nHEAD 3333\nbranch refs/heads/feat/800-other",
   ].join("\n\n");
-  assert.deepEqual(existingWorktree(porcelain, 80), { dir: "/work/gh-plan.worktrees/80", branch: "feat/80-old-slug" });
+  assert.deepEqual(existingWorktree(porcelain, 80), { dir: "/work/gh-plan.worktrees/80", branch: "feat/80-old-slug", main: false });
   assert.equal(existingWorktree(porcelain, 8), null);
   assert.equal(existingWorktree(porcelain, 81), null);
+});
+
+test("an issue's branch checked out in the main checkout is marked main; another prefix isn't an issue's", () => {
+  const porcelain = [
+    "worktree /work/gh-plan\nHEAD 1111\nbranch refs/heads/fix/80-in-main",
+    "worktree /work/gh-plan.worktrees/x\nHEAD 2222\nbranch refs/heads/release/2026-10",
+  ].join("\n\n");
+  assert.deepEqual(existingWorktree(porcelain, 80), { dir: "/work/gh-plan", branch: "fix/80-in-main", main: true });
+  assert.equal(existingWorktree(porcelain, 2026), null);
 });
 
 test("a message that isn't an issue number is refused before anything runs", async () => {
@@ -205,3 +214,187 @@ test("a failed fetch makes no branch", async (t) => {
   assert.equal(s.git(s.checkout, "branch", "--list", "feat/80-*"), "");
   assert.deepEqual(s.updates, []);
 });
+
+test("a Start on an issue closed since the panel loaded changes nothing", async (t) => {
+  const s = sandbox(t);
+  s.issues[80].status = { name: "Closed", is_closed: true };
+  await assert.rejects(start({ ...s, id: 80, confirm: () => true }), /#80 is Closed; refresh Next up/);
+  assert.equal(s.git(s.checkout, "branch", "--list", "feat/80-*"), "");
+  assert.deepEqual(s.updates, []);
+});
+
+test("a Start on an issue iceboxed since the panel loaded changes nothing", async (t) => {
+  const s = sandbox(t);
+  s.issues[80].status = { name: "Icebox", is_closed: false };
+  await assert.rejects(start({ ...s, id: 80, confirm: () => true }), /#80 is Icebox; refresh Next up/);
+  assert.equal(s.git(s.checkout, "branch", "--list", "feat/80-*"), "");
+  assert.deepEqual(s.updates, []);
+});
+
+test("Open on a worktree Start didn't make syncs nothing and starts nothing", async (t) => {
+  const s = sandbox(t);
+  const path = require("path");
+  s.issues[80].status = { name: "In Progress", is_closed: false };
+  const dir = worktreeDir(s.checkout, 80);
+  s.git(s.checkout, "worktree", "add", "--quiet", "-b", "feat/80-by-hand", dir, "main");
+  const runs = failingUv(t, s);
+  const result = await start({ ...s, id: 80, confirm: () => assert.fail("asked about blockers") });
+  assert.deepEqual({ dir: result.dir, branch: result.branch, created: result.created, started: result.started }, { dir: path.resolve(dir), branch: "feat/80-by-hand", created: false, started: false });
+  assert.deepEqual(result.notes, []);
+  assert.throws(runs, /ENOENT/, "uv never ran");
+  assert.deepEqual(s.updates, []);
+});
+
+test("an issue branch pushed from elsewhere is checked out, tracking origin", async (t) => {
+  const s = sandbox(t);
+  s.issues[50].status = { name: "Closed", is_closed: true };
+  s.git(s.checkout, "push", "--quiet", "origin", "main:fix/80-pushed-elsewhere");
+  const result = await start({ ...s, id: 80, confirm: () => true });
+  assert.equal(result.branch, "fix/80-pushed-elsewhere");
+  assert.equal(s.git(result.dir, "rev-parse", "--abbrev-ref", "@{upstream}").trim(), "origin/fix/80-pushed-elsewhere");
+  assert.ok(result.notes.includes(`Checked out fix/80-pushed-elsewhere from origin in ${result.dir}.`));
+  assert.equal(result.started, true);
+});
+
+test("an issue branch checked out in the main checkout is refused by name", async (t) => {
+  const s = sandbox(t);
+  s.git(s.checkout, "switch", "--quiet", "-c", "feat/80-in-main");
+  await assert.rejects(start({ ...s, id: 80, confirm: () => true }), /feat\/80-in-main is checked out in the main checkout/);
+  assert.deepEqual(s.updates, []);
+});
+
+test("a Start under way in another window is refused before anything changes", async (t) => {
+  const s = sandbox(t);
+  const fs = require("fs");
+  const path = require("path");
+  s.issues[50].status = { name: "Closed", is_closed: true };
+  const held = path.join(s.checkout, ".git", "plan-starting-80");
+  fs.writeFileSync(held, `${process.pid}\n`);
+  await assert.rejects(start({ ...s, id: 80, confirm: () => true }), /#80 is being started in another window/);
+  assert.equal(s.git(s.checkout, "branch", "--list", "feat/80-*"), "");
+  assert.deepEqual(s.updates, []);
+  assert.ok(fs.existsSync(held), "another window's lock is left alone");
+});
+
+test("a lock left by a process that's gone is taken over, and released after", async (t) => {
+  const s = sandbox(t);
+  const fs = require("fs");
+  const path = require("path");
+  const { spawnSync } = require("child_process");
+  s.issues[50].status = { name: "Closed", is_closed: true };
+  const held = path.join(s.checkout, ".git", "plan-starting-80");
+  fs.writeFileSync(held, `${spawnSync("true").pid}\n`);
+  const result = await start({ ...s, id: 80, confirm: () => true });
+  assert.equal(result.created, true);
+  assert.ok(!fs.existsSync(held));
+});
+
+test("Open finds a worktree mid-rebase by its folder, and changes nothing", async (t) => {
+  const s = sandbox(t);
+  s.issues[50].status = { name: "Closed", is_closed: true };
+  const first = await start({ ...s, id: 80, confirm: () => true });
+  s.git(first.dir, "switch", "--quiet", "--detach");
+  const again = await start({ ...s, id: 80, confirm: () => assert.fail("asked about blockers") });
+  assert.deepEqual({ dir: again.dir, branch: again.branch, created: again.created, started: again.started }, { dir: first.dir, branch: null, created: false, started: false });
+  assert.equal(s.updates.length, 1);
+});
+
+test("a blocker Redmine won't show is listed as unknown, not a failed Start", async (t) => {
+  const s = sandbox(t);
+  const issue = s.redmine.issue;
+  s.redmine.issue = async (id) => (id === 50 ? Promise.reject(new Error("HTTP 404")) : issue(id));
+  const asked = [];
+  assert.equal(await start({ ...s, id: 80, confirm: async (b) => (asked.push(b), false) }), null);
+  assert.deepEqual(asked, [[{ id: 50, subject: "(couldn't read it)", status: "unknown" }]]);
+});
+
+test("a failed git worktree add leaves no marker, so a worktree made by hand after is set up", async (t) => {
+  const s = sandbox(t);
+  s.issues[50].status = { name: "Closed", is_closed: true };
+  s.issues[80].status = { name: "In Progress", is_closed: false };
+  const inject = stubs(t, s);
+  inject.gitOnce("worktree add");
+  await assert.rejects(start({ ...s, id: 80, confirm: () => true }), /injected/);
+  const dir = worktreeDir(s.checkout, 80);
+  s.git(s.checkout, "worktree", "add", "--quiet", "-b", "feat/80-by-hand", dir, "main");
+  const opened = await start({ ...s, id: 80, confirm: () => assert.fail("asked about blockers") });
+  assert.equal(opened.started, false);
+  assert.deepEqual(opened.notes, []);
+});
+
+test("a develop that origin deleted is no base", async (t) => {
+  const s = sandbox(t);
+  s.issues[50].status = { name: "Closed", is_closed: true };
+  s.git(s.checkout, "push", "--quiet", "origin", "main:develop");
+  s.git(s.checkout, "fetch", "--quiet", "origin");
+  s.git(s.checkout, "push", "--quiet", "origin", "--delete", "develop");
+  s.git(s.checkout, "update-ref", "refs/remotes/origin/develop", "main");
+  const result = await start({ ...s, id: 80, confirm: () => true });
+  assert.ok(result.notes.includes(`Made feat/80-start-from-the-panel from origin/main in ${result.dir}.`), result.notes.join(" "));
+});
+
+// Fault injection: each step of Start fails once, and the next Start must end where a clean one
+// does. A new step that writes gets a row here, with its row in the PR's failure-mode table.
+function stubs(t, s) {
+  const fs = require("fs");
+  const path = require("path");
+  const { execFileSync } = require("child_process");
+  const bin = fs.mkdtempSync(path.join(path.dirname(s.checkout), "bin-"));
+  const PATH = process.env.PATH;
+  const realGit = execFileSync("sh", ["-c", "command -v git"], { encoding: "utf8" }).trim();
+  process.env.PATH = `${bin}:${PATH}`;
+  t.after(() => (process.env.PATH = PATH));
+  // A uv that makes .venv; a git that fails "git <args>" once when told to, else is git.
+  fs.writeFileSync(path.join(bin, "uv"), "#!/bin/sh\nmkdir -p .venv\n", { mode: 0o755 });
+  fs.writeFileSync(path.join(bin, "git"), `#!/bin/sh\nif [ -f "${bin}/fail" ] && [ "$1 $2" = "$(cat "${bin}/fail")" ]; then rm "${bin}/fail"; echo injected >&2; exit 1; fi\nexec "${realGit}" "$@"\n`, { mode: 0o755 });
+  fs.writeFileSync(path.join(s.checkout, "uv.lock"), "");
+  s.git(s.checkout, "add", "uv.lock");
+  s.git(s.checkout, "-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "--quiet", "-m", "uv.lock");
+  s.git(s.checkout, "push", "--quiet", "origin", "main");
+  return {
+    gitOnce: (args) => fs.writeFileSync(path.join(bin, "fail"), args),
+    uvOnce: () => fs.writeFileSync(path.join(bin, "uv"), `#!/bin/sh\nmkdir -p .venv\n[ -f "${bin}/uv-ok" ] || { touch "${bin}/uv-ok"; echo injected >&2; exit 1; }\n`, { mode: 0o755 }),
+  };
+}
+
+function failOnce(object, method) {
+  const real = object[method];
+  object[method] = async () => {
+    object[method] = real;
+    throw new Error(`injected: ${method}`);
+  };
+}
+
+const STEPS = {
+  "reading the issue": (s) => failOnce(s.redmine, "issue"),
+  "reading the project": (s) => failOnce(s.redmine, "projectIdentifier"),
+  "the fetch": (s, inject) => inject.gitOnce("fetch --quiet"),
+  "making the worktree": (s, inject) => inject.gitOnce("worktree add"),
+  "uv sync": (s, inject) => inject.uvOnce(),
+  "reading the status id": (s) => failOnce(s.redmine, "statusId"),
+  "the Redmine update": (s) => failOnce(s.redmine, "update"),
+};
+
+for (const [step, fail] of Object.entries(STEPS)) {
+  test(`a Start that fails at ${step} ends, on the next Start, where a clean one does`, async (t) => {
+    const s = sandbox(t);
+    s.issues[50].status = { name: "Closed", is_closed: true };
+    const inject = stubs(t, s);
+    const confirm = () => true;
+    fail(s, inject);
+    await assert.rejects(start({ ...s, id: 80, confirm }), /injected/);
+
+    const again = await start({ ...s, id: 80, confirm });
+    assert.equal(again.branch, "feat/80-start-from-the-panel");
+    assert.equal(again.dir, worktreeDir(s.checkout, 80));
+    assert.equal(s.git(again.dir, "branch", "--show-current").trim(), again.branch);
+    assert.equal(again.started, true, "the Start that finishes setup hands over to Claude");
+    assert.equal(s.updates.length, 1);
+    assert.equal(s.issues[80].status.name, "In Progress");
+
+    const reopened = await start({ ...s, id: 80, confirm });
+    assert.equal(reopened.started, false);
+    assert.deepEqual(reopened.notes, []);
+    assert.equal(s.updates.length, 1);
+  });
+}

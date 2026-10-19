@@ -2,14 +2,15 @@
   "name": "gh-plan",
   "displayName": "GH Plan",
   "description": "Redmine's Next up query in a narrow sidebar panel; each issue opens in place, and starts in its own worktree.",
-  "version": "0.3.3",
+  "version": "0.3.6",
   "publisher": "pjfitzgibbons",
   "license": "UNLICENSED",
   "private": true,
   "engines": { "vscode": "^1.90.0" },
   "main": "./extension.js",
   "activationEvents": ["onStartupFinished"],
-  "scripts": { "test": "node --test" },
+  "scripts": { "test": "node --test", "lint": "eslint ." },
+  "devDependencies": { "@eslint/js": "9.39.5", "eslint": "9.39.5", "globals": "16.5.0" },
   "contributes": {
     "viewsContainers": {
       "activitybar": [{ "id": "plan", "title": "Plan", "icon": "media/plan.svg" }]

@@ -8,8 +8,11 @@ issue, in the query's order.
 - **Start** shows when the pointer is over a New issue's row. It warns when an open issue blocks this
   one, then makes the branch `<type>/<n>-<slug>` and its worktree in `<repo>.worktrees/<n>` beside the
   checkout, off the latest `origin/develop` (or `origin/main`), sets the issue In Progress with a
-  journal note, and opens the worktree in a new window with Claude Code beside it. On an In Progress
-  row the same button is **Open**, which reopens the worktree and changes nothing.
+  journal note, and opens the worktree in a new window with Claude Code beside it. The issue's branch,
+  if it already has one here or on `origin`, is reused on its own base. On an In Progress row the same
+  button is **Open**, which reopens the worktree, making it the same way if this machine has none, and
+  changes nothing in one already set up. Start refuses an issue whose status has moved on from New or
+  In Progress since the panel loaded.
 - **A link** opens in an Integrated Browser tab.
 - **Review before `pr`:** once an issue's `.tmp/<n>/commit.txt` and `.tmp/<n>/pr-body.md` are both
   written, they open stacked in the leftmost editor group (or the only one), the commit message
@@ -37,9 +40,11 @@ security add-generic-password -U -s redmine-gh-plan -a "$USER" -w
 From this folder:
 
 ```sh
+npm install
+npm test
+npm run lint
 npx -y @vscode/vsce@3 package --allow-missing-repository --skip-license -o /tmp/gh-plan.vsix
 code --install-extension /tmp/gh-plan.vsix
-node --test
 ```
 
 Then run **Developer: Reload Window**. Start's Claude step calls Claude Code's undocumented

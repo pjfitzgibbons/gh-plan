@@ -6,13 +6,16 @@ const crypto = require("crypto");
 const fs = require("fs");
 const path = require("path");
 const { Redmine } = require("./redmine");
-const { start } = require("./start");
+const { ACTION, checkId, start } = require("./start");
 const { stackedBelowFirst } = require("./layout");
 
 // A new window can't be handed a task directly, so Start leaves one in the extension's global
-// storage, which every window shares; the new window's activation picks it up and starts Claude.
+// storage, which every window shares; the worktree's window picks it up when it opens, or at once if
+// it was open already, and starts Claude.
 // One file per worktree, so a second Start before the first window opens doesn't replace the first's.
-const HANDOFF_FRESH_MS = 2 * 60 * 1000;
+// A handoff is kept until Claude starts, so a reload can retry it; after a day, opening that
+// worktree no longer starts Claude unasked.
+const HANDOFF_FRESH_MS = 24 * 60 * 60 * 1000;
 
 function handoffFile(storage, dir) {
   return path.join(storage, `handoff-${crypto.createHash("sha256").update(dir).digest("hex").slice(0, 16)}.json`);
@@ -67,8 +70,10 @@ class NextUp {
 
   start(id) {
     // The issue number is the only thing taken from the webview.
-    if (!Number.isInteger(id) || id <= 0) {
-      vscode.window.showErrorMessage(`Plan: Start needs an issue number, not ${JSON.stringify(id)}`);
+    try {
+      checkId(id);
+    } catch (error) {
+      vscode.window.showErrorMessage(`Plan: ${error.message}`);
       return;
     }
     if (!this.starting.has(id)) {
@@ -79,28 +84,29 @@ class NextUp {
 
   async startOnce(id) {
     const config = vscode.workspace.getConfiguration("plan");
-    let result;
     try {
-      result = await vscode.window.withProgress(
+      const result = await vscode.window.withProgress(
         { location: vscode.ProgressLocation.Notification, title: `Starting #${id}` },
         () => start({ redmine: redmine(), checkouts: config.get("checkouts"), id, confirm: confirmBlockers })
       );
+      if (!result) return;
+      if (result.notes.length) vscode.window.showInformationMessage(`Plan: ${result.notes.join(" ")}`);
+      // Claude starts only in a window opened by the Start that finished setting the work up, including
+      // one that finished what a stopped Start began, or by an Open after Claude failed to start;
+      // otherwise reopening started work changes nothing.
+      const file = handoffFile(this.storage, result.dir);
+      if (result.started || fs.existsSync(file)) {
+        fs.mkdirSync(this.storage, { recursive: true });
+        // Written aside and renamed in, so a watching window never reads it half written.
+        fs.writeFileSync(`${file}.tmp`, JSON.stringify({ dir: result.dir, prompt: `Work on Redmine #${id}`, at: Date.now() }));
+        fs.renameSync(`${file}.tmp`, file);
+      }
+      await vscode.commands.executeCommand("vscode.openFolder", vscode.Uri.file(result.dir), { forceNewWindow: true });
     } catch (error) {
       vscode.window.showErrorMessage(`Plan: #${id} didn't start. ${error.message}`);
-      return;
+    } finally {
+      this.refresh();
     }
-    if (!result) return;
-    if (result.notes.length) vscode.window.showInformationMessage(`Plan: ${result.notes.join(" ")}`);
-    // Claude starts only in a window opened by the Start that finished setting the work up, including
-    // one that finished what a stopped Start began, or by an Open after Claude failed to start;
-    // otherwise reopening started work changes nothing.
-    const file = handoffFile(this.storage, result.dir);
-    if (result.started || fs.existsSync(file)) {
-      fs.mkdirSync(this.storage, { recursive: true });
-      fs.writeFileSync(file, JSON.stringify({ dir: result.dir, prompt: `Work on Redmine #${id}`, at: Date.now() }));
-    }
-    await vscode.commands.executeCommand("vscode.openFolder", vscode.Uri.file(result.dir), { forceNewWindow: true });
-    this.refresh();
   }
 
   async refresh() {
@@ -111,6 +117,7 @@ class NextUp {
       const issues = (await client.list()).map((issue) => ({
         ...issue,
         marker: markers[issue.project] || issue.project.slice(0, 2),
+        action: ACTION[issue.status],
       }));
       this.post({ type: "list", base: client.settings.url, issues });
     } catch (error) {
@@ -153,11 +160,21 @@ async function confirmBlockers(blockers) {
   return choice === "Start anyway";
 }
 
-// In the window Start opened: start Claude beside, once, if the handoff is fresh and for this folder.
+// In the worktree's window: start Claude beside, once, if the handoff is fresh and for this folder.
 // A handoff Claude didn't take stays, so the issue's Open button can try again.
+let taking = false;
 async function takeHandoff(storage) {
   const folder = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
-  if (!folder) return;
+  if (!folder || taking) return;
+  taking = true;
+  try {
+    await takeHandoffFor(storage, folder);
+  } finally {
+    taking = false;
+  }
+}
+
+async function takeHandoffFor(storage, folder) {
   const file = handoffFile(storage, folder);
   let handoff;
   try {
@@ -165,7 +182,11 @@ async function takeHandoff(storage) {
   } catch {
     return;
   }
-  if (folder !== handoff.dir || Date.now() - handoff.at > HANDOFF_FRESH_MS) return;
+  if (folder !== handoff.dir) return;
+  if (Date.now() - handoff.at > HANDOFF_FRESH_MS) {
+    fs.rmSync(file, { force: true });
+    return;
+  }
   try {
     // Undocumented: Claude Code's own command, (prompt, args, location), read from its source (2.1.301).
     await vscode.commands.executeCommand("claude-vscode.terminal.open", handoff.prompt, [], "beside");
@@ -210,8 +231,22 @@ async function openHandover(dir) {
   await vscode.window.showTextDocument(body, { viewColumn: stacked ? 2 : vscode.ViewColumn.Active, preview: false });
 }
 
+// openFolder only focuses a window already open on the worktree, so that window watches for its
+// handoff too.
+function watchHandoff(context, storage) {
+  const folder = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+  if (!folder) return;
+  const name = path.basename(handoffFile(storage, folder));
+  const watcher = vscode.workspace.createFileSystemWatcher(new vscode.RelativePattern(vscode.Uri.file(storage), name));
+  watcher.onDidCreate(() => takeHandoff(storage));
+  watcher.onDidChange(() => takeHandoff(storage));
+  context.subscriptions.push(watcher);
+}
+
 function activate(context) {
   const view = new NextUp(context);
+  fs.mkdirSync(view.storage, { recursive: true });
+  watchHandoff(context, view.storage);
   takeHandoff(view.storage);
   watchHandover(context);
   context.subscriptions.push(

@@ -13,12 +13,17 @@ settings: what this repo needs is here or in `.claude/`.
 - Read the ADR in `docs/adr/` that decided a behaviour before changing it: ADR 0008 before touching
   items, branches or `plan:` commits.
 - Read `docs/requirements.md` before adding a command or changing what one does.
+- Read `docs/failure-modes.md` before writing a command that writes to git, Redmine, GitHub or a
+  file another window reads, and before fixing a review finding in one.
 - Read `docs/agents/technical-writer.md` before writing an item, ADR or design doc.
 - Read `.tracker/ready.yml` and the item files before answering "what's next".
 
 ## Commands
 
 - **Tests:** `uv run pytest`. It also runs `.claude/hooks/`, and fails under 90% coverage.
+- **The VS Code extension:** `npm test` and `npm run lint`, in `vscode/`, after `npm install`.
+- **Before each push:** `/code-review high` on the branch's whole diff, review fixes included. The
+  PR body says it ran.
 - **Python:** `python3` on PATH. `/usr/bin/python3` is 3.9 and can't run the skill scripts.
 - **An item's work:** `worktask start|next|done <id>` (the worktask skill). `start` pushes the
   `plan: start <id>` commit and makes the worktree and branch.
@@ -61,8 +66,8 @@ settings: what this repo needs is here or in `.claude/`.
   - **2.** The default branch carries the current state. Everything reaches it by PR, except
     `plan:` commits.
   - **3.** A tool commit touches one item's `status` and `started`, plus `ready.yml`.
-  - **5.** The only remote write is a `git push` of the tool's own commits. Nothing goes through
-    GitHub's API.
+  - **6.** Only the named modules spawn a process or open a connection; every Redmine call goes
+    through `vscode/redmine.js`.
 
 ## Gotchas
 

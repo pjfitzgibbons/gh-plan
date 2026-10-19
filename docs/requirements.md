@@ -102,7 +102,7 @@ traded · `COULD`: nice, and no tool gets credit for it over a MUST.
 |---|---|---|---|
 | **G1** | MUST | **Tracking data is reviewable evidence**: in git or exportable to a committed file, diffable, and readable by someone with no account | Planning data is a record of what was planned and when, and others need to review it. A row in someone's hosted database is not evidence |
 | **G2** | MUST | **Full export in a documented, stable format.** No lock-in | |
-| **G3** | MUST | **No new credential.** No PAT, API token or app secret stored in a repo, repo settings, or CI | A hard rule forbids secrets in any repo |
+| **G3** | MUST | **No credential in a repo.** No PAT, API token or app secret in a committed file. A CI secret is allowed only for a token listed in [architecture §6.2](architecture.md#process-boundary), with what it reads, what it writes and where it lives | A hard rule forbids secrets in any repo. A listed token's scope bounds what a leak exposes |
 | **G4** | SHOULD | Low operational burden: no other system that itself needs patching, backing up and validating | A self-hosted tracker is one more system to secure and maintain |
 | **G5** | SHOULD | Change history on tracking data: who changed an estimate or a baseline, and when | |
 | **G6** | SHOULD | **Tracking files are editable by hand**, in a text editor, with no tool installed | A person fixes or reviews a value where it lives. The tool is a convenience over the files, not the only way to change them |

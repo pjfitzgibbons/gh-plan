@@ -8,6 +8,13 @@ const path = require("path");
 
 const PREFIX = { Feature: "feat", Bug: "fix", Support: "chore" };
 
+// The statuses Start accepts, with the label of their row's button.
+const ACTION = { New: "Start", "In Progress": "Open" };
+
+function checkId(id) {
+  if (!Number.isInteger(id) || id <= 0) throw new Error(`Start needs an issue number, not ${JSON.stringify(id)}`);
+}
+
 // The subject's first five words, lowercase, joined by hyphens, as worktask made them.
 function slug(subject) {
   return subject.toLowerCase().split(/[^a-z0-9]+/).filter(Boolean).slice(0, 5).join("-");
@@ -31,14 +38,22 @@ function blockerIds(issue) {
     .map((r) => r.issue_id);
 }
 
-// The worktree already holding a branch for issue id, whatever its slug became.
-function existingWorktree(porcelain, id) {
-  const pattern = new RegExp(`^branch refs/heads/(?:[\\w-]+/)?${id}-`);
-  for (const block of porcelain.split("\n\n")) {
+// A branch name for issue id, whatever its slug became: <n>-… with a tracker's prefix or none, so
+// release/2026-10 is no branch of #2026.
+function issueBranch(id) {
+  return new RegExp(`^(?:(?:${Object.values(PREFIX).join("|")})/)?${id}-`);
+}
+
+// The worktree already holding a branch for issue id, or at dir, where Start puts it, whatever its
+// HEAD: a rebase or bisect detaches it, and branch is then null. main: it's the main checkout,
+// listed first.
+function existingWorktree(porcelain, id, dir) {
+  const pattern = issueBranch(id);
+  for (const [i, block] of porcelain.split("\n\n").entries()) {
     const lines = block.split("\n");
-    if (lines.some((line) => pattern.test(line))) {
-      return { dir: lines[0].replace(/^worktree /, ""), branch: lines.find((l) => pattern.test(l)).slice(18) };
-    }
+    const at = lines[0].replace(/^worktree /, "");
+    const branch = lines.map((l) => l.replace(/^branch refs\/heads\//, "")).find((l, j) => j > 0 && pattern.test(l));
+    if (branch || (i > 0 && at === dir)) return { dir: at, branch: branch || null, main: i === 0 };
   }
   return null;
 }
@@ -57,16 +72,48 @@ function run(command, args, cwd) {
 }
 const git = (cwd, ...args) => run("git", args, cwd);
 
-// Written in the worktree's own git dir, outside its tree, once its setup has all succeeded.
-const SET_UP = "plan-set-up";
+// One Start per issue across windows: an exclusive file in the repo's git dir, holding the pid of
+// the extension host that took it. One whose process is gone was left by a crash, and is taken over.
+// Returns its release.
+function lock(common, id) {
+  const file = path.join(common, `plan-starting-${id}`);
+  for (let tries = 0; ; tries++) {
+    try {
+      fs.writeFileSync(file, `${process.pid}\n`, { flag: "wx" });
+      return () => fs.rmSync(file, { force: true });
+    } catch (error) {
+      if (error.code !== "EEXIST") throw error;
+      // An empty file is one being written, so its holder is alive.
+      const pid = Number(fs.readFileSync(file, "utf8").trim() || NaN);
+      if (tries || !Number.isInteger(pid) || alive(pid)) throw new Error(`#${id} is being started in another window; if none is, delete ${file}`);
+      fs.rmSync(file, { force: true });
+    }
+  }
+}
+
+function alive(pid) {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return error.code === "EPERM";
+  }
+}
+
+// In the repo's git dir, outside every tree: written just before Start makes an issue's worktree,
+// removed if that fails, and removed once its setup has all succeeded. A worktree without it is set up, including one made
+// before this marker or by another tool, so Open leaves it alone.
+const settingUp = (common, id) => path.join(common, `plan-setting-up-${id}`);
 
 // Start issue id, or reopen its worktree. Safe to repeat: each step runs only when it has something
 // to do. confirm(blockers) is asked only before a new worktree; false stops with nothing changed.
 // Returns { dir, branch, created, started, notes }, or null when Peter said no. started: this Start
 // finished the worktree's setup, here or after an earlier one stopped part way.
 async function start({ redmine, checkouts, id, confirm }) {
-  if (!Number.isInteger(id) || id <= 0) throw new Error(`Start needs an issue number, not ${JSON.stringify(id)}`);
+  checkId(id);
   const issue = await redmine.issue(id);
+  // The panel's row can be older than the issue: one closed, iceboxed or moved on since keeps its status.
+  if (!ACTION[issue.status.name]) throw new Error(`#${id} is ${issue.status.name}; refresh Next up`);
   const project = await redmine.projectIdentifier(issue.project.id);
   if (!checkouts[project]) throw new Error(`no checkout for Redmine project "${project}"; add it to plan.checkouts`);
   const named = expandHome(checkouts[project]);
@@ -77,58 +124,88 @@ async function start({ redmine, checkouts, id, confirm }) {
   const common = (await git(named, "rev-parse", "--path-format=absolute", "--git-common-dir")).trim();
   const checkout = fs.realpathSync(path.dirname(common));
 
+  const release = lock(common, id);
+  try {
+    return await startIn({ redmine, id, confirm, issue, checkout, common });
+  } finally {
+    release();
+  }
+}
+
+async function startIn({ redmine, id, confirm, issue, checkout, common }) {
   const notes = [];
-  let found = existingWorktree(await git(checkout, "worktree", "list", "--porcelain"), id);
+  const dir = worktreeDir(checkout, id);
+  let found = existingWorktree(await git(checkout, "worktree", "list", "--porcelain"), id, dir);
   let created = false;
+  if (found?.main) {
+    throw new Error(`${found.branch} is checked out in the main checkout, ${checkout}; switch that off it, then Start again`);
+  }
   if (found && !fs.existsSync(found.dir)) {
     throw new Error(`git still lists ${found.dir} as a worktree, but it's gone; run git worktree prune in ${checkout}, then Start again`);
   }
   if (!found) {
-    const blockers = [];
-    for (const blocker of blockerIds(issue)) {
-      const other = await redmine.issue(blocker);
-      if (!other.status.is_closed) blockers.push({ id: other.id, subject: other.subject, status: other.status.name });
-    }
+    // A blocker Peter can't read, deleted or in a project hidden from him, is listed as unknown.
+    const blockers = (await Promise.all(blockerIds(issue).map((blocker) => redmine.issue(blocker).then(
+      (other) => !other.status.is_closed && { id: other.id, subject: other.subject, status: other.status.name },
+      () => ({ id: blocker, subject: "(couldn't read it)", status: "unknown" })
+    )))).filter(Boolean);
     if (blockers.length && !(await confirm(blockers))) return null;
 
-    // A branch starts from the latest base or not at all; a failed fetch stops before anything changes.
-    await git(checkout, "fetch", "--quiet", "origin");
+    // A new branch starts from the latest base or not at all; a failed fetch stops before anything changes.
+    // --prune drops a branch origin has deleted, so a gone develop is no base.
+    await git(checkout, "fetch", "--quiet", "--prune", "origin");
+    // develop, else origin's default branch, else main.
     let base = "main";
+    await git(checkout, "symbolic-ref", "--quiet", "--short", "refs/remotes/origin/HEAD").then((ref) => (base = ref.trim().replace(/^origin\//, "")), () => {});
     await git(checkout, "show-ref", "--verify", "--quiet", "refs/remotes/origin/develop").then(() => (base = "develop"), () => {});
-    const dir = worktreeDir(checkout, id);
-    if (!path.relative(checkout, dir).startsWith("..")) throw new Error(`${dir} is inside ${checkout}; worktrees go beside it`);
     if (fs.existsSync(dir)) throw new Error(`${dir} exists but isn't a worktree of ${checkout}`);
     fs.mkdirSync(path.dirname(dir), { recursive: true });
-    // A branch left without its worktree (say, by a removed worktree) is reused, not made again.
-    const local = (await git(checkout, "for-each-ref", "--format=%(refname:short)", "refs/heads"))
-      .split("\n").find((name) => new RegExp(`^(?:[\\w-]+/)?${id}-`).test(name));
-    const branch = local || branchName(issue);
-    if (local) await git(checkout, "worktree", "add", "--quiet", dir, branch);
-    else await git(checkout, "worktree", "add", "--quiet", "--no-track", "-b", branch, dir, `origin/${base}`);
+    fs.writeFileSync(settingUp(common, id), `${new Date().toISOString()}\n`);
+    // The issue's branch, if it has one, here or pushed from elsewhere, is reused as it is: it may
+    // hold work, so it keeps its own base.
+    const refs = async (prefix) => (await git(checkout, "for-each-ref", "--format=%(refname:short)", prefix))
+      .split("\n").map((name) => name.replace(/^origin\//, "")).find((name) => issueBranch(id).test(name));
+    const local = await refs("refs/heads");
+    const pushed = !local && (await refs("refs/remotes/origin"));
+    const branch = local || pushed || branchName(issue);
+    try {
+      if (local) {
+        await git(checkout, "worktree", "add", "--quiet", dir, branch);
+        notes.push(`Reused the branch ${branch}, on its own base, in ${dir}.`);
+      } else if (pushed) {
+        await git(checkout, "worktree", "add", "--quiet", "--track", "-b", branch, dir, `origin/${branch}`);
+        notes.push(`Checked out ${branch} from origin in ${dir}.`);
+      } else {
+        await git(checkout, "worktree", "add", "--quiet", "--no-track", "-b", branch, dir, `origin/${base}`);
+        notes.push(`Made ${branch} from origin/${base} in ${dir}.`);
+      }
+    } catch (error) {
+      // No worktree, so no setup to finish: a worktree made later by hand is set up.
+      fs.rmSync(settingUp(common, id), { force: true });
+      throw error;
+    }
     found = { dir, branch };
     created = true;
-    notes.push(`Made ${branch} from origin/${base} in ${dir}.`);
   }
 
-  // A sync or update that failed part way can leave .venv behind or the status unchanged, so setup
-  // is done only once the marker, written last, is there.
-  const marker = path.join((await git(found.dir, "rev-parse", "--path-format=absolute", "--git-dir")).trim(), SET_UP);
-  const started = !fs.existsSync(marker);
+  // A sync or update that failed part way leaves the marker, so the next Start runs setup again.
+  const marker = settingUp(common, id);
+  const started = fs.existsSync(marker);
   if (started && fs.existsSync(path.join(found.dir, "uv.lock"))) {
     await run("uv", ["sync", "--quiet"], found.dir);
     notes.push("Synced the uv environment.");
   }
 
-  if (issue.status.name !== "In Progress") {
+  if (issue.status.name === "New") {
     await redmine.update(id, {
       status_id: await redmine.statusId("In Progress"),
       ...(issue.start_date ? {} : { start_date: new Date().toLocaleDateString("sv") }),
-      notes: `Started on \`${found.branch}\`, in ${found.dir}.`,
+      notes: `Started${found.branch ? ` on \`${found.branch}\`` : ""}, in ${found.dir}.`,
     });
     notes.push(`#${id} is In Progress.`);
   }
-  if (started) fs.writeFileSync(marker, `${new Date().toISOString()}\n`);
+  if (started) fs.rmSync(marker, { force: true });
   return { ...found, created, started, notes };
 }
 
-module.exports = { slug, branchName, worktreeDir, blockerIds, existingWorktree, expandHome, start };
+module.exports = { ACTION, checkId, slug, branchName, worktreeDir, blockerIds, issueBranch, existingWorktree, expandHome, start };
