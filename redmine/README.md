@@ -56,6 +56,21 @@ already matches. Re-running it is always safe: it runs in one transaction, makes
 missing, and leaves alone what it doesn't own, such as a version's status or description once
 made. It needs no API key, because it works on the database from inside the container.
 
+To switch on the repository web service, which fetches commits after each merge (*Commits and
+closing*), store a key for it once, then pass it to the setup:
+
+```
+openssl rand -hex 20
+security add-generic-password -U -s redmine-sys-api -a "$USER" -w
+SYS_API_KEY="$(security find-generic-password -s redmine-sys-api -w)" \
+  docker compose -f redmine/compose.yml exec -e SYS_API_KEY -u redmine redmine bin/rails runner /setup/setup.rb
+```
+
+`security` prompts for the key when `-w` comes last; paste the line `openssl` printed. `-e
+SYS_API_KEY` names the variable without its value. Both keep the key out of the process list.
+
+A run without `SYS_API_KEY` leaves the web service as it is.
+
 What it sets up:
 
 - A private parent project `plan`, with sub-projects `gh-plan` and `tempotag`, each with the
@@ -72,6 +87,7 @@ What it sets up:
 - **View lane board** for every role.
 - The REST API, cross-project relations and cross-project commit references switched on.
 - `refs` as the commit keyword that links an issue, and `fixes` as the one that closes it.
+- With `SYS_API_KEY`, the repository web service, switched on with that key.
 - Each repo registered as its project's Git repository, at `/repos/<project>.git`.
 - One version per milestone in `plan`, shared with its tree.
 - The Opale theme, and the `Pull requests` column in the default issue list.
@@ -139,11 +155,22 @@ container makes a new one.
 
 ## Commits and closing
 
-Redmine reads a repository's new commits only when someone opens its Repository tab, so a
-`fixes #<n>` commit closes the issue at that fetch, not when it is committed. The issue's
-`closed_on` is the fetch time; the commit's time is the changeset's `committed_on`.
-Opening the tab fetches now. Fetching after each merge is pl-sijil's, in the icebox.
+Redmine reads a repository's new commits only when it fetches them, so a `fixes #<n>` commit
+closes the issue at that fetch, not when it is committed. The issue's `closed_on` is the fetch
+time; the commit's time is the changeset's `committed_on`. Redmine fetches when someone opens the
+Repository tab, and through its repository web service, which `pr` and the extension's **Done**
+both call after a merge once its key is stored (*Running the setup*). To fetch now, open the tab,
+or post the key yourself:
+
+```
+printf 'key=%s' "$(security find-generic-password -s redmine-sys-api -w)" |
+  curl -s -w '%{http_code}\n' --data-binary @- http://127.0.0.1:3010/sys/fetch_changesets
+```
+
+The web service never reloads Redmine's settings, so it refuses a key that `setup.rb` has just
+stored until a page view or an API call reloads them; `pr` loads a page first, and Done reads the
+issue first.
 
 GitHub makes a PR's title the subject of its squash commit, so the title carries the keyword: a
 PR that finishes issue `<n>` ends its title `(fixes #<n>)`, and one that does part of it ends
-`(refs #<n>)`. A `refs` commit leaves the issue open, to be closed by hand.
+`(refs #<n>)`. A `refs` commit leaves the issue open, to be closed by Done or by hand.

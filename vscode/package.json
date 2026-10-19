@@ -1,8 +1,8 @@
 {
   "name": "gh-plan",
   "displayName": "GH Plan",
-  "description": "Redmine's Next up query in a narrow sidebar panel; each issue opens in place, starts in its own worktree, and ships from its review.",
-  "version": "0.4.2",
+  "description": "Redmine's Next up query in a narrow sidebar panel; each issue opens in place, starts in its own worktree, ships from its review, and finishes after its merge.",
+  "version": "0.5.0",
   "publisher": "pjfitzgibbons",
   "license": "UNLICENSED",
   "private": true,
@@ -67,6 +67,12 @@
           "default": { "gh-plan": "~/programming/gh-plan", "tempotag": "~/programming/tempotag" },
           "description": "The main checkout of each repo, by Redmine project identifier. Start makes an issue's worktree beside it, in <repo>.worktrees/<n>."
         },
+        "plan.disposable": {
+          "type": "array",
+          "items": { "type": "string" },
+          "default": [".tmp/", "node_modules/", ".venv/", "__pycache__/", ".pytest_cache/", ".coverage", ".ruby-lsp/", "htmlcov/", "dist/", "build/"],
+          "description": "The ignored files Done may delete with an issue's worktree, by name at any depth; name/ is a folder. Done refuses a worktree holding any other ignored file."
+        },
         "plan.pr": {
           "type": "string",
           "default": "~/.local/bin/pr",
@@ -76,6 +82,11 @@
           "type": "string",
           "default": "redmine-gh-plan",
           "description": "The macOS Keychain item (service name) that holds your Redmine API key."
+        },
+        "plan.sysKeychainService": {
+          "type": "string",
+          "default": "redmine-sys-api",
+          "description": "The macOS Keychain item (service name) that holds the key of Redmine's repository web service, which Done uses to fetch the commits after a merge."
         }
       }
     }

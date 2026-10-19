@@ -27,6 +27,13 @@ issue, in the query's order.
   Once `pr` succeeds, the review files, the Changes view and any diffs of the worktree's files
   close, and the issue's Pull requests field links the PR, with a journal note. Ship and Go
   again run `pr` again, which updates the PR body, and leave Redmine as it is once the PR is linked.
+- **Done** shows beside Open on an In Progress row that links a PR. Once that PR has merged, it
+  removes the issue's worktree, brings the main checkout's base up to the merge, deletes the
+  branch, has Redmine fetch the commits, and closes the issue with a note linking the PR and its
+  merge commit. It refuses an unmerged PR, and a worktree with changes or commits the PR lacks,
+  before it changes anything. The main checkout leaves its branch only when that branch is the
+  issue's; a branch whose tip moved past the PR's head is kept and named. Done again finishes what
+  a stopped one left, and otherwise changes nothing. Then close the worktree's window.
 
 ## Settings
 
@@ -36,8 +43,10 @@ issue, in the query's order.
 | `plan.project`, `plan.query` | `plan`, `Next up` | The project and saved query shown. |
 | `plan.projectMarkers` | `Pl`, `tt`, `ms` | The marker per Redmine project identifier. |
 | `plan.checkouts` | gh-plan, tempotag under `~/programming` | The main checkout per Redmine project identifier, for Start. |
+| `plan.disposable` | `.tmp/`, `node_modules/`, `.venv/`, caches, `dist/`, `build/` | The ignored files Done may delete with an issue's worktree, by name at any depth; `name/` is a folder. Done refuses a worktree holding any other. |
 | `plan.pr` | `~/.local/bin/pr` | The `pr` script Ship runs, by path: a login shell finds `/usr/bin/pr` first. |
 | `plan.keychainService` | `redmine-gh-plan` | The Keychain item holding your Redmine API key. |
+| `plan.sysKeychainService` | `redmine-sys-api` | The Keychain item holding the key of Redmine's repository web service, for Done's fetch (`redmine/README.md`, *Running the setup*). |
 
 The API key lives only in the Keychain. Store it once, from Redmine's *My account* page:
 

@@ -2,8 +2,14 @@
 #   docker compose -f redmine/compose.yml exec -u redmine redmine bin/rails runner /setup/setup.rb
 # It makes what is missing, corrects what it owns and leaves the rest alone, so a second run
 # prints "nothing to change". It runs in one transaction, so a failed run leaves nothing behind.
-# It reads no credential: rails runner works on the database directly, because the REST API
-# cannot make custom fields, statuses, workflows, settings or repositories.
+# It needs no API key: rails runner works on the database directly, because the REST API
+# cannot make custom fields, statuses, workflows, settings or repositories. The one credential it
+# takes is the repository web service's key, from SYS_API_KEY, which the Keychain holds. -e names
+# it without its value, so the key stays out of the process list:
+#   SYS_API_KEY="$(security find-generic-password -s redmine-sys-api -w)" \
+#     docker compose -f redmine/compose.yml exec -e SYS_API_KEY -u redmine \
+#     redmine bin/rails runner /setup/setup.rb
+# Without it, the service is left as it is.
 
 PARENT = { identifier: 'plan', name: 'Plan' }.freeze
 # identifier => name. Each repo's .git is mounted at /repos/<identifier>.git (compose.yml).
@@ -111,6 +117,12 @@ ActiveRecord::Base.transaction do
   setting :commit_ref_keywords, 'refs'
   closed = IssueStatus.find_by!(name: 'Closed')
   setting :commit_update_keywords, [{ 'keywords' => 'fixes', 'status_id' => closed.id.to_s, 'done_ratio' => '' }]
+  # The repository web service, so a merge can ask for its commits to be fetched. Never on
+  # without a key: an empty key would let any request through.
+  if ENV['SYS_API_KEY'].present?
+    setting :sys_api_key, ENV['SYS_API_KEY']
+    setting :sys_api_enabled, '1'
+  end
 
   # Icebox: open, and in each workflow a copy of New, so it opens no route a role lacks. It gets
   # New's transitions out, with their author and assignee conditions, each status's transition

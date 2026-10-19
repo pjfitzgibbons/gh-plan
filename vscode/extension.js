@@ -1,6 +1,6 @@
 // The Next up panel: a webview in the Plan sidebar. The webview makes no request itself; it asks
 // this host for the list and for each issue, hands every link click back to open in a tab, and asks
-// it to start an issue.
+// it to start or finish an issue.
 const vscode = require("vscode");
 const crypto = require("crypto");
 const fs = require("fs");
@@ -8,6 +8,7 @@ const path = require("path");
 const { Redmine } = require("./redmine");
 const { ACTION, checkId, start, expandHome } = require("./start");
 const { reviewFile, shipTab, check, pullRequest, linkPullRequest } = require("./ship");
+const { finish } = require("./done");
 
 // A new window can't be handed a task directly, so Start leaves one in the extension's global
 // storage, which every window shares; the worktree's window picks it up when it opens, or at once if
@@ -28,15 +29,23 @@ function redmine() {
     project: config.get("project"),
     query: config.get("query"),
     service: config.get("keychainService"),
+    sysService: config.get("sysKeychainService"),
   });
+}
+
+// What a Done did, and, when it removed a worktree, the window that has lost its folder.
+function said(result) {
+  const here = vscode.workspace.workspaceFolders?.some((f) => f.uri.fsPath === result.dir);
+  const close = result.dir ? (here ? " Close this window." : ` Close the window on ${result.dir}, if one is open.`) : "";
+  return `${result.notes.join(" ")}${close}`.trim();
 }
 
 class NextUp {
   constructor(context) {
     this.media = vscode.Uri.joinPath(context.extensionUri, "media");
     this.storage = context.globalStorageUri.fsPath;
-    // Starts under way, by issue: a second click joins the first rather than racing it.
-    this.starting = new Map();
+    // The Start or Done under way, by issue: { action, promise }.
+    this.busy = new Map();
   }
 
   resolveWebviewView(view) {
@@ -65,6 +74,48 @@ class NextUp {
         return;
       case "start":
         return this.start(message.id);
+      case "done":
+        return this.done(message.id);
+    }
+  }
+
+  done(id) {
+    // The issue number is the only thing taken from the webview; the PR comes from the issue.
+    try {
+      checkId(id, "Done");
+    } catch (error) {
+      vscode.window.showErrorMessage(`Plan: ${error.message}`);
+      return;
+    }
+    return this.once(id, "Done", () => this.doneOnce(id));
+  }
+
+  // One Start or Done per issue in this window: a second click on the same button joins the first,
+  // and the other button is refused by name, rather than by the lock as if from another window.
+  once(id, action, run) {
+    const busy = this.busy.get(id);
+    if (busy && busy.action !== action) {
+      vscode.window.showErrorMessage(`Plan: #${id} is being ${busy.action === "Done" ? "finished" : "started"} here; try again once that ends`);
+      return busy.promise;
+    }
+    if (!busy) this.busy.set(id, { action, promise: run().finally(() => this.busy.delete(id)) });
+    return this.busy.get(id).promise;
+  }
+
+  async doneOnce(id) {
+    const config = vscode.workspace.getConfiguration("plan");
+    try {
+      const result = await vscode.window.withProgress(
+        { location: vscode.ProgressLocation.Notification, title: `Finishing #${id}` },
+        () => finish({ redmine: redmine(), checkouts: config.get("checkouts"), id, disposable: config.get("disposable") })
+      );
+      vscode.window.showInformationMessage(`Plan: #${id} is done. ${said(result)}`);
+    } catch (error) {
+      // A Done that failed part way says what it changed first.
+      const before = error.result && said(error.result);
+      vscode.window.showErrorMessage(`Plan: #${id} isn't done. ${error.message}${before ? ` Before that: ${before}` : ""}`);
+    } finally {
+      this.refresh();
     }
   }
 
@@ -76,10 +127,7 @@ class NextUp {
       vscode.window.showErrorMessage(`Plan: ${error.message}`);
       return;
     }
-    if (!this.starting.has(id)) {
-      this.starting.set(id, this.startOnce(id).finally(() => this.starting.delete(id)));
-    }
-    return this.starting.get(id);
+    return this.once(id, "Start", () => this.startOnce(id));
   }
 
   async startOnce(id) {
@@ -121,6 +169,7 @@ class NextUp {
         ...issue,
         marker: markers[issue.project] || issue.project.slice(0, 2),
         action: ACTION[issue.status],
+        done: issue.status === "In Progress" && Boolean(issue.pullRequests),
       }));
       this.post({ type: "list", base: client.settings.url, issues });
     } catch (error) {

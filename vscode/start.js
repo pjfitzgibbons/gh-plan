@@ -11,8 +11,8 @@ const PREFIX = { Feature: "feat", Bug: "fix", Support: "chore" };
 // The statuses Start accepts, with the label of their row's button.
 const ACTION = { New: "Start", "In Progress": "Open" };
 
-function checkId(id) {
-  if (!Number.isInteger(id) || id <= 0) throw new Error(`Start needs an issue number, not ${JSON.stringify(id)}`);
+function checkId(id, action = "Start") {
+  if (!Number.isInteger(id) || id <= 0) throw new Error(`${action} needs an issue number, not ${JSON.stringify(id)}`);
 }
 
 // The subject's first five words, lowercase, joined by hyphens, as worktask made them.
@@ -44,20 +44,28 @@ function issueBranch(id) {
   return new RegExp(`^(?:(?:${Object.values(PREFIX).join("|")})/)?${id}-`);
 }
 
+// Each worktree git lists: { dir, branch, main, locked }, the main checkout first; branch is null on
+// a detached HEAD.
+function worktrees(porcelain) {
+  return porcelain.trim().split("\n\n").map((block, i) => {
+    const lines = block.split("\n");
+    const branch = lines.find((l) => l.startsWith("branch refs/heads/"))?.slice("branch refs/heads/".length);
+    const locked = lines.some((l) => l === "locked" || l.startsWith("locked "));
+    return { dir: lines[0].replace(/^worktree /, ""), branch: branch || null, main: i === 0, locked };
+  });
+}
+
 // The worktree already holding a branch for issue id, or at dir, where Start puts it, whatever its
 // HEAD: a rebase or bisect detaches it, and branch is then null. main: it's the main checkout,
-// listed first.
-function existingWorktree(porcelain, id, dir) {
+// listed first. action names the command a refusal tells Peter to run again.
+function existingWorktree(porcelain, id, dir, action = "Start") {
   const pattern = issueBranch(id);
-  for (const [i, block] of porcelain.split("\n\n").entries()) {
-    const lines = block.split("\n");
-    const at = lines[0].replace(/^worktree /, "");
-    const headBranch = lines.find((l) => l.startsWith("branch refs/heads/"))?.slice("branch refs/heads/".length);
-    const branch = headBranch && pattern.test(headBranch) ? headBranch : null;
-    if (!branch && i > 0 && at === dir && headBranch) {
-      throw new Error(`${at} is checked out on ${headBranch}, not a branch for #${id}; switch it back, then Start again`);
+  for (const tree of worktrees(porcelain)) {
+    const branch = tree.branch && pattern.test(tree.branch) ? tree.branch : null;
+    if (!branch && !tree.main && tree.dir === dir && tree.branch) {
+      throw new Error(`${tree.dir} is checked out on ${tree.branch}, not a branch for #${id}; switch it back, then ${action} again`);
     }
-    if (branch || (i > 0 && at === dir)) return { dir: at, branch: branch || null, main: i === 0 };
+    if (branch || (!tree.main && tree.dir === dir)) return { dir: tree.dir, branch, main: tree.main };
   }
   return null;
 }
@@ -76,19 +84,24 @@ function run(command, args, cwd) {
 }
 const git = (cwd, ...args) => run("git", args, cwd);
 
-// One Start per issue across windows: an exclusive file in the repo's git dir, holding the pid of
-// the extension host that took it. One left by a crash is never taken over, since two windows
-// taking it at once could both win; the refusal names it for Peter to delete. Returns its release.
-function lock(common, id) {
-  const file = path.join(common, `plan-starting-${id}`);
+// One Start or Done per issue across windows, so Open and Done on the same row exclude each
+// other: an exclusive file in the repo's git dir, holding the pid of the extension host that took
+// it and its action. One left by a crash is never taken over, since two windows taking it at once
+// could both win; the refusal names it for Peter to delete. Returns its release.
+const DOING = { Start: "started", Done: "finished" };
+
+function lock(common, id, action = "Start") {
+  const file = path.join(common, `plan-busy-${id}`);
   try {
-    fs.writeFileSync(file, `${process.pid}\n`, { flag: "wx" });
+    fs.writeFileSync(file, `${process.pid} ${action}\n`, { flag: "wx" });
   } catch (error) {
     if (error.code !== "EEXIST") throw error;
     // An empty file is one being written, so its holder is alive.
-    const pid = Number(fs.readFileSync(file, "utf8").trim() || NaN);
-    if (!Number.isInteger(pid) || alive(pid)) throw new Error(`#${id} is being started in another window; if none is, delete ${file}`);
-    throw new Error(`a Start of #${id} that stopped without finishing left ${file}; delete it, then Start again`);
+    const [pid, held = action] = fs.readFileSync(file, "utf8").trim().split(" ");
+    if (!Number.isInteger(Number(pid || NaN)) || alive(Number(pid))) {
+      throw new Error(`#${id} is being ${DOING[held] || DOING[action]} in another window; if none is, delete ${file}`);
+    }
+    throw new Error(`a ${DOING[held] ? held : action} of #${id} that stopped without finishing left ${file}; delete it, then ${action} again`);
   }
   return () => fs.rmSync(file, { force: true });
 }
@@ -107,6 +120,18 @@ function alive(pid) {
 // before this marker or by another tool, so Open leaves it alone.
 const settingUp = (common, id) => path.join(common, `plan-setting-up-${id}`);
 
+// The issue's project, and the root and git dir of its main checkout, whatever folder of it (or of
+// a worktree) the map names: worktrees go beside it, never in its tree. git names worktrees by
+// their real path, and the new window is matched to its handoff by it.
+async function mainCheckout(redmine, issue, checkouts) {
+  const project = await redmine.projectIdentifier(issue.project.id);
+  if (!checkouts[project]) throw new Error(`no checkout for Redmine project "${project}"; add it to plan.checkouts`);
+  const named = expandHome(checkouts[project]);
+  if (!fs.existsSync(named)) throw new Error(`the checkout for "${project}" isn't there: ${named}`);
+  const common = (await git(named, "rev-parse", "--path-format=absolute", "--git-common-dir")).trim();
+  return { project, checkout: fs.realpathSync(path.dirname(common)), common };
+}
+
 // Start issue id, or reopen its worktree. Safe to repeat: each step runs only when it has something
 // to do. confirm(blockers) is asked only before a new worktree; false stops with nothing changed.
 // handOff(result), when given, is the last step of setup, so a handoff that fails runs setup again.
@@ -117,15 +142,7 @@ async function start({ redmine, checkouts, id, confirm, handOff = () => {} }) {
   const issue = await redmine.issue(id);
   // The panel's row can be older than the issue: one closed, iceboxed or moved on since keeps its status.
   if (!ACTION[issue.status.name]) throw new Error(`#${id} is ${issue.status.name}; refresh Next up`);
-  const project = await redmine.projectIdentifier(issue.project.id);
-  if (!checkouts[project]) throw new Error(`no checkout for Redmine project "${project}"; add it to plan.checkouts`);
-  const named = expandHome(checkouts[project]);
-  if (!fs.existsSync(named)) throw new Error(`the checkout for "${project}" isn't there: ${named}`);
-  // The main checkout's root, whatever folder of it (or of a worktree) the map names: worktrees go
-  // beside it, never in its tree. git names worktrees by their real path, and the new window is
-  // matched to its handoff by it.
-  const common = (await git(named, "rev-parse", "--path-format=absolute", "--git-common-dir")).trim();
-  const checkout = fs.realpathSync(path.dirname(common));
+  const { checkout, common } = await mainCheckout(redmine, issue, checkouts);
 
   const release = lock(common, id);
   try {
@@ -217,4 +234,4 @@ async function startIn({ redmine, id, confirm, handOff, issue, checkout, common 
   return result;
 }
 
-module.exports = { ACTION, checkId, slug, branchName, worktreeDir, blockerIds, issueBranch, existingWorktree, expandHome, run, git, start };
+module.exports = { ACTION, checkId, slug, branchName, worktreeDir, blockerIds, issueBranch, worktrees, existingWorktree, expandHome, run, git, lock, settingUp, mainCheckout, start };
