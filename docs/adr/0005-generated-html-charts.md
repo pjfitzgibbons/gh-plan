@@ -3,7 +3,8 @@
 <a id="status"></a>
 ## 1. Status
 
-Proposed.
+Superseded by [ADR 0011](0011-redmine-is-the-tracker.md): Redmine's own pages are the views
+([architecture §9](../architecture.md#views)).
 
 <a id="context"></a>
 ## 2. Context

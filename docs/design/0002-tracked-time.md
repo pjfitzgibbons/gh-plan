@@ -17,7 +17,8 @@
 - [12. Requirements coverage](#requirements-coverage)
 
 **Implements:** [ADR 0006](../adr/0006-tracked-time.md) · **Requirements:**
-[`C6`, `C9`](../requirements.md) · **Status:** draft
+[`C6`, `C9`](../requirements.md) · **Status:** paused with
+[ADR 0006](../adr/0006-tracked-time.md)
 
 <a id="scope"></a>
 ## 1. Scope

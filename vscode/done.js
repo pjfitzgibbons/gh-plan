@@ -5,7 +5,7 @@
 const fs = require("fs");
 const path = require("path");
 const { checkId, issueBranch, worktrees, existingWorktree, worktreeDir, git, lock, settingUp, mainCheckout } = require("./start");
-const { prLink, pullRequest } = require("./ship");
+const { prLink, pullRequest, unsentIn } = require("./ship");
 const { field } = require("./redmine");
 
 // The statuses Done accepts: In Progress, and Closed, which a fixes commit's fetch or an earlier
@@ -178,6 +178,15 @@ async function finishIn({ redmine, id, project, checkout, common, pr, result, di
   const found = trees.find((t) => !t.main && head && t.branch === head) ||
     existingWorktree(porcelain, id, worktreeDir(checkout, id), "Done");
   if (found && fs.existsSync(found.dir)) await checkMerged(found.dir, pr, !found.main, disposable);
+  // .tmp/ is disposable, so the worktree's removal would delete, unsent, the review replies and
+  // checklist ticks pr sends, this issue's or another's.
+  if (found && !found.main) {
+    const left = unsentIn(found.dir);
+    if (left.length) {
+      const scripts = "python3 ~/.claude/skills/gh-issues/scripts";
+      throw new Error(`${found.dir} has replies or checklist ticks pr hasn't sent; send them from there with ${scripts}/pr_threads.py <PR> --post .tmp/<n>/replies and ${scripts}/checklist.py <n> .tmp/<n>/issue.md (for #${id}, the PR is ${pr.number}), not pr, whose cleanup skips Done's checks, or delete them, then Done again:\n${left.join("\n")}`);
+    }
+  }
   if (found && !found.main && trees.find((t) => t.dir === found.dir)?.locked) {
     throw new Error(`${found.dir} is locked; run git worktree unlock ${found.dir}, then Done again`);
   }

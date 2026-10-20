@@ -3,7 +3,8 @@
 <a id="status"></a>
 ## 1. Status
 
-Proposed.
+Paused: [ADR 0011](0011-redmine-is-the-tracker.md) moves the item files this ADR snapshots time
+into out of the repo. A later design will take tracked time from Redmine.
 
 <a id="context"></a>
 ## 2. Context

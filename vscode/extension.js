@@ -7,7 +7,7 @@ const fs = require("fs");
 const path = require("path");
 const { Redmine } = require("./redmine");
 const { ACTION, checkId, start, expandHome } = require("./start");
-const { reviewFile, shipTab, check, pullRequest, linkPullRequest } = require("./ship");
+const { reviewFile, roundFiles, shipTab, check, pullRequest, linkPullRequest, keepEdits } = require("./ship");
 const { finish } = require("./done");
 
 // A new window can't be handed a task directly, so Start leaves one in the extension's global
@@ -249,15 +249,17 @@ async function takeHandoffFor(storage, folder) {
   fs.rmSync(file, { force: true });
 }
 
-// When an issue's commit message and PR body for pr are both written, in .tmp/<n>/, they open for
-// review in the leftmost editor group: the commit message above, the PR body below. Once both are
-// open, a save moves nothing.
+// When an issue's PR body for pr is written, in .tmp/<n>/, with a commit message, review replies or
+// checklist ticks beside it, they open for review in the leftmost editor group, the PR body in
+// front. Once all are open, a save moves nothing.
 function watchHandover(context) {
-  const watcher = vscode.workspace.createFileSystemWatcher("**/.tmp/*/{commit.txt,pr-body.md}");
+  const watcher = vscode.workspace.createFileSystemWatcher("**/.tmp/*/{commit.txt,pr-body.md,issue.md,replies/*}");
   const timers = new Map();
-  // The two files land moments apart; wait for the writes to settle.
+  // The files land moments apart; wait for the writes to settle.
   const changed = (uri) => {
-    const dir = path.dirname(uri.fsPath);
+    const review = reviewFile(uri.fsPath);
+    if (!review) return;
+    const dir = path.join(review.root, ".tmp", String(review.id));
     clearTimeout(timers.get(dir));
     timers.set(dir, setTimeout(() => (timers.delete(dir), openHandover(dir)), 500));
   };
@@ -267,14 +269,18 @@ function watchHandover(context) {
 }
 
 async function openHandover(dir) {
-  const files = ["commit.txt", "pr-body.md"].map((name) => path.join(dir, name));
-  if (!files.every((file) => fs.existsSync(file))) return;
+  const files = roundFiles(dir);
+  if (!files.length) return;
   const open = new Set(
     vscode.window.tabGroups.all.flatMap((g) => g.tabs).map((t) => t.input?.uri?.fsPath).filter(Boolean)
   );
-  if (files.every((file) => open.has(file))) return;
-  // Both open as tabs in the leftmost group, or the only one, the PR body last and in front.
-  for (const file of files) await vscode.window.showTextDocument(vscode.Uri.file(file), { viewColumn: 1, preview: false });
+  const missing = files.filter((file) => !open.has(file));
+  if (!missing.length) return;
+  // Each one not yet open, as a tab in the leftmost group, or the only one; then the PR body, in front.
+  const body = files[files.length - 1];
+  for (const file of [...missing.filter((file) => file !== body), body]) {
+    await vscode.window.showTextDocument(vscode.Uri.file(file), { viewColumn: 1, preview: false });
+  }
 }
 
 // openFolder only focuses a window already open on the worktree, so that window watches for its
@@ -289,7 +295,7 @@ function watchHandoff(context, storage) {
   context.subscriptions.push(watcher);
 }
 
-// Ship, from the title bar of an issue's commit.txt or pr-body.md: save both, check them, and open
+// Ship, from the title bar of any of an issue's round files: save them, check them, and open
 // the working tree's changes, whose title bar then holds Go. With nothing to commit, Go sits on the
 // review files instead. Only Go runs pr; once pr succeeds, the review files and diffs close and the
 // issue's Pull requests field links its PR.
@@ -305,13 +311,16 @@ function arm(review) {
 async function prepare(uri) {
   const review = reviewFile((uri || vscode.window.activeTextEditor?.document.uri)?.fsPath || "");
   if (!review) {
-    vscode.window.showErrorMessage("Plan: Ship works from an issue's .tmp/<n>/commit.txt or .tmp/<n>/pr-body.md");
+    vscode.window.showErrorMessage("Plan: Ship works from an issue's review files in .tmp/<n>/: commit.txt, pr-body.md, issue.md or a reply");
     return null;
   }
   const { root, id } = review;
+  // Every file pr may send, replies and issue.md included, so it never sends what's on disk while
+  // an edit waits unsaved in its tab. A tab whose file pr already sent and deleted isn't saved, or
+  // the next pr would send it again.
+  const round = path.join(root, ".tmp", String(id)) + path.sep;
   for (const doc of vscode.workspace.textDocuments) {
-    const other = reviewFile(doc.uri.fsPath);
-    if (doc.isDirty && other && other.root === root && other.id === id) await doc.save();
+    if (doc.isDirty && doc.uri.fsPath.startsWith(round) && fs.existsSync(doc.uri.fsPath)) await doc.save();
   }
   let found;
   try {
@@ -354,7 +363,27 @@ async function go() {
     vscode.window.showErrorMessage(`Plan: pr ${id} stopped (exit ${exitCode}); its terminal says why. Ship and Go again once it's fixed.`);
     return;
   }
-  const tabs = vscode.window.tabGroups.all.flatMap((g) => g.tabs).filter((t) => shipTab(t.input, root, id));
+  const stay = new Set();
+  // A reply or issue.md edited while pr ran, which pr has since sent and deleted, holds edits pr
+  // never saw. They're kept beside it as <file>.unsent, then the tab is reverted: closing it would
+  // offer Save, and a save writes it back for the next Go to send again.
+  for (const doc of vscode.workspace.textDocuments) {
+    const review = reviewFile(doc.uri.fsPath);
+    if (!doc.isDirty || review?.root !== root || review.id !== id || fs.existsSync(doc.uri.fsPath)) continue;
+    let kept;
+    try {
+      kept = keepEdits(doc.uri.fsPath, doc.getText());
+    } catch (error) {
+      vscode.window.showErrorMessage(`Plan: pr sent ${path.relative(root, doc.uri.fsPath)}, but its later edits couldn't be kept: ${error.message}. Its tab stays open; copy them out before closing it.`);
+      stay.add(doc.uri.fsPath);
+      continue;
+    }
+    vscode.window.showWarningMessage(`Plan: pr sent ${path.relative(root, doc.uri.fsPath)} as saved; the edits made since are in ${path.relative(root, kept)}.`);
+    await vscode.window.showTextDocument(doc, { preview: false });
+    await vscode.commands.executeCommand("workbench.action.files.revert");
+  }
+  const tabs = vscode.window.tabGroups.all.flatMap((g) => g.tabs)
+    .filter((t) => shipTab(t.input, root, id) && !stay.has(t.input?.uri?.fsPath));
   await vscode.window.tabGroups.close(tabs);
   try {
     const pr = await pullRequest(root, found.branch);

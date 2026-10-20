@@ -6,17 +6,23 @@ const fs = require("fs");
 const os = require("os");
 const path = require("path");
 const { execFileSync } = require("child_process");
-const { reviewFile, shipTab, check, prLink, linkPullRequest } = require("../ship");
+const { reviewFile, roundFiles, shipTab, check, prLink, linkPullRequest, unsent, keepEdits } = require("../ship");
 
 test("a review file names its issue and checkout; any other file names none", () => {
   assert.deepEqual(reviewFile("/work/gh-plan.worktrees/81/.tmp/81/commit.txt"), { root: "/work/gh-plan.worktrees/81", id: 81 });
   assert.deepEqual(reviewFile("/work/repo/.tmp/7/pr-body.md"), { root: "/work/repo", id: 7 });
+  assert.deepEqual(reviewFile("/work/repo/.tmp/7/issue.md"), { root: "/work/repo", id: 7 });
+  assert.deepEqual(reviewFile("/work/repo/.tmp/7/replies/4309488236.md"), { root: "/work/repo", id: 7 });
+  // pr_threads.py reads 011.md as comment 11, so Ship does too.
+  assert.deepEqual(reviewFile("/work/repo/.tmp/7/replies/011.md"), { root: "/work/repo", id: 7 });
   for (const file of [
     "/work/repo/.tmp/81/notes.md",
     "/work/repo/.tmp/pr-81-body.md",
     "/work/repo/.tmp/0/commit.txt",
     "/work/repo/.tmp/81x/commit.txt",
     "/work/repo/.tmp/81/sub/commit.txt",
+    "/work/repo/.tmp/81/replies/notes.md",
+    "/work/repo/.tmp/81/replies/11.txt",
     "/work/repo/src/.tmp/81/commit.txt.bak",
   ]) {
     assert.equal(reviewFile(file), null, file);
@@ -30,6 +36,8 @@ test("Ship's tabs are the issue's review files, diffs in its checkout and its Ch
   for (const input of [
     { uri: uri(`${root}/.tmp/81/commit.txt`) },
     { uri: uri(`${root}/.tmp/81/pr-body.md`) },
+    { uri: uri(`${root}/.tmp/81/issue.md`) },
+    { uri: uri(`${root}/.tmp/81/replies/4309488236.md`) },
     diff(`${root}/vscode/ship.js`),
     { textDiffs: [diff(`${root}/vscode/ship.js`), diff(`${root}/README.md`)] },
     { textDiffs: [] },
@@ -41,6 +49,8 @@ test("Ship's tabs are the issue's review files, diffs in its checkout and its Ch
     {},
     { uri: uri(`${root}/vscode/ship.js`) },
     { uri: uri(`${root}/.tmp/7/pr-body.md`) },
+    { uri: uri(`${root}/.tmp/81/replies/notes.md`) },
+    { uri: uri(`${root}/.tmp/81/notes.md`) },
     diff("/work/gh-plan/vscode/ship.js"),
     diff(`${root}-other/README.md`),
     { textDiffs: [diff("/work/gh-plan/README.md")] },
@@ -84,6 +94,28 @@ test("each missing file is named", async (t) => {
   assert.deepEqual((await check(s.root, 81)).problems, [
     ".tmp/81/pr-body.md is missing",
     "the tree has changes and .tmp/81/commit.txt is missing",
+  ]);
+});
+
+test("a reply pr would refuse, skip or post twice is refused before Go", async (t) => {
+  const s = sandbox(t);
+  s.write(".tmp/81/pr-body.md");
+  fs.mkdirSync(path.join(s.root, ".tmp", "81", "replies"));
+  s.write(".tmp/81/issue.md");
+  s.write(".tmp/81/replies/11.md");
+  s.write(".tmp/81/replies/.DS_Store");
+  fs.mkdirSync(path.join(s.root, ".tmp", "81", "replies", "sent"));
+  s.write(".tmp/81/replies/sent/10.md");
+  assert.deepEqual((await check(s.root, 81)).problems, []);
+  s.write(".tmp/81/replies/13.md", " \n");
+  s.write(".tmp/81/replies/011.md");
+  s.write(".tmp/81/replies/notes.md");
+  s.write(".tmp/81/replies/12.txt");
+  assert.deepEqual((await check(s.root, 81)).problems, [
+    ".tmp/81/replies/011.md and replies/11.md both reply to comment 11",
+    ".tmp/81/replies/12.txt isn't a reply pr can send; name it replies/<comment id>.md",
+    ".tmp/81/replies/13.md is empty",
+    ".tmp/81/replies/notes.md isn't a reply pr can send; name it replies/<comment id>.md",
   ]);
 });
 
@@ -140,4 +172,40 @@ test("a bare link already there counts as linked", async () => {
 test("an issue with no Pull requests field is refused by name", async () => {
   const r = { issue: async () => ({ id: 81, custom_fields: [] }), update: () => assert.fail("updated") };
   await assert.rejects(linkPullRequest({ redmine: r, id: 81, pr: PR }), /no Pull requests field/);
+});
+
+test("a round's files open once the PR body has something beside it, replies by comment id, the PR body last, nothing pr can't send", (t) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "plan-round-"));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const write = (name) => (fs.mkdirSync(path.dirname(path.join(dir, name)), { recursive: true }), fs.writeFileSync(path.join(dir, name), "x\n"));
+  const names = () => roundFiles(dir).map((file) => path.relative(dir, file));
+  write("pr-body.md");
+  assert.deepEqual(names(), []);
+  write("replies/100.md");
+  write("replies/99.md");
+  write("replies/draft.txt");
+  write("replies/notes.md");
+  assert.deepEqual(names(), ["replies/99.md", "replies/100.md", "pr-body.md"]);
+  write("commit.txt");
+  write("issue.md");
+  assert.deepEqual(names(), ["commit.txt", "issue.md", "replies/99.md", "replies/100.md", "pr-body.md"]);
+  fs.rmSync(path.join(dir, "pr-body.md"));
+  assert.deepEqual(names(), []);
+});
+
+test("edits pr never saw are kept beside the file, never over one, and count as unsent", (t) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "plan-keep-"));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  fs.mkdirSync(path.join(dir, "replies"));
+  const reply = path.join(dir, "replies", "11.md");
+  assert.equal(keepEdits(reply, "later\n"), `${reply}.unsent`);
+  assert.equal(keepEdits(reply, "later still\n"), `${reply}.unsent2`);
+  assert.equal(fs.readFileSync(`${reply}.unsent`, "utf8"), "later\n");
+  const issue = path.join(dir, "issue.md");
+  assert.equal(keepEdits(issue, "- [x] ticked\n"), `${issue}.unsent`);
+  assert.deepEqual(unsent(dir).map((file) => path.relative(dir, file)), [
+    "issue.md.unsent",
+    "replies/11.md.unsent",
+    "replies/11.md.unsent2",
+  ]);
 });
