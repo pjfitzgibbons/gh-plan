@@ -7,7 +7,7 @@ const fs = require("fs");
 const path = require("path");
 const { Redmine } = require("./redmine");
 const { ACTION, checkId, start, expandHome } = require("./start");
-const { reviewFile, roundFiles, shipTab, check, pullRequest, linkPullRequest } = require("./ship");
+const { reviewFile, roundFiles, shipTab, check, pullRequest, linkPullRequest, keepEdits } = require("./ship");
 const { finish } = require("./done");
 
 // A new window can't be handed a task directly, so Start leaves one in the extension's global
@@ -363,16 +363,27 @@ async function go() {
     vscode.window.showErrorMessage(`Plan: pr ${id} stopped (exit ${exitCode}); its terminal says why. Ship and Go again once it's fixed.`);
     return;
   }
-  const tabs = vscode.window.tabGroups.all.flatMap((g) => g.tabs).filter((t) => shipTab(t.input, root, id));
-  // A reply or issue.md edited while pr ran, which pr has since sent and deleted, is reverted
-  // first: closing it would offer Save, and a save writes it back for the next Go to send again.
+  const stay = new Set();
+  // A reply or issue.md edited while pr ran, which pr has since sent and deleted, holds edits pr
+  // never saw. They're kept beside it as <file>.unsent, then the tab is reverted: closing it would
+  // offer Save, and a save writes it back for the next Go to send again.
   for (const doc of vscode.workspace.textDocuments) {
     const review = reviewFile(doc.uri.fsPath);
-    if (doc.isDirty && review?.root === root && review.id === id && !fs.existsSync(doc.uri.fsPath)) {
-      await vscode.window.showTextDocument(doc, { preview: false });
-      await vscode.commands.executeCommand("workbench.action.files.revert");
+    if (!doc.isDirty || review?.root !== root || review.id !== id || fs.existsSync(doc.uri.fsPath)) continue;
+    let kept;
+    try {
+      kept = keepEdits(doc.uri.fsPath, doc.getText());
+    } catch (error) {
+      vscode.window.showErrorMessage(`Plan: pr sent ${path.relative(root, doc.uri.fsPath)}, but its later edits couldn't be kept: ${error.message}. Its tab stays open; copy them out before closing it.`);
+      stay.add(doc.uri.fsPath);
+      continue;
     }
+    vscode.window.showWarningMessage(`Plan: pr sent ${path.relative(root, doc.uri.fsPath)} as saved; the edits made since are in ${path.relative(root, kept)}.`);
+    await vscode.window.showTextDocument(doc, { preview: false });
+    await vscode.commands.executeCommand("workbench.action.files.revert");
   }
+  const tabs = vscode.window.tabGroups.all.flatMap((g) => g.tabs)
+    .filter((t) => shipTab(t.input, root, id) && !stay.has(t.input?.uri?.fsPath));
   await vscode.window.tabGroups.close(tabs);
   try {
     const pr = await pullRequest(root, found.branch);

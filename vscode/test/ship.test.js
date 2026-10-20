@@ -6,7 +6,7 @@ const fs = require("fs");
 const os = require("os");
 const path = require("path");
 const { execFileSync } = require("child_process");
-const { reviewFile, roundFiles, shipTab, check, prLink, linkPullRequest } = require("../ship");
+const { reviewFile, roundFiles, shipTab, check, prLink, linkPullRequest, unsent, keepEdits } = require("../ship");
 
 test("a review file names its issue and checkout; any other file names none", () => {
   assert.deepEqual(reviewFile("/work/gh-plan.worktrees/81/.tmp/81/commit.txt"), { root: "/work/gh-plan.worktrees/81", id: 81 });
@@ -191,4 +191,21 @@ test("a round's files open once the PR body has something beside it, replies by 
   assert.deepEqual(names(), ["commit.txt", "issue.md", "replies/99.md", "replies/100.md", "pr-body.md"]);
   fs.rmSync(path.join(dir, "pr-body.md"));
   assert.deepEqual(names(), []);
+});
+
+test("edits pr never saw are kept beside the file, never over one, and count as unsent", (t) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "plan-keep-"));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  fs.mkdirSync(path.join(dir, "replies"));
+  const reply = path.join(dir, "replies", "11.md");
+  assert.equal(keepEdits(reply, "later\n"), `${reply}.unsent`);
+  assert.equal(keepEdits(reply, "later still\n"), `${reply}.unsent2`);
+  assert.equal(fs.readFileSync(`${reply}.unsent`, "utf8"), "later\n");
+  const issue = path.join(dir, "issue.md");
+  assert.equal(keepEdits(issue, "- [x] ticked\n"), `${issue}.unsent`);
+  assert.deepEqual(unsent(dir).map((file) => path.relative(dir, file)), [
+    "issue.md.unsent",
+    "replies/11.md.unsent",
+    "replies/11.md.unsent2",
+  ]);
 });

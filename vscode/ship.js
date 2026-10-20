@@ -25,16 +25,33 @@ function isRoundFile(file, dir) {
 
 const isFile = (file) => Boolean(fs.statSync(file, { throwIfNoEntry: false })?.isFile());
 
-// What pr has yet to send from .tmp/<n>/ (dir): issue.md, and every file in replies/ but dotfiles
-// such as .DS_Store, since pr deletes each reply it sends and refuses or skips a misnamed one. A
-// folder in replies/ is never sent, so it's left alone. Replies are in comment id order.
+// What pr has yet to send from .tmp/<n>/ (dir): issue.md and the edits keepEdits saved beside it,
+// and every file in replies/ but dotfiles such as .DS_Store, since pr deletes each reply it sends
+// and refuses or skips a misnamed one. A folder in replies/ is never sent, so it's left alone.
+// Replies are in comment id order.
 function unsent(dir) {
+  const list = (d) => (fs.statSync(d, { throwIfNoEntry: false })?.isDirectory() ? fs.readdirSync(d) : []);
   const replies = path.join(dir, "replies");
-  const names = fs.statSync(replies, { throwIfNoEntry: false })?.isDirectory()
-    ? fs.readdirSync(replies).filter((name) => !name.startsWith("."))
-    : [];
+  const names = list(replies).filter((name) => !name.startsWith("."));
   names.sort((a, b) => (parseInt(a, 10) || Infinity) - (parseInt(b, 10) || Infinity) || a.localeCompare(b));
-  return [path.join(dir, "issue.md"), ...names.map((name) => path.join(replies, name))].filter(isFile);
+  const kept = list(dir).filter((name) => /^issue\.md\.unsent[0-9]*$/.test(name)).sort();
+  return [path.join(dir, "issue.md"), ...kept.map((name) => path.join(dir, name)), ...names.map((name) => path.join(replies, name))]
+    .filter(isFile);
+}
+
+// Saves text, edits made to a round file after pr sent and deleted it, beside it as
+// <file>.unsent, or .unsent2 and on if that's taken; never over a file. Returns the path. unsent()
+// lists it, so Done keeps the worktree until it's dealt with.
+function keepEdits(file, text) {
+  for (let n = 1; ; n++) {
+    const kept = `${file}.unsent${n > 1 ? n : ""}`;
+    try {
+      fs.writeFileSync(kept, text, { flag: "wx" });
+      return kept;
+    } catch (error) {
+      if (error.code !== "EEXIST") throw error;
+    }
+  }
 }
 
 // What pr has yet to send from every issue's .tmp/<n>/ in root, as paths relative to root.
@@ -121,4 +138,4 @@ async function linkPullRequest({ redmine, id, pr }) {
   return true;
 }
 
-module.exports = { reviewFile, isRoundFile, unsent, unsentIn, roundFiles, shipTab, check, pullRequest, prLink, linkPullRequest };
+module.exports = { reviewFile, isRoundFile, unsent, unsentIn, keepEdits, roundFiles, shipTab, check, pullRequest, prLink, linkPullRequest };
