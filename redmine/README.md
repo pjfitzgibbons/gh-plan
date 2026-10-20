@@ -8,6 +8,7 @@ command here from the root of the gh-plan checkout.
 |---|---|
 | `compose.yml` | The service: the built image, the port, the volumes and the mounts |
 | `Dockerfile` | The image: the pinned Redmine with the pinned Opale theme, its assets compiled |
+| `backup.py` | The nightly backup and export to the USB drive (*Backup and export*) |
 | `setup.rb` | The projects, fields, status, workflow, settings, repositories and versions |
 | `import.rb` | The one-time import of each repo's `.tracker/` items |
 | `backfill.rb` | The one-time backfill of each imported issue's commits, pull requests and status history |
@@ -40,8 +41,67 @@ Two named volumes of the `gh-plan-redmine` compose project:
 | `gh-plan-redmine_db` | `/usr/src/redmine/sqlite` | `redmine.db`, the whole database |
 | `gh-plan-redmine_files` | `/usr/src/redmine/files` | Attachments |
 
-`down` keeps them; `down -v` deletes them, and with them every issue. Backup and export are
-pl-pakiz's.
+`down` keeps them; `down -v` deletes them, and with them every issue. A nightly job copies both to
+the USB drive (*Backup and export*).
+
+## Backup and export
+
+`backup.py` backs Redmine up and exports it once a day, to a dated folder on the USB drive,
+`/Volumes/FAMILY_PHOTOS/redmine_backups/<YYYY-MM-DD>/` ([`G2`](../docs/requirements.md)):
+
+| File | Holds |
+|---|---|
+| `redmine.db` | The database, copied through SQLite's online backup API while Redmine runs, and integrity-checked |
+| `files.tar` | The attachments volume |
+| `export/issues/<n>.json` | Each issue as the REST API gives it, with its journal, relations, children, attachments, commits and custom fields |
+
+The drive holds every issue body, unencrypted. The job only reads Redmine: the database through
+`docker compose exec`, the issues by GET with the key in `redmine-gh-plan`. It writes only to the
+drive, and builds each folder as `.<date>.partial`, renaming it when complete, so a failed run
+leaves no dated folder. It keeps the newest 14 dated folders and removes older ones; it touches
+nothing else in `redmine_backups`. A run on a day that already has its folder does nothing.
+
+When the drive isn't mounted, Docker isn't running, or any step fails, the job logs why, shows a
+caution alert naming the cause that stays until dismissed, and exits 1. The drive counts as
+mounted only when `/Volumes/FAMILY_PHOTOS` is on a device other than `/`'s, so a bare folder of
+that name on the system disk doesn't count. `REDMINE_BACKUP_VOLUME` points it at another volume.
+
+A user LaunchAgent runs it at 03:00. If the Mac is asleep then, launchd runs it once at the next
+wake (`man launchd.plist`, *StartCalendarInterval*), and `RunAtLoad` runs it at login, which covers
+a Mac that was off. Install it from the main checkout, not a worktree, since the agent runs the
+script where it sits:
+
+```
+python3 redmine/backup.py --plist > ~/Library/LaunchAgents/local.gh-plan.redmine-backup.plist
+launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/local.gh-plan.redmine-backup.plist
+```
+
+`launchctl kickstart gui/$(id -u)/local.gh-plan.redmine-backup` runs it now. The log is
+`~/Library/Logs/gh-plan-redmine-backup.log`. `launchctl bootout` with the same path as `bootstrap`
+removes it.
+
+To restore, stop Redmine, put the backup into the volumes, and start it. The copy removes the
+volume's `-wal` and `-shm` files first: SQLite would replay a stale WAL into the restored database.
+
+```
+docker compose -f redmine/compose.yml stop
+docker run --rm -v gh-plan-redmine_db:/db -v gh-plan-redmine_files:/files -v <backup>:/backup:ro \
+  --entrypoint sh gh-plan-redmine:7.0.2-opale-1.7.2 -c 'rm -f /db/redmine.db-wal /db/redmine.db-shm &&
+  cp /backup/redmine.db /db/ && tar -xf /backup/files.tar -C /files && chown -R redmine:redmine /db /files'
+docker compose -f redmine/compose.yml up -d
+```
+
+To check a backup without touching the live one, run the image on copies instead:
+
+```
+mkdir -p /tmp/restore/sqlite /tmp/restore/files
+cp <backup>/redmine.db /tmp/restore/sqlite/ && tar -xf <backup>/files.tar -C /tmp/restore/files
+docker run -d --name redmine-restore -p 127.0.0.1:3011:3000 \
+  -v /tmp/restore/sqlite:/usr/src/redmine/sqlite -v /tmp/restore/files:/usr/src/redmine/files \
+  gh-plan-redmine:7.0.2-opale-1.7.2
+REDMINE_URL=http://127.0.0.1:3011 redmine-get '/issues.json?status_id=*&limit=1'
+docker rm -f redmine-restore
+```
 
 ## Running the setup
 
