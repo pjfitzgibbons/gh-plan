@@ -146,8 +146,9 @@ network or a repo.
 - `vscode/redmine.js` makes every call to Redmine. Through the REST API it reads the panel's
   issues and writes Start's and Done's status changes, Ship's PR link and their journal notes.
   Through the repository web service it has Redmine fetch a project's commits after a merge. It
-  reads the API key from the Keychain once per client, one for each refresh or command, and the
-  web service's key on each call, so no repo holds either ([`G3`](requirements.md)).
+  reads the API key from the Keychain once per client, and the web service's key on each call, so
+  no repo holds either ([`G3`](requirements.md)). Next up keeps one client across refreshes until
+  the `plan.*` settings change; each command makes its own.
 - `vscode/start.js` runs git, `gh` and `uv` for Start, Go, Ship and Done: it fetches, adds and removes
   worktrees, syncs them, reads PRs, and pulls and deletes merged branches.
 

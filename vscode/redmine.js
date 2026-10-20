@@ -76,8 +76,12 @@ class Redmine {
     const { url, project, query } = this.settings;
     if (known.url !== url) Object.assign(known, { url, identifiers: new Map() });
     // A wrong key reads as anonymous, not as a refusal, wherever anonymous may read: the first read
-    // fails it. The query is found by name each time, so a renamed or replaced one is never read.
-    const [, { queries }] = await Promise.all([this.get("/users/current.json"), this.get("/queries.json?limit=100")]);
+    // fails it, and its error wins over the query read's, whichever answers first. The query is found
+    // by name each time, so a renamed or replaced one is never read.
+    const [me, saved] = await Promise.allSettled([this.get("/users/current.json"), this.get("/queries.json?limit=100")]);
+    if (me.status === "rejected") throw me.reason;
+    if (saved.status === "rejected") throw saved.reason;
+    const { queries } = saved.value;
     const found = queries.find((q) => q.name === query);
     if (!found) throw new Error(`no saved query "${query}" that you can see`);
     const { issues } = await this.get(

@@ -178,10 +178,11 @@ class NextUp {
     const at = ++this.refreshes;
     this.refreshedAt = Date.now();
     this.loading = true;
-    this.client = undefined;
     try {
-      // Kept for the detail reads that follow the list, so they share its Keychain read.
-      const client = (this.client = redmine());
+      // Kept across refreshes and for the detail reads, so they share one Keychain read, and a
+      // refresh stuck on a Keychain prompt shares it rather than opening another. A change to the
+      // plan settings drops it; a failed Keychain read or a refused key is read again (Redmine.key).
+      const client = (this.client ??= redmine());
       const markers = vscode.workspace.getConfiguration("plan").get("projectMarkers");
       // The view's progress bar runs while Redmine answers, as Source Control's does on a Git refresh.
       const listed = await vscode.window.withProgress({ location: { viewId: "plan.nextUp" } }, () => client.list(this.known));
@@ -454,8 +455,13 @@ function activate(context) {
   context.subscriptions.push(
     vscode.window.registerWebviewViewProvider("plan.nextUp", view),
     vscode.commands.registerCommand("plan.refresh", () => view.refresh()),
-    // A detail read uses the last refresh's client; a changed URL or Keychain item needs a new one.
-    vscode.workspace.onDidChangeConfiguration((event) => event.affectsConfiguration("plan") && (view.client = undefined)),
+    // A changed URL or Keychain item needs a new client, and the list a new refresh, which also
+    // discards one still answering with the old settings.
+    vscode.workspace.onDidChangeConfiguration((event) => {
+      if (!event.affectsConfiguration("plan")) return;
+      view.client = undefined;
+      view.refresh();
+    }),
     // A window coming into focus refreshes its Next up, so it shows what changed while another
     // window, Redmine's web UI or a pr in a terminal had it; closing a window focuses another. A
     // hidden panel is skipped: it reloads, and refreshes, when it's shown. The event also fires when

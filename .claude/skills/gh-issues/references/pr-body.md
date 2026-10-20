@@ -1,3 +1,5 @@
+Fixes #<n>.
+
 <One short paragraph: what the PR makes true, and the problem it fixes. Plain present tense.>
 
 ## <A change, named as the reader would look for it>
@@ -18,7 +20,8 @@
 
 <!--
 Rules (delete this comment):
-- The title, from the commit subject, ends (fixes #<n>) or (refs #<n>); the body needs no closing line.
+- The body opens with Fixes #<n>. when the PR finishes the issue, Refs #<n>. when it does part of it,
+  matching the title, which (from the commit subject) ends (fixes #<n>) or (refs #<n>).
 - One section per change a reviewer would look for. Drop Failure modes when nothing writes
   (docs/failure-modes.md has the columns).
 - No attribution lines.

@@ -7,8 +7,9 @@
   const INVERSE = { blocks: "blocked by", precedes: "follows", duplicates: "duplicated by", copied_to: "copied from" };
   let base = "";
   // Each detail request's number: a row shows only the answer to its latest one, so a reload that
-  // answers late never paints an older issue over a newer one.
-  let asked = 0;
+  // answers late never paints an older issue over a newer one. It starts from the clock, since a
+  // hidden panel's page is dropped and the host sends a late answer to the page shown next.
+  let asked = Date.now();
   function askDetail(details) {
     details.dataset.seq = ++asked;
     vscode.postMessage({ type: "detail", id: Number(details.dataset.id), seq: asked });

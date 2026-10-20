@@ -78,10 +78,14 @@ function expandHome(dir) {
 // is killed and refused as timed out.
 function run(command, args, cwd, timeout = 0) {
   return new Promise((resolve, reject) => {
+    const refuse = (why) => reject(new Error(`${command} ${args.join(" ")}: ${why}`));
+    // execFile kills the command at its timeout but answers only once its output closes, which a
+    // process the command started can hold open, so the timeout refuses it either way.
+    const timer = timeout && setTimeout(() => refuse(`timed out after ${timeout / 1000}s`), timeout);
     execFile(command, args, { cwd, timeout }, (error, stdout, stderr) => {
+      clearTimeout(timer);
       const late = timeout && error?.killed && error.code !== "ERR_CHILD_PROCESS_STDIO_MAXBUFFER";
-      const why = late ? `timed out after ${timeout / 1000}s` : (stderr || error?.message || "").trim();
-      if (error) reject(new Error(`${command} ${args.join(" ")}: ${why}`));
+      if (error) refuse(late ? `timed out after ${timeout / 1000}s` : (stderr || error.message || "").trim());
       else resolve(stdout);
     });
   });

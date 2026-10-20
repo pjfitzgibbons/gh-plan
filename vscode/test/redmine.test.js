@@ -170,3 +170,21 @@ test("a 401 drops the key it read, so the next request reads the Keychain again"
   fs.writeFileSync(key, "right-key\n");
   assert.deepEqual(await redmine.issue(88), { id: 88 });
 });
+
+test("a list with a refused key says so, even when the query read fails first", async (t) => {
+  const bin = fs.mkdtempSync(path.join(os.tmpdir(), "plan-redmine-"));
+  t.after(() => fs.rmSync(bin, { recursive: true, force: true }));
+  fs.writeFileSync(path.join(bin, "security"), "#!/bin/sh\necho wrong-key\n", { mode: 0o755 });
+  const PATH = process.env.PATH;
+  process.env.PATH = `${bin}:${PATH}`;
+  t.after(() => (process.env.PATH = PATH));
+  const server = http.createServer((req, res) => {
+    if (req.url === "/queries.json?limit=100") return res.writeHead(403).end();
+    setTimeout(() => res.writeHead(401).end(), 100);
+  });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  t.after(() => (server.closeAllConnections(), server.close()));
+  const redmine = new Redmine({ url: `http://127.0.0.1:${server.address().port}`, service: "test", project: "plan", query: "Next up" });
+
+  await assert.rejects(redmine.list(), /refused the key in Keychain item "test" \(401\)/);
+});

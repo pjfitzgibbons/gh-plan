@@ -456,6 +456,12 @@ test("a command still running at its timeout is killed and refused as timed out"
   await assert.rejects(run("sleep", ["5"], undefined, 200), { message: "sleep 5: timed out after 0.2s" });
 });
 
+test("a command whose subprocess holds its output open is still refused at its timeout", async () => {
+  const started = Date.now();
+  await assert.rejects(run("sh", ["-c", "sleep 2 & sleep 2"], undefined, 200), /timed out after 0.2s/);
+  assert.ok(Date.now() - started < 1500);
+});
+
 test("a command that fails within its timeout is refused with its own error", async () => {
   await assert.rejects(run("sh", ["-c", "echo nope >&2; exit 1"], undefined, 5000), { message: "sh -c echo nope >&2; exit 1: nope" });
 });
