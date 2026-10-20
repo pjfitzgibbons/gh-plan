@@ -29,10 +29,10 @@ settings: what this repo needs is here or in `.claude/`.
 - **Before each push:** `/code-review high` on the branch's whole diff, review fixes included. The
   PR body says it ran.
 - **Python:** `python3` on PATH. `/usr/bin/python3` is 3.9 and can't run the skill scripts.
-- **An issue's work:** Start, Ship, Go and Done in the extension's Next up panel
+- **An issue's work:** Start, Go, Ship and Done in the extension's Next up panel
   ([`vscode/README.md`](vscode/README.md)).
 - **An issue's body:** `redmine-get /issues/<n>.json`, or `?include=journals` for its history.
-- **A PR:** Go, or `pr <n>`, from `.tmp/<n>/commit.txt` and `.tmp/<n>/pr-body.md`.
+- **A PR:** Ship, or `pr <n>`, from `.tmp/<n>/commit.txt` and `.tmp/<n>/pr-body.md`.
 
 ## Done differently
 
@@ -54,7 +54,7 @@ settings: what this repo needs is here or in `.claude/`.
 ## Boundaries
 
 - **Peter presses the buttons.** Every commit, push, `gh` write and Redmine write happens on Start,
-  Go or Done, or a `pr` he runs. Write `.tmp/<n>/commit.txt`, `pr-body.md`, `replies/` and
+  Ship or Done, or a `pr` he runs. Write `.tmp/<n>/commit.txt`, `pr-body.md`, `replies/` and
   `issue.md` for him to review; reads, inspections, the test suite and cleaning up your own mess
   you run yourself.
 - **An agent commits only on its own issue branch,** and only when asked.
@@ -67,7 +67,7 @@ settings: what this repo needs is here or in `.claude/`.
   easily:
   - **2.** The default branch carries the code, and everything reaches it by PR. Status lives in
     Redmine.
-  - **6.** Only the named modules, and Go's `pr` task, spawn a process or open a connection; every
+  - **6.** Only the named modules, and Ship's `pr` task, spawn a process or open a connection; every
     Redmine call goes through `vscode/redmine.js`.
 
 ## Gotchas

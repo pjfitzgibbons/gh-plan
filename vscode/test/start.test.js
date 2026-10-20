@@ -1,7 +1,7 @@
 // node --test vscode/test: the names Start makes and the blockers it warns on, without Redmine or git.
 const test = require("node:test");
 const assert = require("node:assert/strict");
-const { slug, branchName, worktreeDir, blockerIds, existingWorktree, start } = require("../start");
+const { slug, branchName, worktreeDir, blockerIds, existingWorktree, run, start } = require("../start");
 const { Redmine } = require("../redmine");
 
 test("the slug is the subject's first five words", () => {
@@ -451,3 +451,11 @@ for (const [step, fail] of Object.entries(STEPS)) {
     assert.equal(s.updates.length, 1);
   });
 }
+
+test("a command still running at its timeout is killed and refused as timed out", async () => {
+  await assert.rejects(run("sleep", ["5"], undefined, 200), { message: "sleep 5: timed out after 0.2s" });
+});
+
+test("a command that fails within its timeout is refused with its own error", async () => {
+  await assert.rejects(run("sh", ["-c", "echo nope >&2; exit 1"], undefined, 5000), { message: "sh -c echo nope >&2; exit 1: nope" });
+});

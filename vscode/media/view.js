@@ -1,11 +1,18 @@
 // The panel's page. Each issue is a <details>: its row is the <summary>, so a click anywhere on the
-// row opens it, and its <section> is filled from the host on the first open only.
+// row opens it, and its <section> is filled from the host when it first opens.
 (() => {
   const vscode = acquireVsCodeApi();
   const list = document.getElementById("list");
   const status = document.getElementById("status");
   const INVERSE = { blocks: "blocked by", precedes: "follows", duplicates: "duplicated by", copied_to: "copied from" };
   let base = "";
+  // Each detail request's number: a row shows only the answer to its latest one, so a reload that
+  // answers late never paints an older issue over a newer one.
+  let asked = 0;
+  function askDetail(details) {
+    details.dataset.seq = ++asked;
+    vscode.postMessage({ type: "detail", id: Number(details.dataset.id), seq: asked });
+  }
 
   const escape = (text) =>
     String(text ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
@@ -65,23 +72,38 @@
     details.addEventListener("toggle", () => {
       if (!details.open || details.dataset.loaded) return;
       details.dataset.loaded = "pending";
-      vscode.postMessage({ type: "detail", id: issue.id });
+      askDetail(details);
     });
     return details;
   }
 
+  // A refresh keeps what was open, with the detail it shows, and the scroll, so a refresh while
+  // reading a row doesn't interrupt it. An open row's detail reloads in place, so it shows the issue
+  // as it is now.
   function renderList({ issues }) {
-    const open = new Set([...list.querySelectorAll("details[open]")].map((d) => d.dataset.id));
+    const open = new Map([...list.querySelectorAll("details[open]")].map((d) => [d.dataset.id, d]));
     const ids = new Set(issues.map((i) => i.id));
+    const top = document.scrollingElement.scrollTop;
     status.textContent = issues.length ? "" : "Nothing in Next up.";
-    list.replaceChildren(...issues.map((issue) => row(issue, ids.has(issue.parent))));
-    // A refresh reloads what was open, so it shows the issue as it is now.
-    list.querySelectorAll("details").forEach((d) => open.has(d.dataset.id) && (d.open = true));
+    list.replaceChildren(...issues.map((issue) => {
+      const details = row(issue, ids.has(issue.parent));
+      const was = open.get(String(issue.id));
+      if (!was) return details;
+      if (was.dataset.loaded) {
+        details.querySelector("section").replaceWith(was.querySelector("section"));
+        details.dataset.loaded = was.dataset.loaded;
+        details.dataset.seq = was.dataset.seq;
+        if (was.dataset.loaded === "yes") askDetail(details);
+      }
+      details.open = true;
+      return details;
+    }));
+    document.scrollingElement.scrollTop = top;
   }
 
-  function renderDetail({ id, issue, error }) {
+  function renderDetail({ id, seq, issue, error }) {
     const details = list.querySelector(`details[data-id="${id}"]`);
-    if (!details) return;
+    if (!details || String(seq) !== details.dataset.seq) return;
     const section = details.querySelector("section");
     if (error) {
       delete details.dataset.loaded; // the next open tries again

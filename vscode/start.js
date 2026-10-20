@@ -74,10 +74,14 @@ function expandHome(dir) {
   return dir.replace(/^~(?=$|\/)/, os.homedir());
 }
 
-function run(command, args, cwd) {
+// Runs command in cwd; resolves to its output. With a timeout, in ms, a command still running then
+// is killed and refused as timed out.
+function run(command, args, cwd, timeout = 0) {
   return new Promise((resolve, reject) => {
-    execFile(command, args, { cwd }, (error, stdout, stderr) => {
-      if (error) reject(new Error(`${command} ${args.join(" ")}: ${(stderr || error.message).trim()}`));
+    execFile(command, args, { cwd, timeout }, (error, stdout, stderr) => {
+      const late = timeout && error?.killed && error.code !== "ERR_CHILD_PROCESS_STDIO_MAXBUFFER";
+      const why = late ? `timed out after ${timeout / 1000}s` : (stderr || error?.message || "").trim();
+      if (error) reject(new Error(`${command} ${args.join(" ")}: ${why}`));
       else resolve(stdout);
     });
   });

@@ -16,8 +16,9 @@ build-backend = "uv_build"
 module-name = "ghplan"
 
 [tool.pytest.ini_options]
-# The hook's suite is plain unittest; pytest collects it so one command runs everything.
-testpaths = ["tests", ".claude/hooks"]
+# The hook's and the gh-issues scripts' suites are plain unittest; pytest collects them so one
+# command runs everything.
+testpaths = ["tests", ".claude/hooks", ".claude/skills/gh-issues/scripts"]
 # -ra: end-of-run summary naming every skip, xfail and failure, so nothing passes silently.
 addopts = ["-ra", "--strict-markers", "--strict-config", "--cov", "--cov-report=term"]
 xfail_strict = true

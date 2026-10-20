@@ -1,19 +1,19 @@
-// node --test vscode/test: what Ship checks before Go, and the PR it puts on the issue, without
-// Redmine or GitHub.
+// node --test vscode/test: what Go checks before Ship, and what Ship does on GitHub and the issue,
+// without Redmine or GitHub.
 const test = require("node:test");
 const assert = require("node:assert/strict");
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
 const { execFileSync } = require("child_process");
-const { reviewFile, roundFiles, shipTab, check, prLink, linkPullRequest, unsent, keepEdits } = require("../ship");
+const { reviewFile, roundFiles, shipTab, check, prLink, linkPullRequest, shipped, unsent, keepEdits } = require("../ship");
 
 test("a review file names its issue and checkout; any other file names none", () => {
   assert.deepEqual(reviewFile("/work/gh-plan.worktrees/81/.tmp/81/commit.txt"), { root: "/work/gh-plan.worktrees/81", id: 81 });
   assert.deepEqual(reviewFile("/work/repo/.tmp/7/pr-body.md"), { root: "/work/repo", id: 7 });
   assert.deepEqual(reviewFile("/work/repo/.tmp/7/issue.md"), { root: "/work/repo", id: 7 });
   assert.deepEqual(reviewFile("/work/repo/.tmp/7/replies/4309488236.md"), { root: "/work/repo", id: 7 });
-  // pr_threads.py reads 011.md as comment 11, so Ship does too.
+  // pr_threads.py reads 011.md as comment 11, so Go does too.
   assert.deepEqual(reviewFile("/work/repo/.tmp/7/replies/011.md"), { root: "/work/repo", id: 7 });
   for (const file of [
     "/work/repo/.tmp/81/notes.md",
@@ -29,7 +29,7 @@ test("a review file names its issue and checkout; any other file names none", ()
   }
 });
 
-test("Ship's tabs are the issue's review files, diffs in its checkout and its Changes view", () => {
+test("Go's tabs are the issue's review files, diffs in its checkout and its Changes view", () => {
   const root = "/work/gh-plan.worktrees/81";
   const uri = (fsPath) => ({ fsPath });
   const diff = (file) => ({ original: uri(file), modified: uri(file) });
@@ -97,7 +97,7 @@ test("each missing file is named", async (t) => {
   ]);
 });
 
-test("a reply pr would refuse, skip or post twice is refused before Go", async (t) => {
+test("a reply pr would refuse, skip or post twice is refused before Ship", async (t) => {
   const s = sandbox(t);
   s.write(".tmp/81/pr-body.md");
   fs.mkdirSync(path.join(s.root, ".tmp", "81", "replies"));
@@ -172,6 +172,56 @@ test("a bare link already there counts as linked", async () => {
 test("an issue with no Pull requests field is refused by name", async () => {
   const r = { issue: async () => ({ id: 81, custom_fields: [] }), update: () => assert.fail("updated") };
   await assert.rejects(linkPullRequest({ redmine: r, id: 81, pr: PR }), /no Pull requests field/);
+});
+
+// gh on PATH standing in for GitHub: it answers pr view with PR, or fails it when asked to.
+function fakeGh(t, { view = true } = {}) {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "plan-gh-"));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  fs.writeFileSync(path.join(dir, "pr.json"), JSON.stringify(PR));
+  fs.writeFileSync(path.join(dir, "gh"), `#!/bin/sh
+${view ? `cat "${dir}/pr.json"` : "echo 'HTTP 502: Bad Gateway' >&2; exit 1"}
+`, { mode: 0o755 });
+  const PATH = process.env.PATH;
+  process.env.PATH = `${dir}:${PATH}`;
+  t.after(() => (process.env.PATH = PATH));
+}
+
+// Ship's step once pr succeeds, for #81 on its branch.
+const ship = (r = redmine(null)) => shipped({ root: os.tmpdir(), id: 81, branch: "feat/81-ship-it", redmine: () => r });
+
+test("Ship links the branch's PR on the issue, and Ship again says it's linked", async (t) => {
+  fakeGh(t);
+  const r = redmine(null);
+  assert.deepEqual(await ship(r), { failed: false, message: `#81 now links ${PR.url}` });
+  assert.deepEqual(await ship(r), { failed: false, message: `#81 already links ${PR.url}` });
+  assert.equal(r.updates.length, 1);
+});
+
+test("a PR that can't be read says Redmine wasn't told", async (t) => {
+  fakeGh(t, { view: false });
+  assert.deepEqual(await ship(), {
+    failed: true,
+    message: "#81 shipped, but Redmine wasn't told. gh pr view feat/81-ship-it --json url,number,title: HTTP 502: Bad Gateway. Go and Ship again to retry.",
+  });
+});
+
+test("Redmine refusing the link says so by name", async (t) => {
+  fakeGh(t);
+  const r = { issue: async () => ({ id: 81, custom_fields: [] }), update: () => assert.fail("updated") };
+  assert.deepEqual(await ship(r), {
+    failed: true,
+    message: "#81 shipped, but Redmine wasn't told. #81 has no Pull requests field; run setup.rb. Go and Ship again to retry.",
+  });
+});
+
+test("a Redmine client that can't be made says Redmine wasn't told", async (t) => {
+  fakeGh(t);
+  const made = shipped({ root: os.tmpdir(), id: 81, branch: "feat/81-ship-it", redmine: () => { throw new Error("no Redmine URL"); } });
+  assert.deepEqual(await made, {
+    failed: true,
+    message: "#81 shipped, but Redmine wasn't told. no Redmine URL. Go and Ship again to retry.",
+  });
 });
 
 test("a round's files open once the PR body has something beside it, replies by comment id, the PR body last, nothing pr can't send", (t) => {

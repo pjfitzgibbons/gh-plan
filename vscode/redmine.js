@@ -1,6 +1,6 @@
 // Redmine's REST API, for the panel and for Start. No vscode import, so it runs under plain node too.
-// The API key, and the repository web service's key, come from the macOS Keychain each time one is
-// needed; neither is stored here.
+// The API key comes from the macOS Keychain once per client, and the repository web service's key
+// each time it's needed; neither is written anywhere.
 const { execFile } = require("child_process");
 
 function apiKey(service, what = "your Redmine API key") {
@@ -13,26 +13,52 @@ function apiKey(service, what = "your Redmine API key") {
 }
 
 class Redmine {
-  // settings: { url, project, query, service, sysService }
+  // settings: { url, project, query, service, sysService, readTimeout }
   constructor(settings) {
-    this.settings = { ...settings, url: settings.url.replace(/\/+$/, "") };
+    this.settings = { readTimeout: 30000, ...settings, url: settings.url.replace(/\/+$/, "") };
   }
 
-  async get(path) {
-    return (await this.send("GET", path)).json();
+  // A read gives up after readTimeout ms (30s by default), answer and body both, so a stalled
+  // Redmine ends each refresh with a message instead of leaving it waiting. A write, and the read
+  // that checks one, has no limit: a write that timed out might still apply, and the message would
+  // say it hadn't.
+  async get(path, limited = true) {
+    const response = await this.send("GET", path, undefined, limited);
+    return response.json().catch((error) => {
+      throw error.name === "TimeoutError" ? this.late() : error;
+    });
   }
 
-  async send(method, path, body) {
-    const { url, service } = this.settings;
-    const headers = { "X-Redmine-API-Key": await apiKey(service) };
+  // One Keychain read for every request this client sends, so a refresh's reads spawn one
+  // security, not one each. A read that fails is tried again on the next request.
+  key() {
+    this.keyRead ??= apiKey(this.settings.service).catch((error) => {
+      this.keyRead = undefined;
+      throw error;
+    });
+    return this.keyRead;
+  }
+
+  late() {
+    const { url, readTimeout } = this.settings;
+    return new Error(`Redmine at ${url} didn't answer within ${readTimeout / 1000}s`);
+  }
+
+  async send(method, path, body, limited = false) {
+    const { url, service, readTimeout } = this.settings;
+    const headers = { "X-Redmine-API-Key": await this.key() };
     if (body) headers["Content-Type"] = "application/json";
+    const signal = limited ? AbortSignal.timeout(readTimeout) : undefined;
     let response;
     try {
-      response = await fetch(url + path, { method, headers, body: body && JSON.stringify(body) });
+      response = await fetch(url + path, { method, headers, body: body && JSON.stringify(body), signal });
     } catch (error) {
+      if (error.name === "TimeoutError") throw this.late();
       throw new Error(`Redmine can't be reached at ${url}: ${error.cause?.code || error.message}`);
     }
     if (response.status === 401) {
+      // So the next request reads the key again, once it's fixed.
+      this.keyRead = undefined;
       throw new Error(`Redmine refused the key in Keychain item "${service}" (401); store your API key from My account`);
     }
     if (!response.ok) {
@@ -43,20 +69,26 @@ class Redmine {
     return response;
   }
 
-  // The saved query's issues, in its order, with what a row shows.
-  async list() {
-    const { project, query } = this.settings;
-    // A wrong key reads as anonymous, not as a refusal, wherever anonymous may read: this fails it.
-    await this.get("/users/current.json");
-    const { queries } = await this.get("/queries.json?limit=100");
+  // The saved query's issues, in its order, with what a row shows. known is the caller's
+  // { url, identifiers } from earlier lists, kept so a refresh reads /projects.json only when an
+  // issue names a project it hasn't seen: a project's identifier never changes once it's made.
+  async list(known = {}) {
+    const { url, project, query } = this.settings;
+    if (known.url !== url) Object.assign(known, { url, identifiers: new Map() });
+    // A wrong key reads as anonymous, not as a refusal, wherever anonymous may read: the first read
+    // fails it. The query is found by name each time, so a renamed or replaced one is never read.
+    const [, { queries }] = await Promise.all([this.get("/users/current.json"), this.get("/queries.json?limit=100")]);
     const found = queries.find((q) => q.name === query);
     if (!found) throw new Error(`no saved query "${query}" that you can see`);
     const { issues } = await this.get(
       `/issues.json?query_id=${found.id}&project_id=${encodeURIComponent(project)}&limit=100`
     );
     // An issue names its project's id, not its identifier, which is what a marker is keyed by.
-    const { projects } = await this.get("/projects.json?limit=100");
-    const identifiers = new Map(projects.map((p) => [p.id, p.identifier]));
+    const identifiers = known.identifiers;
+    if (issues.some((issue) => !identifiers.has(issue.project.id))) {
+      const { projects } = await this.get("/projects.json?limit=100");
+      for (const p of projects) identifiers.set(p.id, p.identifier);
+    }
     return issues.map((issue) => ({
       id: issue.id,
       subject: issue.subject,
@@ -116,7 +148,7 @@ class Redmine {
     const path = `/issues/${Number(id)}.json`;
     await this.send("PUT", path, { issue: fields });
     if (fields.status_id === undefined) return;
-    const { issue } = await this.get(path);
+    const { issue } = await this.get(path, false);
     if (issue.status.id === Number(fields.status_id)) return;
     const sent = this.statusNames?.get(Number(fields.status_id)) || `status ${fields.status_id}`;
     throw new Error(

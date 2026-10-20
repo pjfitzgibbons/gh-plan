@@ -1,4 +1,4 @@
-// Shipping an issue: what Ship checks before Go, and the PR it puts on the issue once pr succeeds.
+// Shipping an issue: what Go checks before Ship, and the PR it puts on the issue once pr succeeds.
 // No vscode import: plain functions, tested under node --test.
 const fs = require("fs");
 const path = require("path");
@@ -6,7 +6,7 @@ const { run, git } = require("./start");
 
 // A round's files for pr, in .tmp/<n>/: beside the commit message and PR body, the review replies
 // pr posts, one <comment id>.md each, and issue.md, the issue's description with the boxes pr
-// ticks. A reply's name is digits, as pr_threads.py reads it. package.json's Ship and Go match the
+// ticks. A reply's name is digits, as pr_threads.py reads it. package.json's Go and Ship match the
 // same names.
 const ROUND = String.raw`(?:commit\.txt|pr-body\.md|issue\.md|replies\/[0-9]+\.md)`;
 const REVIEW_FILE = new RegExp(String.raw`^(.+)\/\.tmp\/([1-9][0-9]*)\/${ROUND}$`);
@@ -72,7 +72,7 @@ function roundFiles(dir) {
   return files.length ? [...files, at("pr-body.md")] : [];
 }
 
-// Whether a tab's input is one Ship left open for issue id in root: a round file, a diff of a file
+// Whether a tab's input is one Go left open for issue id in root: a round file, a diff of a file
 // in root, or the Changes view of root. Once pr commits, the Changes view may list nothing, so an
 // empty one counts too.
 function shipTab(input, root, id) {
@@ -112,9 +112,15 @@ async function check(root, id) {
   return { branch, dirty, problems };
 }
 
+// An error's message as a sentence, so the next one doesn't run into it.
+const sentence = (error) => (/[.!?]$/.test(error.message) ? error.message : `${error.message}.`);
+
+// How long each gh call about a PR may take, so a stalled one ends with a message.
+const GH_TIMEOUT = 60000;
+
 // The PR for ref, a branch or a PR's URL, as gh reports it: fields, by default { url, number, title }.
 async function pullRequest(root, ref, fields = "url,number,title") {
-  return JSON.parse(await run("gh", ["pr", "view", ref, "--json", fields], root));
+  return JSON.parse(await run("gh", ["pr", "view", ref, "--json", fields], root, GH_TIMEOUT));
 }
 
 // A PR as backfill.rb links it: [<repo>#<n>](<url>).
@@ -138,4 +144,19 @@ async function linkPullRequest({ redmine, id, pr }) {
   return true;
 }
 
-module.exports = { reviewFile, isRoundFile, unsent, unsentIn, keepEdits, roundFiles, shipTab, check, pullRequest, prLink, linkPullRequest };
+// What Ship does once pr succeeds in root: links the branch's PR on issue id, through the client
+// redmine() returns. Never throws: returns the message for VS Code, and whether it reports a failure.
+async function shipped({ root, id, branch, redmine }) {
+  try {
+    const pr = await pullRequest(root, branch);
+    const linked = await linkPullRequest({ redmine: redmine(), id, pr });
+    return { failed: false, message: `#${id} ${linked ? "now links" : "already links"} ${pr.url}` };
+  } catch (error) {
+    return { failed: true, message: `#${id} shipped, but Redmine wasn't told. ${sentence(error)} Go and Ship again to retry.` };
+  }
+}
+
+module.exports = {
+  reviewFile, isRoundFile, unsent, unsentIn, keepEdits, roundFiles, shipTab, check, pullRequest, prLink, linkPullRequest,
+  shipped,
+};
