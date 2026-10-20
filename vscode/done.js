@@ -313,14 +313,10 @@ async function finishIn({ redmine, id, project, checkout, common, pr, result, di
   if (!issue.status.is_closed) fields.status_id = await redmine.statusId("Closed");
   if (!noted) fields.notes = doneNote(pr);
   if (Object.keys(fields).length) {
+    // A close Redmine drops is refused here, naming blockers and subtasks; the note is saved either
+    // way, and the next Done sends only the status.
     await redmine.update(id, fields);
-    // Redmine answers 204 and drops a status it won't allow (docs/failure-modes.md), so the close is
-    // read back; the note is saved either way, and the next Done sends only the status.
     if (fields.status_id) {
-      const after = await redmine.issue(id);
-      if (!after.status.is_closed) {
-        throw new Error(`Redmine kept #${id} ${after.status.name}: an open issue blocks it, or it has an open subtask${fields.notes ? "; the note was saved" : ""}. Close those, then Done again`);
-      }
       notes.push(`#${id} is Closed.`);
     } else {
       notes.push(`Added the note to #${id}.`);

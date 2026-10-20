@@ -84,6 +84,8 @@ class Redmine {
     const { issue_statuses } = await this.get("/issue_statuses.json");
     const found = issue_statuses.find((s) => s.name === name);
     if (!found) throw new Error(`no issue status "${name}" in Redmine`);
+    // update names the status it sent by these, if Redmine drops it.
+    this.statusNames = new Map(issue_statuses.map((s) => [s.id, s.name]));
     return found.id;
   }
 
@@ -107,9 +109,21 @@ class Redmine {
     if (!response.ok) throw new Error(`Redmine POST /sys/fetch_changesets for ${project}: HTTP ${response.status}`);
   }
 
-  // fields as Redmine's issue PUT takes them; notes becomes a journal entry.
+  // fields as Redmine's issue PUT takes them; notes becomes a journal entry. Redmine answers 204 and
+  // drops a status it won't allow, keeping the rest (docs/failure-modes.md), so a write that sets a
+  // status reads the issue back, and refuses if the status isn't the one it sent.
   async update(id, fields) {
-    await this.send("PUT", `/issues/${Number(id)}.json`, { issue: fields });
+    const path = `/issues/${Number(id)}.json`;
+    await this.send("PUT", path, { issue: fields });
+    if (fields.status_id === undefined) return;
+    const { issue } = await this.get(path);
+    if (issue.status.id === Number(fields.status_id)) return;
+    const sent = this.statusNames?.get(Number(fields.status_id)) || `status ${fields.status_id}`;
+    throw new Error(
+      `Redmine kept #${id} ${issue.status.name}, not ${sent}. It drops a status when the key's roles have no workflow ` +
+        `transition to it, when an open issue blocks a close or an open subtask does, and on a subtask of a closed ` +
+        `parent, which only closes${fields.notes ? "; the note was saved" : ""}. Fix that, then try again`
+    );
   }
 }
 

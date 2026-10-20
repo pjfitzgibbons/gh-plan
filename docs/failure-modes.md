@@ -24,11 +24,11 @@ Redmine answers an issue update with 204 even when it has refused the status in 
 
 - no workflow transition from the issue's status to the new one exists for any of the user's roles. The administrator takes every role, so only a non-admin key meets this;
 - the issue would close while an open issue blocks it or it has an open subtask (`closable?`, lines 1126–1128). On 2026-10-18 this kept #80 open: #50 blocked it;
-- the issue would reopen while it is a subtask of a closed parent (`reopenable?`, line 1130).
+- the issue is a subtask of a closed parent and the new status is open. Such a subtask takes only a closed status (`reopenable?`, line 1130), so even New → In Progress is dropped.
 
 An issue created with a status its workflow doesn't allow from the start gets the first status it does allow, or the default status (lines 625–626). #84, created as Icebox, came back New.
 
-A 204 doesn't mean the status changed. A write that sets a status reads the issue back, and if the status isn't the one it sent, it refuses and names the likely rule (#85). The note is saved by then, so the refusal says so. A commit's `fixes #<n>` doesn't go through this filter (`Changeset#fix_issue` uses `assign_attributes`, `app/models/changeset.rb` line 253), so a commit can close a blocked issue that the API can't.
+A 204 doesn't mean the status changed. Every write that sets a status goes through `redmine.update`, which reads the issue back. If the status isn't the one it sent, the write is refused, naming the issue, both statuses and the three rules above. The note is saved by then, so the refusal says so. The read-back writes nothing, never sends the status again, and doesn't run for a write that sets no status. A commit's `fixes #<n>` doesn't go through this filter (`Changeset#fix_issue` uses `assign_attributes`, `app/models/changeset.rb` line 253), so a commit can close a blocked issue that the API can't.
 
 ## Start (PR #110)
 
@@ -44,7 +44,7 @@ Within a window, a second click on an issue joins the Start under way. Across wi
 | Branch and worktree | Rerun reuses the branch left behind, on its own base | Found by number, reused | Behind the lock | A listed worktree deleted by hand is refused, naming `git worktree prune`; the issue's branch in the main checkout is refused; a worktree mid-rebase is found by its folder | Only `feat/`, `fix/`, `chore/` or no prefix names an issue's branch |
 | Pushed branch | — | — | — | An issue branch on `origin` is checked out, tracking it, before a new one is made | — |
 | `uv sync` | Reruns while the marker exists | Skipped once set up | Behind the lock | — | — |
-| Status to In Progress | Rerun sends it | Skipped when In Progress | Behind the lock | Refused statuses never reach it. A subtask of a closed parent, or a key whose roles lack New → In Progress, gets the journal note without the status, and the next Start sends both again: open (#85) | — |
+| Status to In Progress | Rerun sends it | Skipped when In Progress | Behind the lock | Refused statuses never reach it. A subtask of a closed parent, or a key whose roles lack New → In Progress, gets the journal note without the status, and Start is refused before the handoff. The next Start sends both again and is refused the same way (`start.test.js`, *Start on a subtask of a closed parent*) | — |
 | Handoff to Claude | The last setup step: a failed write leaves the marker, so the next Start writes it. Kept until Claude starts; reload or Open retries | Written only by the Start that set up, or to retry one kept | One file per worktree, written aside and renamed in; an open window watches for its own | — | Expires after a day, so a forgotten one can't start Claude unasked |
 
 ### Open
@@ -75,7 +75,7 @@ Done finishes an issue once its PR has merged. It checks everything before it ch
 | Remove the worktree | The next Done removes it, or drops git's entry for a folder already gone. Start's setup marker goes with it | Skipped once gone | Behind the lock | The worktree on the PR's head branch, whatever its name, when the PR is from this repo and the worktree isn't the main checkout; else the one Start would find. A locked worktree is refused, naming `git worktree unlock`. Checked before any change: changes, commits the PR's merged head lacks, or an ignored file outside `plan.disposable` refuse it; a HEAD behind that head, after a commit made on GitHub, is accepted | git refuses untracked files, but removes ignored ones unasked. Only those `plan.disposable` names go with the worktree: `.tmp/` and what a tool makes again, such as `node_modules/` or `__pycache__/`. Done lists any other, such as a `.env`, and stops. The base is brought up first, so git refuses an untracked file in its way before the worktree goes |
 | Delete the branch | The next Done deletes it | Skipped once gone | Behind the lock | Every branch named for the issue, and the found worktree's branch, so a Done that stopped after the worktree went still finds the worktree's own when it is named for the issue; a branch another worktree has checked out is kept and named, with `git worktree prune` when its folder is gone, and the base is never deleted. Deleted only when the tip holds nothing the PR's merged head lacks, and only from that tip, so a branch that moved while Done ran stops Done and is kept; any other tip is kept and named | — |
 | Fetch the commits | Noted, not thrown; the close goes through the API instead | Fetches nothing new | Redmine handles each fetch | — | Needs the web service's key in the Keychain; without it, Done closes the issue through the API, and the commits wait for the Repository tab |
-| Close and note | The next Done sends what's missing | Skipped when the issue is closed and a note holds the merge commit's URL | Behind the lock | Re-read after the fetch, which may have closed it. Read back after the close: a close Redmine dropped is refused, naming blockers and subtasks, and the refusal says the note was saved | — |
+| Close and note | The next Done sends what's missing | Skipped when the issue is closed and a note holds the merge commit's URL | Behind the lock | Re-read after the fetch, which may have closed it. `redmine.update` reads the close back: a close Redmine dropped is refused, naming blockers and subtasks, and the refusal says the note was saved | — |
 
 ### Open
 

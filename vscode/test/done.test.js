@@ -8,6 +8,7 @@ const path = require("path");
 const { execFileSync } = require("child_process");
 const { worktreeDir } = require("../start");
 const { linkedPullRequest, doneNote, finish, DISPOSABLE } = require("../done");
+const { Redmine } = require("../redmine");
 
 const ID = 82;
 const BRANCH = "feat/82-finish-it";
@@ -501,9 +502,16 @@ test("an issue the fetch closed gets the note, and no second status", async (t) 
 test("a close Redmine drops is refused, the note is kept, and the next Done sends only the status", async (t) => {
   const s = sandbox(t);
   const update = s.redmine.update;
-  s.redmine.update = async (id, fields) => update(id, { ...fields, status_id: undefined });
+  // Redmine's update, against a Redmine that keeps the note and drops the close.
+  s.issue.status.id = 2;
+  Object.assign(s.redmine, {
+    update: Redmine.prototype.update,
+    statusNames: new Map([[5, "Closed"]]),
+    send: async (method, path, { issue: fields }) => update(ID, { ...fields, status_id: undefined }),
+    get: async () => ({ issue: structuredClone(s.issue) }),
+  });
   await assert.rejects(done(s), (e) => {
-    assert.match(e.message, new RegExp(`Redmine kept #${ID} In Progress: an open issue blocks it, or it has an open subtask; the note was saved`));
+    assert.match(e.message, new RegExp(`^Redmine kept #${ID} In Progress, not Closed\\. .*an open issue blocks a close or an open subtask does.*; the note was saved\\.`));
     // What it changed before it failed comes with the error.
     assert.deepEqual(e.result, { dir: s.dir, notes: ["Brought main up to the merge.", `Removed the worktree ${s.dir}.`, `Deleted the branch ${BRANCH}.`] });
     return true;
