@@ -2,6 +2,7 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
 const { slug, branchName, worktreeDir, blockerIds, existingWorktree, start } = require("../start");
+const { Redmine } = require("../redmine");
 
 test("the slug is the subject's first five words", () => {
   assert.equal(slug("Start an issue from the Next up panel"), "start-an-issue-from-the");
@@ -123,6 +124,26 @@ test("Start makes the branch and worktree once, and a second Start changes nothi
   assert.deepEqual({ dir: second.dir, branch: second.branch, created: second.created, started: second.started }, { dir: first.dir, branch: first.branch, created: false, started: false });
   assert.deepEqual(second.notes, []);
   assert.equal(s.updates.length, 1);
+});
+
+test("Start on a subtask of a closed parent stops with Redmine's refusal and no handoff, every time", async (t) => {
+  const s = sandbox(t);
+  s.issues[50].status = { name: "Closed", is_closed: true };
+  s.issues[80].status = { id: 1, name: "New", is_closed: false };
+  // Redmine's update, against a Redmine that keeps the note and drops the status, as 7.0.2 does
+  // for a subtask whose parent is closed.
+  Object.assign(s.redmine, {
+    update: Redmine.prototype.update,
+    statusNames: new Map([[2, "In Progress"]]),
+    send: async (method, path, { issue: fields }) => s.updates.push({ path, ...fields }),
+    get: async (path) => ({ issue: s.issues[Number(path.match(/\d+/)[0])] }),
+  });
+  const handOff = () => assert.fail("handed off to Claude");
+  for (const attempt of [1, 2]) {
+    await assert.rejects(start({ ...s, id: 80, confirm: () => true, handOff }), /^Error: Redmine kept #80 New, not In Progress\. .*the note was saved\./);
+    assert.equal(s.updates.length, attempt, "each Start sends the status and note once");
+  }
+  assert.equal(s.issues[80].status.name, "New");
 });
 
 test("a Start stopped after the worktree finishes on the next Start", async (t) => {
