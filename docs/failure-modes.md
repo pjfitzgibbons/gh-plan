@@ -93,6 +93,6 @@ Found by the last local review and left unfixed: each fails silently, and its wo
 
 | Case | Worst case | Recovery |
 |---|---|---|
-| Another issue's `fixes #<n>` commit is fetched by Done | That issue closes, and its row leaves Next up before its own Done | Run `pr done` in that issue's worktree |
+| Another issue's `fixes #<n>` commit is fetched by Done | That issue closes, and its row leaves Next up before its own Done | Set the issue back to In Progress in Redmine: its row returns to Next up, and its Done finishes it and closes it again |
 | GitHub keeps the PR's branch after the merge (gh-plan deletes it: `delete_branch_on_merge` is on) | `origin/<branch>` survives, and a Start of the reopened issue checks out the merged branch | `git push origin --delete <branch>` |
 | Ship runs `pr` in the worktree while Done removes it; Go and Ship take neither the lock nor the in-window guard | `pr` fails part way, or pushes a branch Done just deleted | Don't press Done until Ship's terminal has finished; delete a re-pushed branch on GitHub |

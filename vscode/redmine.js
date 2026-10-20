@@ -75,6 +75,8 @@ class Redmine {
   async list(known = {}) {
     const { url, project, query } = this.settings;
     if (known.url !== url) Object.assign(known, { url, identifiers: new Map() });
+    // Taken now: a refresh with newer settings may replace it while this one waits on Redmine.
+    const identifiers = known.identifiers;
     // A wrong key reads as anonymous, not as a refusal, wherever anonymous may read: the first read
     // fails it, and its error wins over the query read's, whichever answers first. The query is found
     // by name each time, so a renamed or replaced one is never read.
@@ -88,7 +90,6 @@ class Redmine {
       `/issues.json?query_id=${found.id}&project_id=${encodeURIComponent(project)}&limit=100`
     );
     // An issue names its project's id, not its identifier, which is what a marker is keyed by.
-    const identifiers = known.identifiers;
     if (issues.some((issue) => !identifiers.has(issue.project.id))) {
       const { projects } = await this.get("/projects.json?limit=100");
       for (const p of projects) identifiers.set(p.id, p.identifier);

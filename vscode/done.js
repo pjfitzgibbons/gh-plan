@@ -183,8 +183,7 @@ async function finishIn({ redmine, id, project, checkout, common, pr, result, di
   if (found && !found.main) {
     const left = unsentIn(found.dir);
     if (left.length) {
-      const scripts = "python3 ~/.claude/skills/gh-issues/scripts";
-      throw new Error(`${found.dir} has replies or checklist ticks pr hasn't sent; send them from there with ${scripts}/pr_threads.py <PR> --post .tmp/<n>/replies and ${scripts}/checklist.py <n> .tmp/<n>/issue.md (for #${id}, the PR is ${pr.number}), not pr, whose cleanup skips Done's checks, or delete them, then Done again:\n${left.join("\n")}`);
+      throw new Error(`${found.dir} has replies or checklist ticks pr hasn't sent; send each .tmp/<n>/ with pr done <n> in that worktree, or delete them, then Done again:\n${left.join("\n")}`);
     }
   }
   if (found && !found.main && trees.find((t) => t.dir === found.dir)?.locked) {

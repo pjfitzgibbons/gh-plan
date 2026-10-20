@@ -121,60 +121,64 @@ class Threads(unittest.TestCase):
 
 
 class PrDone(unittest.TestCase):
-    """pr.sh done against a fake gh: a merged branch's worktree goes only when its ignored files are
-    disposable, since git worktree remove deletes them unasked."""
+    """pr.sh after the merge, against a fake gh: it leaves the cleanup to Done, which checks what
+    git would delete or overwrite."""
 
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         top = Path(self.tmp.name)
         bin = top / "bin"
         bin.mkdir()
-        # gh: the default branch is main, and the branch's PR merged at the worktree's HEAD.
-        (bin / "gh").write_text('#!/bin/sh\ncase "$*" in\n  "repo view"*) echo main ;;\n'
-                                '  *"--json state"*) echo MERGED ;;\n  *headRefOid*) git rev-parse HEAD ;;\nesac\n')
-        (bin / "security").write_text("#!/bin/sh\nexit 1\n")
-        for f in bin.iterdir():
-            f.chmod(0o755)
+        self.state = top / "state"
+        self.state.write_text("MERGED\n")
+        self.head = top / "head"
+        (bin / "gh").write_text(f'#!/bin/sh\ncase "$*" in\n  "repo view"*) echo main ;;\n'
+                                f'  *"--json state"*) cat "{self.state}" ;;\n'
+                                f'  *"--json headRefOid"*) cat "{self.head}" ;;\nesac\n')
+        (bin / "gh").chmod(0o755)
         self.env = {**os.environ, "PATH": f"{bin}:{os.environ['PATH']}", "GIT_AUTHOR_NAME": "T", "GIT_AUTHOR_EMAIL": "t@example.com",
                     "GIT_COMMITTER_NAME": "T", "GIT_COMMITTER_EMAIL": "t@example.com"}
         git = lambda cwd, *args: subprocess.run(["git", *args], cwd=cwd, env=self.env, check=True, capture_output=True)
-        git(top, "init", "-q", "--bare", "-b", "main", "origin.git")
-        git(top, "clone", "-q", "origin.git", "main")
         self.main = top / "main"
-        (self.main / ".gitignore").write_text("HANDOFF.md\n/.tmp\nnode_modules/\n")
-        git(self.main, "add", ".")
-        git(self.main, "commit", "-qm", "start")
-        git(self.main, "push", "-q", "origin", "main")
+        git(top, "init", "-q", "-b", "main", "main")
+        git(self.main, "commit", "-q", "--allow-empty", "-m", "start")
         self.tree = top / "tree"
         git(self.main, "worktree", "add", "-q", "-b", "fix/9-x", str(self.tree))
-        (self.tree / "node_modules" / "x").mkdir(parents=True)
-        (self.tree / "node_modules" / "x" / "a.js").write_text("")
-        (self.tree / ".tmp" / "9").mkdir(parents=True)
-        (self.tree / ".tmp" / "9" / "notes.md").write_text("")
+        (self.main / ".git" / "info" / "exclude").write_text("HANDOFF.md\n")
+        (self.tree / "HANDOFF.md").write_text("notes")
+        self.head.write_text(git(self.tree, "rev-parse", "HEAD").stdout.decode())
 
     def tearDown(self):
         self.tmp.cleanup()
 
-    def pr_done(self):
-        return subprocess.run(["sh", str(Path(__file__).parent / "pr.sh"), "done"], cwd=self.tree, env=self.env,
+    def pr(self, *args):
+        return subprocess.run(["sh", str(Path(__file__).parent / "pr.sh"), *args], cwd=self.tree, env=self.env,
                               capture_output=True, text=True)
 
-    def test_an_ignored_file_done_would_keep_stops_the_removal(self):
-        (self.tree / "HANDOFF.md").write_text("notes")
-        run = self.pr_done()
-        self.assertEqual(run.returncode, 2, run.stderr)
-        self.assertIn("ignored files its removal would delete", run.stderr)
-        self.assertIn("HANDOFF.md", run.stderr)
-        self.assertNotIn("node_modules", run.stderr)
-        self.assertNotIn(".tmp", run.stderr)
-        self.assertTrue((self.tree / "HANDOFF.md").exists())
-
-    def test_only_disposable_ignored_files_remove_the_worktree_and_branch(self):
-        run = self.pr_done()
-        self.assertEqual(run.returncode, 0, run.stderr)
-        self.assertFalse(self.tree.exists())
+    def test_a_merged_pr_points_to_done_and_removes_nothing(self):
+        for args in [(), ("done",)]:
+            run = self.pr(*args)
+            self.assertEqual(run.returncode, 0, run.stderr)
+            self.assertIn("press Done on #9 in Next up", run.stdout)
+            self.assertTrue((self.tree / "HANDOFF.md").exists())
         branches = subprocess.run(["git", "branch"], cwd=self.main, capture_output=True, text=True).stdout
-        self.assertNotIn("fix/9-x", branches)
+        self.assertIn("fix/9-x", branches)
+
+    def test_a_merged_pr_refuses_work_it_lacks(self):
+        (self.tree / "new.txt").write_text("unpushed")
+        run = self.pr()
+        self.assertEqual(run.returncode, 2)
+        self.assertIn("has work it lacks", run.stderr)
+        self.assertIn("new.txt", run.stderr)
+        (self.tree / "new.txt").unlink()
+        subprocess.run(["git", "commit", "-q", "--allow-empty", "-m", "more"], cwd=self.tree, env=self.env, check=True)
+        self.assertEqual(self.pr("done").returncode, 2)
+
+    def test_pr_done_refuses_a_pr_that_has_not_merged(self):
+        self.state.write_text("OPEN\n")
+        run = self.pr("done")
+        self.assertEqual(run.returncode, 2)
+        self.assertIn("has not merged", run.stderr)
 
 
 class PostReplies(unittest.TestCase):

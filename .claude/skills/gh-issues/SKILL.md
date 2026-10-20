@@ -28,7 +28,7 @@ An issue is a Redmine issue, `#<n>`, its description in the issue outline. GitHu
 | `gh pc [N]` | `gh pr create`, titled with the branch's first commit subject, body `.tmp/<n>/pr-body.md`, and asks Copilot to review |
 | `gh pb [N]` | `gh pr edit` on this branch's PR with `.tmp/<n>/pr-body.md` |
 | `pr [N]` | What Ship runs: commits with `.tmp/<n>/commit.txt`, pushes, opens or updates the PR, asks Copilot again when the push adds commits, sends the replies and ticks |
-| `pr done [N]` | After the merge: removes the worktree (refusing one with ignored files Done would keep, such as `HANDOFF.md`), updates the default branch, deletes the branch, has Redmine fetch the commits. Done in Next up does this and closes the issue |
+| `pr done [N]` | After the merge: sends any replies and ticks left, then says to press Done in Next up, which cleans up and closes the issue. Bare `pr` does the same once the PR has merged |
 
 `gh pc` and `gh pb` refuse a body containing `Assisted-by` or `Co-authored-by`. `GHBODY_DRY=1` prints the command instead.
 

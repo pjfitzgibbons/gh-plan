@@ -125,8 +125,9 @@ client of one of them:
 
 - **The extension** shows Next up in a panel, and holds the Start, Open, Go, Ship and Done
   buttons ([`vscode/README.md`](../vscode/README.md)).
-- **`pr`** commits, pushes, opens or updates the PR, posts review replies, applies Done ticks to
-  the issue's description, and cleans up after a merge. It and its Python scripts live in
+- **`pr`** commits, pushes, opens or updates the PR, posts review replies and applies Done ticks
+  to the issue's description. After a merge it sends only what's left and leaves the cleanup to
+  Done. It and its Python scripts live in
   `.claude/skills/gh-issues/scripts/`, with their tests. `~/.claude/skills/gh-issues` links to the
   main checkout's copy, so every repo uses the one skill and `~/.local/bin/pr` reaches it.
 - **The setup scripts**, `setup.rb`, `import.rb` and `backfill.rb`, run inside the container with

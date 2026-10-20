@@ -1,6 +1,6 @@
 #!/bin/sh
-# pr [done] [N]: commit, push and open or update the PR for the current branch, then clean up once
-# it merges, in one step that is safe to repeat. Each step runs only when it has something to do:
+# pr [done] [N]: commit, push and open or update the PR for the current branch, in one step that is
+# safe to repeat. Each step runs only when it has something to do:
 #
 #   commit  when the tree has changes: stages everything (.tmp/ is ignored) and commits with the
 #           message in .tmp/N/commit.txt, then deletes that file, so the next change needs a new one
@@ -13,32 +13,15 @@
 #           resolves the thread and deletes the file (pr_threads.py --post)
 #   ticks   when .tmp/N/issue.md exists: applies its checkbox changes to issue N's description in
 #           Redmine, refusing any other difference, then deletes it (checklist.py)
-#   cleanup once the PR has merged: removes the branch's worktree, refusing one with ignored files
-#           Done would keep, switches the main checkout to the default branch, pulls, deletes
-#           the local branch, and has Redmine fetch the new
-#           commits, so a fixes #N commit closes issue N. pr done does only this, and refuses a PR
-#           that has not merged.
+#
+# Once the PR has merged, pr sends only the replies and ticks, refusing a branch with work the PR
+# lacks, then says to press Done in Next up,
+# which cleans up: it checks what removing the worktree and pulling would delete or overwrite,
+# which pr can't see. pr done does the same, and refuses a PR that has not merged.
 #
 # N defaults to the issue number (or old item ID) in the branch name, as for gh pc (ghbody.sh).
-# It refuses the default branch, a branch whose PR closed unmerged, and the cleanup when the branch
-# holds work the merged PR lacks.
+# It refuses the default branch and a branch whose PR closed unmerged.
 set -eu
-
-# Redmine reads new commits only when its Repository tab opens; its repository web service fetches
-# them now (gh-plan #62). The key is in the Keychain, and goes in the request body, out of ps and
-# Redmine's log. Without it, or without Redmine, pr says so and carries on.
-fetch_redmine() {
-  key=$(security find-generic-password -s redmine-sys-api -w 2>/dev/null) ||
-    { echo "pr: no Keychain item redmine-sys-api; Redmine fetches the commits when its Repository tab opens" >&2; return 0; }
-  url=${REDMINE_URL:-http://127.0.0.1:3010}
-  # /sys never reloads Redmine's settings, so a key setup.rb just stored is refused until a page
-  # view reloads them: one first.
-  curl -s -o /dev/null "$url/login" || true
-  code=$(printf 'key=%s' "$key" | curl -s -o /dev/null -w '%{http_code}' --data-binary @- \
-    "$url/sys/fetch_changesets") || true
-  if [ "$code" = 200 ]; then echo "pr: Redmine fetched the commits"
-  else echo "pr: Redmine didn't fetch the commits (HTTP ${code:-000}); open its Repository tab" >&2; fi
-}
 
 # The review replies and checklist ticks of .tmp/N/, after the push, so the replies describe code
 # the PR has. Each script checks everything before its first write and deletes each file once it
@@ -72,42 +55,16 @@ state=$(gh pr view "$branch" --json state --jq .state 2>/dev/null || true)
 case $state in
   CLOSED) echo "pr: the PR for $branch closed unmerged; start a new branch" >&2; exit 2 ;;
   MERGED)
-    # Clean up, but only when the PR merged exactly this branch's commits.
+    # Work the merged PR lacks would be left unpushed, and replies would describe it: stop, so Ship
+    # shows it rather than reporting success.
     head=$(gh pr view "$branch" --json headRefOid --jq .headRefOid)
     if [ "$(git rev-parse HEAD)" != "$head" ] || [ -n "$(git status --porcelain)" ]; then
-      echo "pr: $branch has work the merged PR lacks; nothing deleted" >&2
+      echo "pr: the PR for $branch has merged, and $branch has work it lacks; start a new branch for it" >&2
       git status --short >&2
       exit 2
     fi
-    main=$(dirname "$(git rev-parse --path-format=absolute --git-common-dir)")
-    # git worktree remove deletes ignored files unasked, so, as Done does, refuse any but the ones
-    # plan.disposable names by default (vscode/package.json): by name at any depth, name/ a folder.
-    if [ "$root" != "$main" ]; then
-      kept=$(git ls-files --others --ignored --exclude-standard | awk -F/ '
-        BEGIN {
-          split(".tmp/ node_modules/ .venv/ __pycache__/ .pytest_cache/ .coverage .ruby-lsp/ htmlcov/ dist/ build/", d, " ")
-          for (i in d) if (d[i] ~ /\/$/) folder[substr(d[i], 1, length(d[i]) - 1)] = 1; else name[d[i]] = 1
-        }
-        { for (i = 1; i <= NF; i++) if ((i < NF && $i in folder) || $i in name) next; print }')
-      if [ -n "$kept" ]; then
-        echo "pr: $root has ignored files its removal would delete; move them out, then pr done again" >&2
-        printf '%s\n' "$kept" >&2
-        exit 2
-      fi
-    fi
-    # Before the worktree goes, and its .tmp/ with it.
     send_round
-    if [ "$root" != "$main" ]; then
-      echo "pr: removing the worktree $root"
-      cd "$main"
-      git worktree remove "$root"
-    fi
-    echo "pr: merged; switching $main to $base"
-    git -C "$main" switch -q "$base"
-    git -C "$main" pull -q --prune
-    # -D: git can't see a squash merge, so -d would refuse.
-    git -C "$main" branch -D "$branch"
-    fetch_redmine
+    echo "pr: the PR for $branch has merged; press Done on #$n in Next up to clean up"
     exit 0 ;;
 esac
 
@@ -133,7 +90,8 @@ echo "pr: pushing $branch"
 GIT_TERMINAL_PROMPT=0 git push -u origin HEAD
 
 if [ -n "$state" ]; then
-  # Straight after the push, so a later step that fails can't leave pushed commits unreviewed.
+  # Straight after the push, so a later step that fails can't leave pushed commits unreviewed. A pr
+  # stopped between the push and this request still can: the next one finds nothing new to ask about.
   if [ "$head_before" != "$(git rev-parse HEAD)" ]; then
     echo "pr: asking Copilot to review the new commits"
     gh pr edit "$branch" --add-reviewer @copilot >/dev/null ||

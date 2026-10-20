@@ -455,11 +455,13 @@ function activate(context) {
   context.subscriptions.push(
     vscode.window.registerWebviewViewProvider("plan.nextUp", view),
     vscode.commands.registerCommand("plan.refresh", () => view.refresh()),
-    // A changed URL or Keychain item needs a new client, and the list a new refresh, which also
-    // discards one still answering with the old settings.
+    // A changed URL, query or Keychain item needs a new client, and any plan.* change a new
+    // refresh, which also discards one still answering with the old settings. Other settings keep
+    // the client, and the key it read, so they bring no Keychain prompt.
     vscode.workspace.onDidChangeConfiguration((event) => {
       if (!event.affectsConfiguration("plan")) return;
-      view.client = undefined;
+      const client = ["redmineUrl", "project", "query", "keychainService", "sysKeychainService"];
+      if (client.some((name) => event.affectsConfiguration(`plan.${name}`))) view.client = undefined;
       view.refresh();
     }),
     // A window coming into focus refreshes its Next up, so it shows what changed while another
