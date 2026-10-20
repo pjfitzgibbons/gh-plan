@@ -28,7 +28,7 @@ An issue is a Redmine issue, `#<n>`, its description in the issue outline. GitHu
 | `gh pc [N]` | `gh pr create`, titled with the branch's first commit subject, body `.tmp/<n>/pr-body.md`, and asks Copilot to review |
 | `gh pb [N]` | `gh pr edit` on this branch's PR with `.tmp/<n>/pr-body.md` |
 | `pr [N]` | What Ship runs: commits with `.tmp/<n>/commit.txt`, pushes, opens or updates the PR, asks Copilot again when the push adds commits, sends the replies and ticks |
-| `pr done [N]` | After the merge: removes the worktree, updates the default branch, deletes the branch, has Redmine fetch the commits. Done in Next up does this and closes the issue |
+| `pr done [N]` | After the merge: removes the worktree (refusing one with ignored files Done would keep, such as `HANDOFF.md`), updates the default branch, deletes the branch, has Redmine fetch the commits. Done in Next up does this and closes the issue |
 
 `gh pc` and `gh pb` refuse a body containing `Assisted-by` or `Co-authored-by`. `GHBODY_DRY=1` prints the command instead.
 
@@ -59,11 +59,14 @@ When the work is done and tested, write `.tmp/<n>/commit.txt` (ending `Assisted-
 
 ## Answering a PR review
 
-Fix the findings first, then write a reply to each thread as `.tmp/<n>/replies/<comment id>.md`: "Fixed: …" saying what changed, or why not. List the open threads and their comment ids with:
+Fix the findings first. Then write each open thread's context into `.tmp/<n>/replies/`, one `<comment id>.md` each, and write the reply below it: "Fixed: …" saying what changed, or why not. The context, the path and line, the review comment and the last lines of the diff hunk it's on, is an HTML comment at the top, so Peter reads each reply against what it answers; `pr` strips it before posting. Run `--drafts` again after writing replies without it, and it adds the context above them.
 
 ```
 python3 ~/.claude/skills/gh-issues/scripts/pr_threads.py 73          # open threads: comment id, path:line, first line
+python3 ~/.claude/skills/gh-issues/scripts/pr_threads.py 73 --drafts .tmp/<n>/replies
 ```
+
+A file with no reply below its context stops `pr` before the first post; delete the file for a thread that gets no reply.
 
 `pr`, after its push, posts each reply to its thread, resolves the thread and deletes the file, so the replies describe code that's on the PR (`pr_threads.py 73 --post .tmp/<n>/replies`). It checks every file before the first post, and a reply the thread already has is not posted again. The replies open for review beside `commit.txt` and `pr-body.md`.
 

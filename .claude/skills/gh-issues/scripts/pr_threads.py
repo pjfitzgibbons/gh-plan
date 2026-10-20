@@ -4,6 +4,7 @@
     pr_threads.py 73                                  # unresolved threads: comment id, path, first line
     pr_threads.py 73 --all                            # resolved ones too
     pr_threads.py 73 --replies .tmp/pr-73-replies.tsv > .tmp/reply-73.sh
+    pr_threads.py 73 --drafts .tmp/79/replies         # open threads' context into <comment id>.md
     pr_threads.py 73 --post .tmp/79/replies           # post each <comment id>.md, resolve, delete it
 
 The replies file is TSV: the review comment id (from the listing), a tab, the reply text. Each
@@ -13,9 +14,14 @@ script uses `gh api`: REST for the reply, GraphQL `resolveReviewThread` for the 
 --post, which pr runs after its push, does the same from a folder of <comment id>.md files, one
 reply each, and deletes each file once its thread is resolved. Every file is checked before the
 first post. It is safe to repeat: a reply the thread already has from you is not posted again.
+
+--drafts writes each open thread's context, its path and line, the review comment and the diff hunk
+it's on, as an HTML comment at the top of <comment id>.md, adding it above a reply already there.
+The reply goes below it. --post strips the comment, so only the reply is posted.
 """
 
 import argparse
+import re
 import subprocess
 import sys
 import time
@@ -27,7 +33,7 @@ from ghread import gh_json  # noqa: E402
 
 QUERY = """query($owner:String!,$name:String!,$pr:Int!){repository(owner:$owner,name:$name){
 pullRequest(number:$pr){reviewThreads(first:100){nodes{id isResolved
-comments(first:100){nodes{databaseId path line originalLine author{login} body}}}}}}}"""
+comments(first:100){nodes{databaseId path line originalLine author{login} body diffHunk}}}}}}}"""
 
 
 def gh_write(args: list[str]) -> None:
@@ -50,7 +56,7 @@ def threads(repo: str, pr: int) -> list[dict]:
         c, *rest = t["comments"]["nodes"]
         out.append({"thread": t["id"], "resolved": t["isResolved"], "comment": c["databaseId"],
                     "path": c["path"], "line": c["line"] or c["originalLine"],
-                    "author": (c["author"] or {}).get("login"), "body": c["body"],
+                    "author": (c["author"] or {}).get("login"), "body": c["body"], "hunk": c["diffHunk"],
                     "replies": [((r["author"] or {}).get("login"), r["body"]) for r in rest]})
     return out
 
@@ -85,6 +91,47 @@ def emit(repo: str, pr: int, found: list[dict], replies: list[tuple[int, str]], 
     return "\n".join(lines) + "\n"
 
 
+# A reply file's leading HTML comment: the thread's context, for reading the reply against. Never
+# posted, and hidden by GitHub if it were.
+CONTEXT = re.compile(r"\A\s*<!--.*?-->", re.S)
+HUNK_LINES = 15
+
+
+def context(t: dict) -> str:
+    """The thread's path and line, its comment quoted, and the last lines of the diff hunk it's on."""
+    hunk = t["hunk"].splitlines()
+    shown = (["..."] if len(hunk) > HUNK_LINES else []) + hunk[-HUNK_LINES:]
+    quoted = "\n".join(f"> {line}" if line else ">" for line in t["body"].strip().splitlines())
+    text = (f"Context, not posted: pr strips this comment.\n{t['path']}:{t['line']}, {t['author']}\n\n"
+            f"{quoted}\n\n```diff\n" + "\n".join(shown) + "\n```")
+    # A --> inside would end the comment early.
+    return "<!-- " + text.replace("-->", "--&gt;") + "\n-->\n\n"
+
+
+def write_drafts(folder: Path, found: list[dict]) -> list[Path]:
+    """Gives each open thread's <comment id>.md its context, above any reply already in it."""
+    folder.mkdir(parents=True, exist_ok=True)
+    written = []
+    for t in found:
+        if t["resolved"]:
+            continue
+        f = folder / f"{t['comment']}.md"
+        reply = f.read_text(encoding="utf-8") if f.exists() else ""
+        if CONTEXT.match(reply):
+            continue
+        f.write_text(context(t) + reply.lstrip(), encoding="utf-8")
+        written.append(f)
+    return written
+
+
+def reply_text(f: Path) -> str:
+    """The reply in f, without its context comment."""
+    text = f.read_text(encoding="utf-8")
+    if text.lstrip().startswith("<!--") and not CONTEXT.match(text):
+        raise ValueError(f"{f}: its context comment has no closing -->")
+    return CONTEXT.sub("", text, count=1).strip()
+
+
 def read_reply_dir(folder: Path, pr: int, found: list[dict]) -> list[tuple[Path, dict, str]]:
     """Each <comment id>.md in folder with its thread and reply; ValueError naming the first bad one."""
     by_comment = {t["comment"]: t for t in found}
@@ -95,9 +142,9 @@ def read_reply_dir(folder: Path, pr: int, found: list[dict]) -> list[tuple[Path,
         t = by_comment.get(int(f.stem))
         if t is None:
             raise ValueError(f"{f}: comment {f.stem} does not start a review thread on #{pr}")
-        reply = f.read_text(encoding="utf-8").strip()
+        reply = reply_text(f)
         if not reply:
-            raise ValueError(f"{f} is empty")
+            raise ValueError(f"{f} has no reply")
         out.append((f, t, reply))
     return out
 
@@ -126,10 +173,15 @@ def main(argv=None) -> int:
     p.add_argument("--repo")
     p.add_argument("--all", action="store_true", help="include resolved threads")
     p.add_argument("--replies", type=Path, help="TSV of comment id and reply; prints a script")
+    p.add_argument("--drafts", type=Path, help="folder to write each open thread's <comment id>.md context into")
     p.add_argument("--post", type=Path, help="folder of <comment id>.md replies; posts, resolves and deletes each")
     a = p.parse_args(argv)
     repo = repo_name(a.repo)
     found = threads(repo, a.pr)
+    if a.drafts:
+        for f in write_drafts(a.drafts, found):
+            print(f)
+        return 0
     if a.post:
         try:
             pending = read_reply_dir(a.post, a.pr, found)

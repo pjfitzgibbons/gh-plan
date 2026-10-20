@@ -13,8 +13,9 @@
 #           resolves the thread and deletes the file (pr_threads.py --post)
 #   ticks   when .tmp/N/issue.md exists: applies its checkbox changes to issue N's description in
 #           Redmine, refusing any other difference, then deletes it (checklist.py)
-#   cleanup once the PR has merged: removes the branch's worktree, switches the main checkout to
-#           the default branch, pulls, deletes the local branch, and has Redmine fetch the new
+#   cleanup once the PR has merged: removes the branch's worktree, refusing one with ignored files
+#           Done would keep, switches the main checkout to the default branch, pulls, deletes
+#           the local branch, and has Redmine fetch the new
 #           commits, so a fixes #N commit closes issue N. pr done does only this, and refuses a PR
 #           that has not merged.
 #
@@ -78,9 +79,24 @@ case $state in
       git status --short >&2
       exit 2
     fi
+    main=$(dirname "$(git rev-parse --path-format=absolute --git-common-dir)")
+    # git worktree remove deletes ignored files unasked, so, as Done does, refuse any but the ones
+    # plan.disposable names by default (vscode/package.json): by name at any depth, name/ a folder.
+    if [ "$root" != "$main" ]; then
+      kept=$(git ls-files --others --ignored --exclude-standard | awk -F/ '
+        BEGIN {
+          split(".tmp/ node_modules/ .venv/ __pycache__/ .pytest_cache/ .coverage .ruby-lsp/ htmlcov/ dist/ build/", d, " ")
+          for (i in d) if (d[i] ~ /\/$/) folder[substr(d[i], 1, length(d[i]) - 1)] = 1; else name[d[i]] = 1
+        }
+        { for (i = 1; i <= NF; i++) if ((i < NF && $i in folder) || $i in name) next; print }')
+      if [ -n "$kept" ]; then
+        echo "pr: $root has ignored files its removal would delete; move them out, then pr done again" >&2
+        printf '%s\n' "$kept" >&2
+        exit 2
+      fi
+    fi
     # Before the worktree goes, and its .tmp/ with it.
     send_round
-    main=$(dirname "$(git rev-parse --path-format=absolute --git-common-dir)")
     if [ "$root" != "$main" ]; then
       echo "pr: removing the worktree $root"
       cd "$main"

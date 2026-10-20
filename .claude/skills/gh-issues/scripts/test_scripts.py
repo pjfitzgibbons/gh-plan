@@ -1,11 +1,13 @@
 """Offline tests for the gh-issues scripts. Run from scripts/: python3 -m unittest test_scripts"""
 
+import os
+import subprocess
 import tempfile
 import unittest
 from pathlib import Path
 
 from outline import check, expected
-from pr_threads import emit as threads_emit, post as threads_post, read_replies, read_reply_dir
+from pr_threads import emit as threads_emit, post as threads_post, read_replies, read_reply_dir, write_drafts
 import checklist
 import new_issue
 
@@ -118,6 +120,63 @@ class Threads(unittest.TestCase):
             threads_emit("o/r", 73, self.FOUND, [(99, "x")])
 
 
+class PrDone(unittest.TestCase):
+    """pr.sh done against a fake gh: a merged branch's worktree goes only when its ignored files are
+    disposable, since git worktree remove deletes them unasked."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        top = Path(self.tmp.name)
+        bin = top / "bin"
+        bin.mkdir()
+        # gh: the default branch is main, and the branch's PR merged at the worktree's HEAD.
+        (bin / "gh").write_text('#!/bin/sh\ncase "$*" in\n  "repo view"*) echo main ;;\n'
+                                '  *"--json state"*) echo MERGED ;;\n  *headRefOid*) git rev-parse HEAD ;;\nesac\n')
+        (bin / "security").write_text("#!/bin/sh\nexit 1\n")
+        for f in bin.iterdir():
+            f.chmod(0o755)
+        self.env = {**os.environ, "PATH": f"{bin}:{os.environ['PATH']}", "GIT_AUTHOR_NAME": "T", "GIT_AUTHOR_EMAIL": "t@example.com",
+                    "GIT_COMMITTER_NAME": "T", "GIT_COMMITTER_EMAIL": "t@example.com"}
+        git = lambda cwd, *args: subprocess.run(["git", *args], cwd=cwd, env=self.env, check=True, capture_output=True)
+        git(top, "init", "-q", "--bare", "-b", "main", "origin.git")
+        git(top, "clone", "-q", "origin.git", "main")
+        self.main = top / "main"
+        (self.main / ".gitignore").write_text("HANDOFF.md\n/.tmp\nnode_modules/\n")
+        git(self.main, "add", ".")
+        git(self.main, "commit", "-qm", "start")
+        git(self.main, "push", "-q", "origin", "main")
+        self.tree = top / "tree"
+        git(self.main, "worktree", "add", "-q", "-b", "fix/9-x", str(self.tree))
+        (self.tree / "node_modules" / "x").mkdir(parents=True)
+        (self.tree / "node_modules" / "x" / "a.js").write_text("")
+        (self.tree / ".tmp" / "9").mkdir(parents=True)
+        (self.tree / ".tmp" / "9" / "notes.md").write_text("")
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def pr_done(self):
+        return subprocess.run(["sh", str(Path(__file__).parent / "pr.sh"), "done"], cwd=self.tree, env=self.env,
+                              capture_output=True, text=True)
+
+    def test_an_ignored_file_done_would_keep_stops_the_removal(self):
+        (self.tree / "HANDOFF.md").write_text("notes")
+        run = self.pr_done()
+        self.assertEqual(run.returncode, 2, run.stderr)
+        self.assertIn("ignored files its removal would delete", run.stderr)
+        self.assertIn("HANDOFF.md", run.stderr)
+        self.assertNotIn("node_modules", run.stderr)
+        self.assertNotIn(".tmp", run.stderr)
+        self.assertTrue((self.tree / "HANDOFF.md").exists())
+
+    def test_only_disposable_ignored_files_remove_the_worktree_and_branch(self):
+        run = self.pr_done()
+        self.assertEqual(run.returncode, 0, run.stderr)
+        self.assertFalse(self.tree.exists())
+        branches = subprocess.run(["git", "branch"], cwd=self.main, capture_output=True, text=True).stdout
+        self.assertNotIn("fix/9-x", branches)
+
+
 class PostReplies(unittest.TestCase):
     """pr_threads.py --post: a folder of <comment id>.md replies, posted and resolved once each."""
 
@@ -126,7 +185,7 @@ class PostReplies(unittest.TestCase):
         self.dir = Path(self.tmp.name)
         self.calls = []
         self.found = [{"thread": "PRRT_1", "resolved": False, "comment": 11, "path": "a.py", "line": 3,
-                       "author": "Copilot", "body": "x", "replies": []}]
+                       "author": "Copilot", "body": "x", "hunk": "@@ -1,3 +1,3 @@\n a\n-b\n+c", "replies": []}]
 
     def tearDown(self):
         self.tmp.cleanup()
@@ -167,7 +226,9 @@ class PostReplies(unittest.TestCase):
         (self.dir / "11.md").write_text("Fixed.")
         for name, text, why in [("99.md", "x", "does not start a review thread"),
                                 ("notes.md", "x", "name it <comment id>.md"),
-                                ("12.md", " \n", "is empty")]:
+                                ("12.md", " \n", "has no reply"),
+                                ("12.md", "<!-- context\n\nReply.", "no closing -->"),
+                                ("12.md", "<!-- context -->\n", "has no reply")]:
             self.found.append({"thread": "PRRT_2", "resolved": False, "comment": 12, "path": "b.py",
                                "line": 1, "author": "Copilot", "body": "y", "replies": []})
             (self.dir / name).write_text(text)
@@ -176,6 +237,30 @@ class PostReplies(unittest.TestCase):
             (self.dir / name).unlink()
         self.assertEqual(self.calls, [])
         self.assertTrue((self.dir / "11.md").exists())
+
+    def test_drafts_carry_the_context_and_only_the_reply_is_posted(self):
+        self.found[0]["body"] = "Line one.\n\nThe --> ends it."
+        self.found.append({"thread": "PRRT_2", "resolved": True, "comment": 12, "path": "b.py", "line": 1,
+                           "author": "Copilot", "body": "y", "hunk": "@@", "replies": []})
+        (self.dir / "11.md").write_text("Fixed: it's done.\n")
+        self.assertEqual(write_drafts(self.dir, self.found), [self.dir / "11.md"])
+        text = (self.dir / "11.md").read_text()
+        self.assertTrue(text.startswith("<!-- Context, not posted"))
+        for shown in ["a.py:3, Copilot", "> Line one.\n>\n> The --&gt; ends it.", "```diff\n@@ -1,3 +1,3 @@\n a\n-b\n+c\n```"]:
+            self.assertIn(shown, text)
+        self.assertTrue(text.endswith("-->\n\nFixed: it's done.\n"))
+        self.assertFalse((self.dir / "12.md").exists())
+        # A second run leaves a drafted file as it is.
+        self.assertEqual(write_drafts(self.dir, self.found), [])
+        self.send()
+        self.assertIn("body=Fixed: it's done.", self.calls[0])
+
+    def test_a_long_hunk_shows_its_last_lines(self):
+        self.found[0]["hunk"] = "\n".join(f"line {i}" for i in range(40))
+        write_drafts(self.dir, self.found)
+        text = (self.dir / "11.md").read_text()
+        self.assertIn("```diff\n...\nline 25\n", text)
+        self.assertNotIn("line 24\n", text)
 
 
 class FakeRedmine:
