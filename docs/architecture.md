@@ -288,7 +288,7 @@ they share:
 | A `fixes #<n>` commit is merged | Redmine sees it only at its next fetch | Done has the web service fetch; without its key, the Repository tab does |
 | Two windows start or finish one issue | Both would change the same worktree | A lock file per issue refuses the second |
 | A review reply is still unsent at Done | Removing the worktree would delete it | Done refuses before it changes anything, and names it |
-| The worktree's `pr-body.md` differs from the PR's body at Done | Removing the worktree would delete a Done tick the PR lacks | Done refuses before it changes anything, naming `pr done <n>` |
+| A `.tmp/<n>/pr-body.md` in the worktree, for any issue, differs from its issue's PR body at Done | Removing the worktree would delete a Done tick the PR lacks | Done refuses before it changes anything, naming `pr done <n>` |
 | `#<n>` in a commit message | GitHub links it to the repo's own issue or PR `<n>` | None; Redmine's link is the one that counts 🔍 |
 
 <a id="views"></a>

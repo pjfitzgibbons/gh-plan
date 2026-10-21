@@ -43,7 +43,7 @@ Source Control's does on a Git refresh.
   removes the issue's worktree, brings the main checkout's base up to the merge, deletes the
   branch, has Redmine fetch the commits, and closes the issue with a note naming the PR that holds
   its Done record and linking its merge commit. It refuses an unmerged PR, a worktree with changes or commits the PR lacks, and
-  one holding any file but a dotfile in a `.tmp/<n>/replies/`, that `pr` hasn't sent, for any issue, before it changes anything. It also refuses a `.tmp/<n>/pr-body.md` that differs from the PR's body, so a Done line ticked after the merge isn't lost: `pr done <n>` sends it. An `issue.md` left from before is never sent, and goes with the worktree. The main checkout leaves its branch only when that branch is the
+  one holding any file but a dotfile in a `.tmp/<n>/replies/`, that `pr` hasn't sent, for any issue, before it changes anything. It also refuses a `.tmp/<n>/pr-body.md`, for any issue, that differs from its issue's PR body or whose issue links no PR, so a Done line ticked after the merge isn't lost: `pr done <n>` sends it. An `issue.md` left from before is never sent, and goes with the worktree. The main checkout leaves its branch only when that branch is the
   issue's; a branch whose tip moved past the PR's head is kept and named. Done again finishes what
   a stopped one left, and otherwise changes nothing. Then close the worktree's window.
 

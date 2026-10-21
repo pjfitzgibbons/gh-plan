@@ -24,6 +24,26 @@ function viewPullRequest(cwd, url) {
   return pullRequest(cwd, url, FIELDS);
 }
 
+// Each .tmp/<n>/pr-body.md in the worktree that differs from its issue's PR body, or whose issue
+// links no PR, by path from root. pullFor(n) gives issue n's PR, or null.
+async function unsentBodies(root, id, pr, pullFor) {
+  const tmp = path.join(root, ".tmp");
+  const ids = fs.statSync(tmp, { throwIfNoEntry: false })?.isDirectory()
+    ? fs.readdirSync(tmp).filter((name) => /^[1-9][0-9]*$/.test(name)).sort((a, b) => a - b)
+    : [];
+  const text = (value) => value.replace(/\r\n/g, "\n").trim();
+  const late = [];
+  for (const n of ids) {
+    const body = path.join(tmp, n, "pr-body.md");
+    if (!fs.existsSync(body)) continue;
+    const theirs = Number(n) === id ? pr : await pullFor(Number(n));
+    if (!theirs || text(fs.readFileSync(body, "utf8")) !== text(theirs.body || "")) {
+      late.push(`${path.relative(root, body)}${theirs ? ` differs from ${prLink(theirs)}'s body` : ` (#${n} links no pull request)`}`);
+    }
+  }
+  return late;
+}
+
 // The PR's repo on GitHub.
 function repoUrl(pr) {
   return pr.url.replace(/\/pull\/\d+$/, "");
@@ -144,7 +164,7 @@ async function finish({ redmine, checkouts, id, view = viewPullRequest, disposab
   const release = lock(common, id, "Done");
   const result = { dir: null, notes: [] };
   try {
-    await finishIn({ redmine, id, project, checkout, common, pr, result, disposable });
+    await finishIn({ redmine, id, project, checkout, common, pr, result, disposable, view });
     return result;
   } catch (error) {
     error.result = result;
@@ -154,7 +174,7 @@ async function finish({ redmine, checkouts, id, view = viewPullRequest, disposab
   }
 }
 
-async function finishIn({ redmine, id, project, checkout, common, pr, result, disposable }) {
+async function finishIn({ redmine, id, project, checkout, common, pr, result, disposable, view }) {
   const { notes } = result;
   const link = prLink(pr);
   const base = pr.baseRefName;
@@ -188,11 +208,14 @@ async function finishIn({ redmine, id, project, checkout, common, pr, result, di
       throw new Error(`${found.dir} has replies pr hasn't sent; send each .tmp/<n>/ with pr done <n> in that worktree, or delete them, then Done again:\n${left.join("\n")}`);
     }
     // The PR body holds the Done ticks, and pr sends it after the merge too; one that differs from
-    // the PR's would go with the worktree, and a Done line ticked late with it.
-    const body = path.join(found.dir, ".tmp", String(id), "pr-body.md");
-    const text = (value) => value.replace(/\r\n/g, "\n").trim();
-    if (fs.existsSync(body) && text(fs.readFileSync(body, "utf8")) !== text(pr.body || "")) {
-      throw new Error(`${body} differs from ${link}'s body; send it with pr done ${id} in that worktree, or delete it to keep the PR's, then Done again`);
+    // its PR's, this issue's or another's, would go with the worktree, and a Done line ticked late
+    // with it.
+    const late = await unsentBodies(found.dir, id, pr, async (n) => {
+      const url = linkedPullRequest(await redmine.issue(n));
+      return url && view(checkout, url);
+    });
+    if (late.length) {
+      throw new Error(`${found.dir} has PR bodies pr hasn't sent; send each with pr done <n> in that worktree, or delete it to keep the PR's, then Done again:\n${late.join("\n")}`);
     }
   }
   if (found && !found.main && trees.find((t) => t.dir === found.dir)?.locked) {

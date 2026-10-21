@@ -651,11 +651,33 @@ test("a PR body pr hasn't sent is refused before anything changes, not deleted w
   const body = path.join(s.dir, ".tmp", String(ID), "pr-body.md");
   s.pr.body = "Fixes #82.\r\n\r\n## Done\r\n\r\n- [ ] It works.";
   fs.writeFileSync(body, "Fixes #82.\n\n## Done\n\n- [x] It works.\n");
-  await assert.rejects(done(s), (e) => e.message === `${body} differs from ${prLink(s.pr)}'s body; send it with pr done ${ID} in that worktree, or delete it to keep the PR's, then Done again`);
+  await assert.rejects(done(s), (e) => e.message === `${s.dir} has PR bodies pr hasn't sent; send each with pr done <n> in that worktree, or delete it to keep the PR's, then Done again:\n.tmp/${ID}/pr-body.md differs from ${prLink(s.pr)}'s body`);
   assert.ok(fs.existsSync(body));
   assert.notEqual(s.git(s.checkout, "rev-parse", "main"), s.pr.mergeCommit.oid);
   // Once pr has sent it, the PR's body matches, whatever its line endings, and Done goes ahead.
   s.pr.body = "Fixes #82.\r\n\r\n## Done\r\n\r\n- [x] It works.";
+  await done(s);
+  assertDone(s);
+});
+
+test("another issue's PR body pr hasn't sent is refused, checked against that issue's PR", async (t) => {
+  const s = sandbox(t);
+  const other = { number: 10, url: "https://github.com/example/demo/pull/10", body: "Fixes #85.\n\n- [ ] It works." };
+  const pulls = { 85: `[demo#10](${other.url})`, 86: "" };
+  const own = s.redmine.issue;
+  s.redmine.issue = async (id) => id === ID ? own(id)
+    : { id, custom_fields: [{ id: 7, name: "Pull requests", value: pulls[id] }] };
+  const view = s.view;
+  s.view = async (cwd, url) => url === other.url ? structuredClone(other) : view(cwd, url);
+  for (const n of [85, 86]) fs.mkdirSync(path.join(s.dir, ".tmp", String(n)));
+  fs.writeFileSync(path.join(s.dir, ".tmp", "85", "pr-body.md"), "Fixes #85.\n\n- [x] It works.\n");
+  fs.writeFileSync(path.join(s.dir, ".tmp", "86", "pr-body.md"), "Fixes #86.\n");
+  await assert.rejects(done(s), (e) => e.message === `${s.dir} has PR bodies pr hasn't sent; send each with pr done <n> in that worktree, or delete it to keep the PR's, then Done again:\n.tmp/85/pr-body.md differs from ${prLink(other)}'s body\n.tmp/86/pr-body.md (#86 links no pull request)`);
+  assert.deepEqual(s.updates, []);
+  assert.ok(fs.existsSync(s.dir));
+  // Once #85's is sent and #86's deleted, Done goes ahead.
+  other.body = "Fixes #85.\n\n- [x] It works.";
+  fs.rmSync(path.join(s.dir, ".tmp", "86"), { recursive: true });
   await done(s);
   assertDone(s);
 });
