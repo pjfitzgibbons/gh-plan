@@ -14,9 +14,9 @@
 ## 1. Status
 
 Proposed. Supersedes [ADR 0001](0001-git-is-the-database.md),
-[ADR 0002](0002-tracker-per-repo.md), [ADR 0007](0007-tracker-files-are-yaml.md) and
-[ADR 0008](0008-file-native-items.md). Pauses [ADR 0010](0010-plan-state-on-a-branch.md), and
-amends [ADR 0004](0004-python-no-docker.md).
+[ADR 0002](0002-tracker-per-repo.md), [ADR 0004](0004-python-no-docker.md),
+[ADR 0007](0007-tracker-files-are-yaml.md) and [ADR 0008](0008-file-native-items.md). Pauses
+[ADR 0010](0010-plan-state-on-a-branch.md).
 
 <a id="context"></a>
 ## 2. Context
@@ -109,8 +109,9 @@ committed in them.
   to night; they are not the record of change, and nothing is committed.
 - [`G6`](../requirements.md), hand-editable files, is lost. The web UI and the REST API replace it.
 - Redmine is one more system to run, back up and upgrade ([`G4`](../requirements.md)), and it is
-  down while the Mac is off. Running it in Docker amends [ADR 0004](0004-python-no-docker.md) for
-  Redmine only; scripts of ours stay Python. The plugin is Ruby.
+  down while the Mac is off. Running it in Docker supersedes
+  [ADR 0004](0004-python-no-docker.md); the scripts of ours that remain are Python, run with uv.
+  The plugin is Ruby.
 - The API key is a credential on the machine, kept out of every repo, which still meets
   [`G3`](../requirements.md).
 - A commit older than its repository's registration in Redmine is linked to its issue but never

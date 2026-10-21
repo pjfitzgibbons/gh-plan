@@ -21,7 +21,8 @@ settings: what this repo needs is here or in `.claude/`.
 
 ## Commands
 
-- **Tests:** `uv run pytest`. It also runs `.claude/hooks/`, and fails under 90% coverage.
+- **Tests:** `uv run pytest` runs `tests/` (the backup and contents-list suites), `.claude/hooks/`
+  and the gh-issues scripts, and fails under 90% coverage of `redmine/` and `.claude/hooks/`.
 - **The VS Code extension:** `npm test` and `npm run lint`, in `vscode/`, after `npm install`.
 - **Review findings:** fix only the silent ones, failures that leave no trace and lose work, files,
   commits or the tracker's state. A failure that shows the user something is wrong is already

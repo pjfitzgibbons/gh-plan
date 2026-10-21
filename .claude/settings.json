@@ -12,7 +12,6 @@
       "Bash(git show:*)",
       "Bash(uv run:*)",
       "Bash(uv sync:*)",
-      "Bash(uv add:*)",
       "Bash(python3 -m pytest:*)",
       "Bash(python3 .claude/hooks/test_no_ai_attribution.py:*)",
       "Bash(gh issue list:*)",
