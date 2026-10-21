@@ -48,7 +48,7 @@ is not used, and pull requests are the one GitHub integration.
 | Default branch | The branch GitHub has configured for the repo: `main`, or `develop` under git-flow. It carries the code |
 | Tool commit | None: the tool makes no commits of its own, and every commit reaches the default branch through a pull request (§7.4) |
 | Start | Setting an issue In Progress from Next up, which makes its branch and worktree and records its start date (§7.1) |
-| Round | One pass of review: the commit message, PR body, review replies and Done ticks in `.tmp/<n>/` that `pr` sends (§7.2) |
+| Round | One pass of review: the commit message, the PR body with its ticked Done list, and the review replies in `.tmp/<n>/` that `pr` sends (§7.2) |
 | Finish | The squash merge of the issue's PR, then Done, which closes the issue (§7.3) |
 | Lane | A contention domain, the `Lane` custom field. Issues in a lane touch the same files, so they run one at a time. Single-valued |
 | Points | The estimate, the `Points` custom field: 1, 2, 3, 5, 8 or 13 |
@@ -125,9 +125,8 @@ client of one of them:
 
 - **The extension** shows Next up in a panel, and holds the Start, Open, Go, Ship and Done
   buttons ([`vscode/README.md`](../vscode/README.md)).
-- **`pr`** commits, pushes, opens or updates the PR, posts review replies and applies Done ticks
-  to the issue's description. After a merge it sends only what's left and leaves the cleanup to
-  Done. It and its Python scripts live in
+- **`pr`** commits, pushes, opens or updates the PR, and posts review replies. After a merge it
+  sends only the replies and the PR body, and leaves the cleanup to Done. It and its Python scripts live in
   `.claude/skills/gh-issues/scripts/`, with their tests. `~/.claude/skills/gh-issues` links to the
   main checkout's copy, so every repo uses the one skill and `~/.local/bin/pr` reaches it.
 - **The setup scripts**, `setup.rb`, `import.rb` and `backfill.rb`, run inside the container with
@@ -222,7 +221,9 @@ Go, in the title bar of any of them, saves them and refuses by name a missing PR
 commit message while the tree has changes, or a branch that isn't the issue's. It then stages every
 change, as `pr`'s commit will, and opens them, so the staged list is what Ship commits. Only Ship
 runs `pr`: it saves and checks again, refuses by name any file changed since Go staged the tree,
-then runs `pr <n>` in a terminal in the worktree.
+then runs `pr <n>` in a terminal in the worktree. Under Ship, `pr` commits the index Go staged and
+refuses a change made since, rather than staging again. Go and Ship refuse a worktree file with
+unsaved edits, which neither the stage nor the commit would hold.
 
 `pr` commits with `commit.txt`, pushes, and opens the PR or replaces its body. It then posts each
 reply to its thread and resolves the thread. Each reply is deleted once sent, so a second `pr`
@@ -287,6 +288,7 @@ they share:
 | A `fixes #<n>` commit is merged | Redmine sees it only at its next fetch | Done has the web service fetch; without its key, the Repository tab does |
 | Two windows start or finish one issue | Both would change the same worktree | A lock file per issue refuses the second |
 | A review reply is still unsent at Done | Removing the worktree would delete it | Done refuses before it changes anything, and names it |
+| The worktree's `pr-body.md` differs from the PR's body at Done | Removing the worktree would delete a Done tick the PR lacks | Done refuses before it changes anything, naming `pr done <n>` |
 | `#<n>` in a commit message | GitHub links it to the repo's own issue or PR `<n>` | None; Redmine's link is the one that counts 🔍 |
 
 <a id="views"></a>

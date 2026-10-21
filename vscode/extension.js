@@ -387,7 +387,7 @@ async function go(uri) {
       vscode.window.showErrorMessage(`Plan: #${ready.id}'s changes couldn't be staged: ${error.message}`);
       return;
     }
-    await vscode.commands.executeCommand("git.viewChanges");
+    await vscode.commands.executeCommand("git.viewStagedChanges");
     vscode.window.showInformationMessage(`Plan: #${ready.id}'s changes are staged and open; the rocket commits them with pr ${ready.id}.`);
   } else {
     vscode.window.showInformationMessage(`Plan: nothing to commit; the rocket pushes ${ready.branch} and updates its PR.`);

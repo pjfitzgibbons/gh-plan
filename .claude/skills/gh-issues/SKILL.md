@@ -14,10 +14,11 @@ An issue is a Redmine issue, `#<n>`, its description in the issue outline. GitHu
 1. **Read the issue before you write about it.** `redmine-get /issues/<n>.json`, or `?include=journals` for its history. Never write an issue's description from memory.
 2. **Peter presses the buttons.** Claude writes the files in `.tmp/<n>/` (the commit message, the PR body with its Done list ticked, review replies) for Peter to review; Ship sends them with `pr`. Never `git commit`, `git push`, `gh pr create` or a Redmine write on Claude's own.
 3. **Branches are `<type>/<n>-<slug>`**, `feat/`, `fix/` or `chore/`, off the default branch. Start makes the branch and its worktree. Everything reaches the default branch by PR.
-4. **The commit subject is the PR's title**, and ends `(fixes #<n>)` when the PR finishes issue `<n>`, `(refs #<n>)` only when it does part of it. `gh pc` titles the PR with the branch's first commit subject, the squash merge keeps it, and Redmine closes the issue when it next fetches that commit. The PR body always opens with the same, `Fixes #<n>.` or `Refs #<n>.`, on its own line.
-5. **PRs get a body file, never `--fill`.** `gh pr create --fill` copies the commit message into the PR, including the `Assisted-by:` trailer, and PR descriptions carry no attribution. Start from [references/pr-body.md](references/pr-body.md).
-6. **Look it up, don't guess.** If a gh flag isn't familiar, run `gh <cmd> --help` before saying it doesn't exist or flagging it unverified.
-7. **Quote `[]` in zsh.** `-f 'labels[]=bug'`, never bare: zsh treats `[]` as a glob and fails with "no matches found".
+4. **The first commit's subject is the PR's title**, and ends `(fixes #<n>)` when the PR finishes issue `<n>`, `(refs #<n>)` only when it does part of it. `gh pc` titles the PR with the branch's first commit subject, the squash merge keeps it, and Redmine closes the issue when it next fetches that commit. The PR body always opens with the same, `Fixes #<n>.` or `Refs #<n>.`, on its own line. The first commit's message says what the issue asks for and how this commit does it. When the work is split across PRs on purpose, it says only this PR's part.
+5. **A later round's commit describes only what it changes.** Its subject and body name what the round fixes, such as the review findings it answers or a check that failed, and never restate the PR's whole change or tell how earlier rounds led to it: what was found, and how it's fixed. Write it from the round's diff, `git diff` before Go, not from the issue.
+6. **PRs get a body file, never `--fill`.** `gh pr create --fill` copies the commit message into the PR, including the `Assisted-by:` trailer, and PR descriptions carry no attribution. Start from [references/pr-body.md](references/pr-body.md).
+7. **Look it up, don't guess.** If a gh flag isn't familiar, run `gh <cmd> --help` before saying it doesn't exist or flagging it unverified.
+8. **Quote `[]` in zsh.** `-f 'labels[]=bug'`, never bare: zsh treats `[]` as a glob and fails with "no matches found".
 
 ## Aliases and commands
 
@@ -46,7 +47,7 @@ Peter presses **Start** on the issue's row in Next up. It makes the branch and i
 
 ## Shipping
 
-When the work is done and tested, write `.tmp/<n>/commit.txt` (ending `Assisted-by: Claude:<model>`) and `.tmp/<n>/pr-body.md`, its `## Done` section ticked as below, plus any replies. The extension opens them as tabs. Peter reviews them and presses **Go**, which checks them, then stages every change and opens the changes. **Ship** refuses any file changed since Go, then runs `pr <n>` and links the PR in the issue's Pull requests field. Go and Ship again run `pr` again, for the next round. After the merge, **Done** cleans up and closes the issue.
+When the work is done and tested, write `.tmp/<n>/commit.txt` (rules 4 and 5, ending `Assisted-by: Claude:<model>`) and `.tmp/<n>/pr-body.md`, its `## Done` section ticked as below, plus any replies. The extension opens them as tabs. Peter reviews them and presses **Go**, which checks them, then stages every change and opens the changes. **Ship** refuses any file changed since Go, then runs `pr <n>` and links the PR in the issue's Pull requests field. Go and Ship again run `pr` again, for the next round. After the merge, **Done** cleans up and closes the issue.
 
 ## Drafting a new issue
 

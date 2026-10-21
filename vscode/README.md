@@ -26,11 +26,13 @@ Source Control's does on a Git refresh.
 - **Go** is the diff icon in the title bar of any of them. It saves them all, refuses by name a
   missing PR body, a missing commit message while the tree has changes, a reply `pr` can't send, an empty
   reply or two replies to one thread, or a branch that isn't the issue's. It then stages every change
-  and opens them (Git: View Changes), so the staged list is what Ship commits. With nothing to
+  and opens them (Git: View Staged Changes), so what it shows is what Ship commits. With nothing to
   commit, it opens nothing.
 - **Ship** is the rocket that Go then puts in the changes' title bar, and on the review files. Only
   Ship runs `pr`: it saves and checks again, refuses by name a file changed since Go staged the
-  tree, so nothing goes in unreviewed, then runs `pr <n>` in a terminal in the worktree.
+  tree, so nothing goes in unreviewed, then runs `pr <n>` in a terminal in the worktree. That `pr`
+  commits what Go staged, and refuses a change made since. Go and Ship both refuse a worktree file
+  with unsaved edits.
   Once `pr` succeeds, the review files, the Changes view and any diffs of the worktree's files
   close; `pr` has deleted each reply once sent, and asked Copilot to review the PR
   if the push added commits (`gh pc` asks when it opens one). `gh pr edit --help` says `--add-reviewer` re-requests a reviewer. The issue's Pull requests field links the PR, with a journal note, and Next up
@@ -41,7 +43,7 @@ Source Control's does on a Git refresh.
   removes the issue's worktree, brings the main checkout's base up to the merge, deletes the
   branch, has Redmine fetch the commits, and closes the issue with a note naming the PR that holds
   its Done record and linking its merge commit. It refuses an unmerged PR, a worktree with changes or commits the PR lacks, and
-  one holding any file but a dotfile in a `.tmp/<n>/replies/`, that `pr` hasn't sent, for any issue, before it changes anything. An `issue.md` left from before is never sent, and goes with the worktree. The main checkout leaves its branch only when that branch is the
+  one holding any file but a dotfile in a `.tmp/<n>/replies/`, that `pr` hasn't sent, for any issue, before it changes anything. It also refuses a `.tmp/<n>/pr-body.md` that differs from the PR's body, so a Done line ticked after the merge isn't lost: `pr done <n>` sends it. An `issue.md` left from before is never sent, and goes with the worktree. The main checkout leaves its branch only when that branch is the
   issue's; a branch whose tip moved past the PR's head is kept and named. Done again finishes what
   a stopped one left, and otherwise changes nothing. Then close the worktree's window.
 
