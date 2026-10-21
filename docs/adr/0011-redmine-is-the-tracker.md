@@ -99,8 +99,13 @@ committed in them.
 - An item is `#<n>`, numbered across every project. Branches become `<type>/<n>-<slug>`. GitHub
   also links `#<n>` in a commit message to the repo's own issue or pull request `<n>`, so a
   reference can point at both 🔍.
-- Tracking data lives in Redmine's database, not in git. [`G1`](../requirements.md) is met by a
-  scheduled export of every issue and its journal to a file committed in gh-plan.
+- Tracking data lives in Redmine's database, not in git. Redmine's journal is the evidence of
+  change ([`G1`](../requirements.md)): it records each change to an issue with its author and
+  time. A nightly job backs the database up and exports every issue, journal included, as JSON to
+  a dated folder on the USB drive ([`G2`](../requirements.md);
+  [`redmine/README.md`](../../redmine/README.md), *Backup and export*). The export is how someone
+  with no account reads the journal. The backups show the history continuing unbroken from night
+  to night; they are not the record of change, and nothing is committed.
 - [`G6`](../requirements.md), hand-editable files, is lost. The web UI and the REST API replace it.
 - Redmine is one more system to run, back up and upgrade ([`G4`](../requirements.md)), and it is
   down while the Mac is off. Running it in Docker amends [ADR 0004](0004-python-no-docker.md) for

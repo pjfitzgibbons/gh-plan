@@ -73,9 +73,9 @@ A checkout's `.tmp/` is ignored by git. `.tmp/<n>/` holds a round's files for is
 any it hasn't sent.
 
 The two keys live only in the macOS Keychain: the REST API key in `redmine-gh-plan`, and the
-repository web service's key in `redmine-sys-api` ([`G3`](requirements.md)). A scheduled export of
-every issue and its journal, which [`G1`](requirements.md) needs, and a backup of the database are
-not built yet.
+repository web service's key in `redmine-sys-api` ([`G3`](requirements.md)). A nightly launchd job
+backs up the database and attachments, and exports every issue as JSON, to a dated folder on the
+USB drive ([`G2`](requirements.md); [`redmine/README.md`](../redmine/README.md), *Backup and export*).
 
 <a id="plans"></a>
 ## 4. Plans
