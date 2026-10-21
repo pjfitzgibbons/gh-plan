@@ -58,13 +58,14 @@ the USB drive (*Backup and export*).
 The drive holds every issue body, unencrypted. The job only reads Redmine: the database through
 `docker compose exec`, the issues by GET with the key in `redmine-gh-plan`. It writes only to the
 drive, and builds each folder as `.<date>.partial`, renaming it when complete, so a failed run
-leaves no dated folder. It keeps the newest 14 dated folders and removes older ones; it touches
-nothing else in `redmine_backups`. A run on a day that already has its folder does nothing.
+leaves no dated folder. It keeps the newest 14 dated folders and removes older ones, never the one
+it just made. Beside them it keeps a `.lock` and clears its own leftover `.<date>.partial`; it
+touches nothing else in `redmine_backups`. A run on a day that already has its folder does nothing.
 
 When the drive isn't mounted, Docker isn't running, or any step fails, the job logs why, shows a
 caution alert naming the cause that stays until dismissed, and exits 1. The drive counts as
-mounted only when `/Volumes/FAMILY_PHOTOS` is on a device other than `/`'s, so a bare folder of
-that name on the system disk doesn't count. `REDMINE_BACKUP_VOLUME` points it at another volume.
+mounted only when `/Volumes/FAMILY_PHOTOS` is a mount point, so a bare folder of that name
+doesn't count. `REDMINE_BACKUP_VOLUME` points it at another volume.
 
 A user LaunchAgent runs it at 03:00. If the Mac is asleep then, launchd runs it once at the next
 wake (`man launchd.plist`, *StartCalendarInterval*), and `RunAtLoad` runs it at login, which covers
