@@ -24,7 +24,7 @@ def _db(path: Path, issues: int) -> None:
     path.unlink(missing_ok=True)
     db = sqlite3.connect(path)
     db.execute("CREATE TABLE issues (id INTEGER)")
-    db.executemany("INSERT INTO issues VALUES (?)", [(n,) for n in range(issues)])
+    db.executemany("INSERT INTO issues VALUES (?)", [(n,) for n in range(1, issues + 1)])
     db.commit()
     db.close()
 
@@ -113,6 +113,12 @@ def test_the_drive_unmounted_writes_nothing_and_alerts_its_path(fake, tmp_path, 
 def test_a_bare_folder_on_the_system_disk_is_not_the_drive(tmp_path):
     assert backup.mounted(tmp_path) is False
     assert backup.mounted(tmp_path / "absent") is False
+    assert backup.mounted(Path("/")) is False
+
+
+def test_a_mount_point_is_the_drive(tmp_path, monkeypatch):
+    monkeypatch.setattr(backup.os.path, "ismount", lambda path: Path(path) == tmp_path)
+    assert backup.mounted(tmp_path) is True
 
 
 def test_docker_down_writes_nothing_and_alerts(fake, volume, monkeypatch):
@@ -155,17 +161,31 @@ def test_a_corrupt_copy_fails(fake, volume, monkeypatch, tmp_path):
     assert not (volume / "redmine_backups" / "2026-10-20").exists()
 
 
-def test_a_short_issue_list_fails(fake, volume, monkeypatch):
+def test_an_issue_a_deletion_shifts_off_a_page_fails(fake, volume, monkeypatch):
     real = fake.get
-    monkeypatch.setattr(backup, "get", lambda path, key: {**real(path, key), "total_count": 5})
+
+    def shifted(path, key):  # issue 1 deleted after the first page, so the second starts one on
+        if path.startswith("/issues.json") and not path.endswith("offset=0"):
+            base, offset = path.rsplit("offset=", 1)
+            path = f"{base}offset={int(offset) + 1}"
+        return real(path, key)
+
+    monkeypatch.setattr(backup, "get", shifted)
     assert _main(monkeypatch, volume) == 1
-    assert fake.alerts == ["the issue list gave 3 issues of 5"]
+    assert fake.alerts == ["the export is missing 1 of the database's issues: #3"]
+    assert not (volume / "redmine_backups" / "2026-10-20").exists()
+
+
+def test_an_issue_made_after_the_database_copy_is_exported_too(fake, volume, monkeypatch):
+    _db(fake.source, len(ISSUES) - 1)  # the database was copied before #3 was made
+    assert _main(monkeypatch, volume) == 0
+    assert (volume / "redmine_backups" / "2026-10-20" / "export" / "issues" / "3.json").exists()
 
 
 def test_an_export_short_of_the_database_fails(fake, volume, monkeypatch):
     _db(fake.source, len(ISSUES) + 1)  # one more issue than the API shows the key
     assert _main(monkeypatch, volume) == 1
-    assert fake.alerts == ["the export has 3 issues and the database 4"]
+    assert fake.alerts == ["the export is missing 1 of the database's issues: #4"]
     assert not (volume / "redmine_backups" / "2026-10-20").exists()
 
 
@@ -173,8 +193,11 @@ def test_stale_partials_are_cleared(fake, volume, monkeypatch):
     stale = volume / "redmine_backups" / ".2026-10-19.partial"
     stale.mkdir(parents=True)
     (stale / "redmine.db").write_text("half")
+    mine = volume / "redmine_backups" / ".manual-copy.partial"
+    mine.mkdir()
     assert _main(monkeypatch, volume) == 0
     assert not stale.exists()
+    assert mine.is_dir()
 
 
 def test_a_run_while_another_holds_the_lock_refuses(fake, volume, monkeypatch):
@@ -198,6 +221,14 @@ def test_keeps_the_newest_copies_and_nothing_else_is_touched(fake, volume, monke
     assert len(kept) == backup.KEEP == 14
     assert kept[-1] == "2026-10-20" and kept[0] == "2026-10-07"
     assert (root / "redmine-20261017-0603.db").read_text() == "by hand"
+
+
+def test_a_clock_gone_back_keeps_tonights_copy(fake, volume, monkeypatch):
+    root = volume / "redmine_backups"
+    for d in range(14):
+        (root / (TODAY + datetime.timedelta(days=d + 1)).isoformat()).mkdir(parents=True)
+    assert _main(monkeypatch, volume) == 0
+    assert (root / "2026-10-20").is_dir()
 
 
 def _checkout(tmp_path: Path, monkeypatch, git: str) -> Path:

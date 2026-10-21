@@ -13,7 +13,8 @@ Each run writes one dated folder, <drive>/redmine_backups/<YYYY-MM-DD>/:
 
 It builds the folder as .<date>.partial and renames it when complete, so a failed run leaves no
 dated folder and the next run starts again. It keeps the newest KEEP dated folders and removes
-the older ones; nothing else in redmine_backups is touched.
+the older ones. Beside them it keeps a .lock and clears its own leftover partials; nothing else in
+redmine_backups is touched.
 
 It reads Redmine and never writes to it, and it writes nothing outside the drive. When the drive
 isn't mounted, Docker isn't running or any step fails, it logs why, shows a caution alert that
@@ -88,11 +89,8 @@ def alert(message: str) -> None:
 
 
 def mounted(volume: Path) -> bool:
-    """The volume is mounted: it exists, on a device other than /'s. A bare folder doesn't count."""
-    try:
-        return volume.stat().st_dev != Path("/").stat().st_dev
-    except OSError:
-        return False
+    """The volume is a mount point other than /. A bare folder, even on another device, doesn't count."""
+    return os.path.ismount(volume) and volume.resolve() != Path("/")
 
 
 def docker(args: list[str], out=None) -> bytes:
@@ -115,8 +113,8 @@ def docker_running() -> bool:
         return False
 
 
-def backup_db(dest: Path) -> int:
-    """Copy the database to dest, check it, and return its issue count."""
+def backup_db(dest: Path) -> set[int]:
+    """Copy the database to dest, check it, and return its issue IDs."""
     with dest.open("wb") as out:
         docker(["exec", "-T", "-u", "redmine", "redmine", "bundle", "exec", "ruby", "-e", RUBY_BACKUP], out)
     db = sqlite3.connect(f"file:{dest}?mode=ro", uri=True)
@@ -124,7 +122,7 @@ def backup_db(dest: Path) -> int:
         check = db.execute("PRAGMA integrity_check").fetchone()[0]
         if check != "ok":
             raise Failure(f"the backup fails its integrity check: {check}")
-        return db.execute("SELECT count(*) FROM issues").fetchone()[0]
+        return {n for (n,) in db.execute("SELECT id FROM issues")}
     except sqlite3.DatabaseError as e:
         raise Failure(f"the backup isn't a readable database: {e}") from None
     finally:
@@ -153,27 +151,25 @@ def get(path: str, key: str) -> dict:
         raise Failure(f"GET {path.split('?')[0]} failed: {e}") from None
 
 
-def export(dest: Path, key: str) -> int:
-    """Write each issue to dest/<id>.json, and return how many."""
+def export(dest: Path, key: str) -> set[int]:
+    """Write each issue to dest/<id>.json, and return their IDs."""
     ids: list[int] = []
     while True:
         page = get(f"/issues.json?status_id=*&sort=id&limit=100&offset={len(ids)}", key)
         ids += [issue["id"] for issue in page["issues"]]
         if not page["issues"] or len(ids) >= page["total_count"]:
             break
-    if len(ids) != page["total_count"]:
-        raise Failure(f"the issue list gave {len(ids)} issues of {page['total_count']}")
     dest.mkdir(parents=True)
     for n in ids:
         issue = get(f"/issues/{n}.json?include={INCLUDE}", key)
         (dest / f"{n}.json").write_text(json.dumps(issue, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
-    return len(ids)
+    return set(ids)
 
 
-def prune(root: Path, keep: int) -> list[str]:
-    """Remove all but the newest `keep` dated folders. Returns the names removed."""
+def prune(root: Path, keep: int, made: str) -> list[str]:
+    """Remove all but the newest `keep` dated folders, never `made`. Returns the names removed."""
     dated = sorted(p.name for p in root.iterdir() if p.is_dir() and DATED.fullmatch(p.name))
-    old = dated[:-keep] if len(dated) > keep else []
+    old = [name for name in dated[:-keep] if name != made]  # a clock gone back still keeps tonight's
     for name in old:
         shutil.rmtree(root / name)
     return old
@@ -199,21 +195,26 @@ def run(volume: Path, today: datetime.date) -> int:
             log(f"{day} is already there; nothing to do")
             return 0
         for stale in root.glob(".*.partial"):
-            shutil.rmtree(stale)
+            if DATED.fullmatch(stale.name[1 : -len(".partial")]):  # only what this job made
+                shutil.rmtree(stale)
         partial = root / f".{today.isoformat()}.partial"
         partial.mkdir()
         try:
             issues = backup_db(partial / "redmine.db")
             backup_files(partial / "files.tar")
             exported = export(partial / "export" / "issues", api_key())
-            if exported != issues:  # an issue the key can't see, such as one in an archived project
-                raise Failure(f"the export has {exported} issues and the database {issues}")
+            # An issue the key can't see (an archived project), or one a deletion shifted off a page.
+            # An issue made since the database was copied is exported only, which is fine.
+            missing = sorted(issues - exported)
+            if missing:
+                shown = ", ".join(f"#{n}" for n in missing[:5]) + (", …" if len(missing) > 5 else "")
+                raise Failure(f"the export is missing {len(missing)} of the database's issues: {shown}")
             partial.rename(day)
         finally:
             if partial.exists():
                 shutil.rmtree(partial)
-        log(f"{day}: database with {issues} issues, attachments, {exported} issues exported")
-        for name in prune(root, KEEP):
+        log(f"{day}: database with {len(issues)} issues, attachments, {len(exported)} issues exported")
+        for name in prune(root, KEEP, day.name):
             log(f"removed {root / name}, older than the newest {KEEP}")
     return 0
 
