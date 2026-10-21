@@ -7,7 +7,7 @@ const fs = require("fs");
 const path = require("path");
 const { Redmine } = require("./redmine");
 const { ACTION, checkId, start, expandHome } = require("./start");
-const { reviewFile, roundFiles, shipTab, check, pullRequest, linkPullRequest, keepEdits } = require("./ship");
+const { reviewFile, roundFiles, shipTab, check, shipped, keepEdits } = require("./ship");
 const { finish } = require("./done");
 
 // A new window can't be handed a task directly, so Start leaves one in the extension's global
@@ -17,6 +17,12 @@ const { finish } = require("./done");
 // A handoff is kept until Claude starts, so a reload can retry it; after a day, opening that
 // worktree no longer starts Claude unasked.
 const HANDOFF_FRESH_MS = 24 * 60 * 60 * 1000;
+
+// How soon after a refresh starts a window's focus may refresh Next up again, and how long one still
+// waiting holds focus refreshes off: past that, a refresh stuck on the Keychain or a slow Redmine's
+// four reads no longer stops them.
+const FOCUS_GAP = 5000;
+const FOCUS_HOLD = 3 * 60 * 1000;
 
 function handoffFile(storage, dir) {
   return path.join(storage, `handoff-${crypto.createHash("sha256").update(dir).digest("hex").slice(0, 16)}.json`);
@@ -46,6 +52,13 @@ class NextUp {
     this.storage = context.globalStorageUri.fsPath;
     // The Start or Done under way, by issue: { action, promise }.
     this.busy = new Map();
+    // The latest refresh: an older one answering after it shows nothing.
+    this.refreshes = 0;
+    // When the latest refresh started, and whether it's still waiting on Redmine.
+    this.refreshedAt = 0;
+    this.loading = false;
+    // Project identifiers by id, from earlier lists (Redmine.list).
+    this.known = {};
   }
 
   resolveWebviewView(view) {
@@ -61,9 +74,9 @@ class NextUp {
         return this.refresh();
       case "detail":
         try {
-          this.post({ type: "detail", id: message.id, issue: await redmine().issue(message.id) });
+          this.post({ type: "detail", id: message.id, seq: message.seq, issue: await (this.client || redmine()).issue(message.id) });
         } catch (error) {
-          this.post({ type: "detail", id: message.id, error: error.message });
+          this.post({ type: "detail", id: message.id, seq: message.seq, error: error.message });
         }
         return;
       case "open":
@@ -162,19 +175,37 @@ class NextUp {
 
   async refresh() {
     if (!this.view) return;
-    const client = redmine();
-    const markers = vscode.workspace.getConfiguration("plan").get("projectMarkers");
+    const at = ++this.refreshes;
+    this.refreshedAt = Date.now();
+    this.loading = true;
     try {
-      const issues = (await client.list()).map((issue) => ({
+      // Kept across refreshes and for the detail reads, so they share one Keychain read, and a
+      // refresh stuck on a Keychain prompt shares it rather than opening another. A change to the
+      // plan settings drops it; a failed Keychain read or a refused key is read again (Redmine.key).
+      const client = (this.client ??= redmine());
+      const markers = vscode.workspace.getConfiguration("plan").get("projectMarkers");
+      // The view's progress bar runs while Redmine answers, as Source Control's does on a Git refresh.
+      const listed = await vscode.window.withProgress({ location: { viewId: "plan.nextUp" } }, () => client.list(this.known));
+      const issues = listed.map((issue) => ({
         ...issue,
         marker: markers[issue.project] || issue.project.slice(0, 2),
         action: ACTION[issue.status],
         done: issue.status === "In Progress" && Boolean(issue.pullRequests),
       }));
-      this.post({ type: "list", base: client.settings.url, issues });
+      if (at === this.refreshes) this.post({ type: "list", base: client.settings.url, issues });
     } catch (error) {
-      this.post({ type: "error", message: error.message });
+      if (at === this.refreshes) this.post({ type: "error", message: error.message });
+    } finally {
+      if (at === this.refreshes) this.loading = false;
     }
+  }
+
+  // A focus refresh, skipped while one is waiting on Redmine or started in the last few seconds, so
+  // switching windows quickly, or while Redmine is slow, sends one request, not one per switch.
+  refreshOnFocus() {
+    const since = Date.now() - this.refreshedAt;
+    if (!this.view?.visible || since < FOCUS_GAP || (this.loading && since < FOCUS_HOLD)) return;
+    this.refresh();
   }
 
   post(message) {
@@ -295,15 +326,15 @@ function watchHandoff(context, storage) {
   context.subscriptions.push(watcher);
 }
 
-// Ship, from the title bar of any of an issue's round files: save them, check them, and open
-// the working tree's changes, whose title bar then holds Go. With nothing to commit, Go sits on the
-// review files instead. Only Go runs pr; once pr succeeds, the review files and diffs close and the
+// Go, from the title bar of any of an issue's round files: save them, check them, and open the
+// working tree's changes, whose title bar then holds Ship. With nothing to commit, Ship sits on the
+// review files instead. Only Ship runs pr; once pr succeeds, the review files and diffs close and the
 // issue's Pull requests field links its PR.
 let armed = null;
 
 function arm(review) {
   armed = review;
-  return vscode.commands.executeCommand("setContext", "plan.shipArmed", Boolean(review));
+  return vscode.commands.executeCommand("setContext", "plan.shipReady", Boolean(review));
 }
 
 // Saves the issue's review files, unsaved edits included, and checks what pr will find; null, with
@@ -311,7 +342,7 @@ function arm(review) {
 async function prepare(uri) {
   const review = reviewFile((uri || vscode.window.activeTextEditor?.document.uri)?.fsPath || "");
   if (!review) {
-    vscode.window.showErrorMessage("Plan: Ship works from an issue's review files in .tmp/<n>/: commit.txt, pr-body.md, issue.md or a reply");
+    vscode.window.showErrorMessage("Plan: Go works from an issue's review files in .tmp/<n>/: commit.txt, pr-body.md, issue.md or a reply");
     return null;
   }
   const { root, id } = review;
@@ -336,7 +367,7 @@ async function prepare(uri) {
   return { ...review, ...found };
 }
 
-async function ship(uri) {
+async function go(uri) {
   const ready = await prepare(uri);
   await arm(ready && { root: ready.root, id: ready.id });
   if (!ready) return;
@@ -348,9 +379,9 @@ async function ship(uri) {
   }
 }
 
-async function go() {
+async function ship(refresh) {
   if (!armed) {
-    vscode.window.showErrorMessage("Plan: press Ship on an issue's review files first.");
+    vscode.window.showErrorMessage("Plan: press Go on an issue's review files first.");
     return;
   }
   const { root, id } = armed;
@@ -360,13 +391,15 @@ async function go() {
 
   const exitCode = await runPr(root, id);
   if (exitCode !== 0) {
-    vscode.window.showErrorMessage(`Plan: pr ${id} stopped (exit ${exitCode}); its terminal says why. Ship and Go again once it's fixed.`);
+    vscode.window.showErrorMessage(`Plan: pr ${id} stopped (exit ${exitCode}); its terminal says why. Go and Ship again once it's fixed.`);
+    // pr may have sent some of the round before it stopped.
+    refresh();
     return;
   }
   const stay = new Set();
   // A reply or issue.md edited while pr ran, which pr has since sent and deleted, holds edits pr
   // never saw. They're kept beside it as <file>.unsent, then the tab is reverted: closing it would
-  // offer Save, and a save writes it back for the next Go to send again.
+  // offer Save, and a save writes it back for the next Ship to send again.
   for (const doc of vscode.workspace.textDocuments) {
     const review = reviewFile(doc.uri.fsPath);
     if (!doc.isDirty || review?.root !== root || review.id !== id || fs.existsSync(doc.uri.fsPath)) continue;
@@ -385,13 +418,10 @@ async function go() {
   const tabs = vscode.window.tabGroups.all.flatMap((g) => g.tabs)
     .filter((t) => shipTab(t.input, root, id) && !stay.has(t.input?.uri?.fsPath));
   await vscode.window.tabGroups.close(tabs);
-  try {
-    const pr = await pullRequest(root, found.branch);
-    const linked = await linkPullRequest({ redmine: redmine(), id, pr });
-    vscode.window.showInformationMessage(`Plan: #${id} ${linked ? "now links" : "already links"} ${pr.url}`);
-  } catch (error) {
-    vscode.window.showErrorMessage(`Plan: #${id} shipped, but Redmine wasn't told. ${error.message} Ship and Go again to retry.`);
-  }
+  const { failed, message } = await shipped({ root, id, branch: found.branch, redmine });
+  if (failed) vscode.window.showErrorMessage(`Plan: ${message}`);
+  else vscode.window.showInformationMessage(`Plan: ${message}`);
+  refresh();
 }
 
 // pr <id> in its own terminal, in the worktree; resolves to its exit code. pr is run by its path: a
@@ -421,14 +451,35 @@ function activate(context) {
   watchHandoff(context, view.storage);
   takeHandoff(view.storage);
   watchHandover(context);
+  let focused = vscode.window.state.focused;
   context.subscriptions.push(
     vscode.window.registerWebviewViewProvider("plan.nextUp", view),
     vscode.commands.registerCommand("plan.refresh", () => view.refresh()),
-    vscode.commands.registerCommand("plan.ship", (uri) =>
-      ship(uri).catch((error) => vscode.window.showErrorMessage(`Plan: Ship failed. ${error.message}`))
+    // A changed URL, query or Keychain item needs a new client, and any plan.* change a new
+    // refresh, which also discards one still answering with the old settings. Other settings keep
+    // the client, and the key it read, so they bring no Keychain prompt.
+    vscode.workspace.onDidChangeConfiguration((event) => {
+      if (!event.affectsConfiguration("plan")) return;
+      const client = ["redmineUrl", "project", "query", "keychainService", "sysKeychainService"];
+      if (client.some((name) => event.affectsConfiguration(`plan.${name}`))) view.client = undefined;
+      view.refresh();
+    }),
+    // A window coming into focus refreshes its Next up, so it shows what changed while another
+    // window, Redmine's web UI or a pr in a terminal had it; closing a window focuses another. A
+    // hidden panel is skipped: it reloads, and refreshes, when it's shown. The event also fires when
+    // a focused window goes idle or comes back (state.active), so only a change of focus counts.
+    vscode.window.onDidChangeWindowState((state) => {
+      if (state.focused && !focused) view.refreshOnFocus();
+      focused = state.focused;
+    }),
+    // Go and Ship swapped names, so their IDs are new: a keybinding on an old ID finds no command,
+    // where plan.ship, the old Go, would now run pr.
+    vscode.commands.registerCommand("plan.openChanges", (uri) =>
+      go(uri).catch((error) => vscode.window.showErrorMessage(`Plan: Go failed. ${error.message}`))
     ),
-    vscode.commands.registerCommand("plan.go", () =>
-      go().catch((error) => vscode.window.showErrorMessage(`Plan: Go failed. ${error.message}`))
+    // Ship's window keeps its focus while pr runs, so Ship refreshes its own Next up once it links.
+    vscode.commands.registerCommand("plan.runPr", () =>
+      ship(() => view.refresh()).catch((error) => vscode.window.showErrorMessage(`Plan: Ship failed. ${error.message}`))
     )
   );
 }

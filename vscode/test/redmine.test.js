@@ -78,3 +78,113 @@ test("a write that sets no status reads nothing back", async (t) => {
   await r.redmine.update(80, { notes: "Opened a PR." });
   assert.deepEqual(r.requests, ["PUT /issues/80.json"]);
 });
+
+test("a read Redmine never answers gives up after readTimeout, saying so", async (t) => {
+  const r = await fakeRedmine(t, { drops: false });
+  const server = http.createServer(() => {});
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  t.after(() => (server.closeAllConnections(), server.close()));
+  const url = `http://127.0.0.1:${server.address().port}`;
+  const stalled = new Redmine({ ...r.redmine.settings, url, readTimeout: 200 });
+  await assert.rejects(stalled.issue(80), { message: `Redmine at ${url} didn't answer within 0.2s` });
+});
+
+test("a read whose body stalls gives up after readTimeout, saying so", async (t) => {
+  const r = await fakeRedmine(t, { drops: false });
+  const server = http.createServer((req, res) => res.writeHead(200, { "Content-Type": "application/json" }).write("{"));
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  t.after(() => (server.closeAllConnections(), server.close()));
+  const url = `http://127.0.0.1:${server.address().port}`;
+  const stalled = new Redmine({ ...r.redmine.settings, url, readTimeout: 200 });
+  await assert.rejects(stalled.issue(80), { message: `Redmine at ${url} didn't answer within 0.2s` });
+});
+
+test("list reads the Keychain once, reads projects only for one it hasn't seen, and tries a failed Keychain read again", async (t) => {
+  const bin = fs.mkdtempSync(path.join(os.tmpdir(), "plan-redmine-"));
+  t.after(() => fs.rmSync(bin, { recursive: true, force: true }));
+  const reads = path.join(bin, "reads");
+  // Fails the first time, as a locked Keychain whose prompt is cancelled does.
+  fs.writeFileSync(
+    path.join(bin, "security"),
+    `#!/bin/sh\necho x >> "${reads}"\n[ "$(wc -l < "${reads}")" -gt 1 ] || exit 1\necho test-key\n`,
+    { mode: 0o755 }
+  );
+  const PATH = process.env.PATH;
+  process.env.PATH = `${bin}:${PATH}`;
+  t.after(() => (process.env.PATH = PATH));
+  const answers = {
+    "/users/current.json": { user: { id: 1 } },
+    "/queries.json?limit=100": { queries: [{ id: 8, name: "Next up" }] },
+    "/projects.json?limit=100": { projects: [{ id: 3, identifier: "plan" }] },
+    "/issues.json?query_id=8&project_id=plan&limit=100": {
+      issues: [{ id: 88, subject: "S", status: { name: "New" }, project: { id: 3, name: "Plan" } }],
+    },
+  };
+  const keys = [];
+  const urls = [];
+  const server = http.createServer((req, res) => {
+    keys.push(req.headers["x-redmine-api-key"]);
+    urls.push(req.url);
+    res.writeHead(200, { "Content-Type": "application/json" }).end(JSON.stringify(answers[req.url]));
+  });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  t.after(() => (server.closeAllConnections(), server.close()));
+  const redmine = new Redmine({ url: `http://127.0.0.1:${server.address().port}`, service: "test", project: "plan", query: "Next up" });
+
+  const known = {};
+  await assert.rejects(redmine.list(known), /no Keychain item "test"/);
+  assert.deepEqual((await redmine.list(known)).map((i) => [i.id, i.project]), [[88, "plan"]]);
+  assert.equal(fs.readFileSync(reads, "utf8").split("\n").filter(Boolean).length, 2);
+  assert.deepEqual(keys, ["test-key", "test-key", "test-key", "test-key"]);
+  // A second list knows project 3, so it doesn't read /projects.json again.
+  urls.length = 0;
+  assert.deepEqual((await redmine.list(known)).map((i) => [i.id, i.project]), [[88, "plan"]]);
+  assert.ok(!urls.includes("/projects.json?limit=100"), urls.join(", "));
+  assert.equal(urls.length, 3);
+  // An issue in a project it hasn't seen reads them again.
+  answers["/projects.json?limit=100"].projects.push({ id: 4, identifier: "tt" });
+  answers["/issues.json?query_id=8&project_id=plan&limit=100"].issues.push(
+    { id: 90, subject: "T", status: { name: "New" }, project: { id: 4, name: "Tempotag" } }
+  );
+  assert.deepEqual((await redmine.list(known)).map((i) => i.project), ["plan", "tt"]);
+});
+
+test("a 401 drops the key it read, so the next request reads the Keychain again", async (t) => {
+  const bin = fs.mkdtempSync(path.join(os.tmpdir(), "plan-redmine-"));
+  t.after(() => fs.rmSync(bin, { recursive: true, force: true }));
+  const key = path.join(bin, "key");
+  fs.writeFileSync(key, "wrong-key\n");
+  fs.writeFileSync(path.join(bin, "security"), `#!/bin/sh\ncat "${key}"\n`, { mode: 0o755 });
+  const PATH = process.env.PATH;
+  process.env.PATH = `${bin}:${PATH}`;
+  t.after(() => (process.env.PATH = PATH));
+  const server = http.createServer((req, res) => {
+    if (req.headers["x-redmine-api-key"] !== "right-key") return res.writeHead(401).end();
+    res.writeHead(200, { "Content-Type": "application/json" }).end(JSON.stringify({ issue: { id: 88 } }));
+  });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  t.after(() => (server.closeAllConnections(), server.close()));
+  const redmine = new Redmine({ url: `http://127.0.0.1:${server.address().port}`, service: "test" });
+
+  await assert.rejects(redmine.issue(88), /refused the key in Keychain item "test" \(401\)/);
+  fs.writeFileSync(key, "right-key\n");
+  assert.deepEqual(await redmine.issue(88), { id: 88 });
+});
+
+test("a list with a refused key says so, even when the query read fails first", async (t) => {
+  const bin = fs.mkdtempSync(path.join(os.tmpdir(), "plan-redmine-"));
+  t.after(() => fs.rmSync(bin, { recursive: true, force: true }));
+  fs.writeFileSync(path.join(bin, "security"), "#!/bin/sh\necho wrong-key\n", { mode: 0o755 });
+  const PATH = process.env.PATH;
+  process.env.PATH = `${bin}:${PATH}`;
+  t.after(() => (process.env.PATH = PATH));
+  const server = http.createServer((req, res) => {
+    if (req.url === "/queries.json?limit=100") return res.writeHead(403).end();
+    setTimeout(() => res.writeHead(401).end(), 100);
+  });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  t.after(() => (server.closeAllConnections(), server.close()));
+  const redmine = new Redmine({ url: `http://127.0.0.1:${server.address().port}`, service: "test", project: "plan", query: "Next up" });
+
+  await assert.rejects(redmine.list(), /refused the key in Keychain item "test" \(401\)/);
+});

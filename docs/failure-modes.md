@@ -59,7 +59,17 @@ Found by the last local review and left unfixed: each is unlikely in use, and it
 | `pr-body.md` is open in a group to the right and `commit.txt` isn't open | Each save adds another group below with a second copy of the PR body | Close the extra groups |
 | `plan.checkouts` names a submodule or a repo with a separate git dir | The worktree is made in the wrong place | Not a setup in use; `git worktree remove` it |
 | A subject with no ASCII letters or digits | The branch is named `feat/<n>-` | Rename the branch |
-| Each Redmine request reads the API key from the Keychain again, and blockers are fetched with their journals | A Start with several blockers is slower | None needed |
+| Blockers are fetched with their journals | A Start with several blockers is slower | None needed |
+
+## Ship
+
+Ship runs `pr`, then links the PR on the issue. A `pr` whose push adds commits to an open PR asks Copilot to review it again, so each round of review fixes is reviewed in turn; `gh pc` asks for a new PR. A failed request prints a warning in Ship's terminal and doesn't stop `pr`.
+
+| Step | Fails | Twice | At once | Stale | Guards |
+|---|---|---|---|---|---|
+| Ask Copilot to review (`pr`) | The terminal says Copilot wasn't asked; `pr` carries on to the replies and ticks. The next `pr` asks only if it pushes commits, so ask under Reviewers | A `pr` that pushes nothing doesn't ask; `gh pr edit --help` (2.102.0) says `--add-reviewer` re-requests a reviewer | Only the `pr` whose push moves the branch asks | — | — |
+| Read the PR | Nothing linked; the message says Redmine wasn't told. Go and Ship again | — | — | — | Gives up after a minute |
+| Link the PR | The message says Redmine wasn't told. The next Ship links it | Already linked: nothing changes | — | — | — |
 
 ## Done (PR #114)
 
@@ -68,7 +78,7 @@ Done finishes an issue once its PR has merged. It checks everything before it ch
 | Step | Fails | Twice | At once | Stale | Guards |
 |---|---|---|---|---|---|
 | Read the issue | Nothing written; rerun | Closed is accepted, though Next up shows no Done on a closed row | — | Any status but In Progress or Closed is refused; an issue with no linked PR is refused, naming Ship | — |
-| Read the PR | Nothing written; rerun | — | — | An open PR, or one closed unmerged, is refused with nothing changed | Only the last github.com PR the *Pull requests* field links counts |
+| Read the PR | Nothing written; rerun | — | — | An open PR, or one closed unmerged, is refused with nothing changed | Only the last github.com PR the *Pull requests* field links counts. `gh pr view` gives up after a minute |
 | Lock | — | Released after every Done | A second click joins the Done under way; a Start or Open of the same issue, here or in another window, is refused | A dead holder's lock is refused by name, never taken over | Blocks recovery after a crash until the file is deleted |
 | Fetch origin | Stops before any change | No-op | git locks the repo | `origin` must be the PR's repo, must still have the base, and `origin/<base>` must hold the merge commit. A local base must be behind it, unless another worktree has it checked out. Otherwise Done stops before any change | A PR head that isn't local is fetched from `refs/pull/<n>/head` before any change; if that fetch fails, Done stops, rather than reading the head as missing |
 | Bring the base up | The next Done fast-forwards it again | A no-op | git locks the repo | The main checkout switches to the base only from the issue's branch, and changes on the base refuse Done before the worktree goes, as does the issue's branch in the main checkout while another worktree has the base. On any other branch only the base ref moves, and the note says so. A base checked out in another worktree is left for Peter to pull there, and Redmine sees the merge once he does. A listed base worktree whose folder is gone is refused, naming `git worktree prune`. The base moves only from the tip that was checked | Fast-forward only, checked before any change. A file where the merge adds a tracked one or a folder on its path, a rename's new path included, refuses Done before the switch, since git would overwrite an ignored one unasked. From the issue's branch the base ref moves first, so the switch goes straight to the merge and never writes the old base's files |
@@ -83,6 +93,6 @@ Found by the last local review and left unfixed: each fails silently, and its wo
 
 | Case | Worst case | Recovery |
 |---|---|---|
-| Another issue's `fixes #<n>` commit is fetched by Done | That issue closes, and its row leaves Next up before its own Done | Run `pr done` in that issue's worktree |
+| Another issue's `fixes #<n>` commit is fetched by Done | That issue closes, and its row leaves Next up before its own Done | Set the issue back to In Progress in Redmine: its row returns to Next up, and its Done finishes it and closes it again |
 | GitHub keeps the PR's branch after the merge (gh-plan deletes it: `delete_branch_on_merge` is on) | `origin/<branch>` survives, and a Start of the reopened issue checks out the merged branch | `git push origin --delete <branch>` |
-| Go runs `pr` in the worktree while Done removes it; Ship and Go take neither the lock nor the in-window guard | `pr` fails part way, or pushes a branch Done just deleted | Don't press Done until Go's terminal has finished; delete a re-pushed branch on GitHub |
+| Ship runs `pr` in the worktree while Done removes it; Go and Ship take neither the lock nor the in-window guard | `pr` fails part way, or pushes a branch Done just deleted | Don't press Done until Ship's terminal has finished; delete a re-pushed branch on GitHub |

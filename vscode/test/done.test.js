@@ -649,7 +649,7 @@ test("replies or checklist ticks pr hasn't sent are refused before anything chan
   fs.mkdirSync(other);
   fs.writeFileSync(path.join(other, "issue.md"), "- [x] Done\n");
   await assert.rejects(done(s), (e) => e.message.includes("replies or checklist ticks pr hasn't sent") &&
-    e.message.includes("python3 ~/.claude/skills/gh-issues/scripts/checklist.py") &&
+    e.message.includes("pr done <n> in that worktree") &&
     e.message.endsWith(`\n.tmp/${ID}/issue.md\n.tmp/${ID}/replies/11.md\n.tmp/${ID}/replies/12.txt\n.tmp/${ID}/replies/notes.md\n.tmp/85/issue.md`));
   assert.ok(fs.existsSync(path.join(round, "issue.md")));
   assert.notEqual(s.git(s.checkout, "rev-parse", "main"), s.pr.mergeCommit.oid);

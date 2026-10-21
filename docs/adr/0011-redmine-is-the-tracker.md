@@ -126,8 +126,8 @@ committed in them.
 
 The buttons are in the extension's Next up panel, so the Redmine issue page needs no view hook or
 `vscode://` link. A New issue's row shows Start. An In Progress one shows Open, and Done as well
-once the issue links a PR. Ship and Go are in the title bar of the issue's review files in
-`.tmp/<n>/`. Go runs `pr`, which commits, pushes, and opens or updates the PR. It then posts each
+once the issue links a PR. Go and Ship are in the title bar of the issue's review files in
+`.tmp/<n>/`. Ship runs `pr`, which commits, pushes, and opens or updates the PR. It then posts each
 review reply in `.tmp/<n>/replies/` to its thread, resolves the thread, and applies the box ticks
 in `.tmp/<n>/issue.md` to the issue's description. After the merge, Done removes the worktree and
 the branch, brings the base up, has Redmine fetch the commits, and closes the issue. Every write to

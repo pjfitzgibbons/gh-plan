@@ -15,7 +15,7 @@
   - [6.3 Platform](#platform)
 - [7. Operations](#operations)
   - [7.1 Start](#start)
-  - [7.2 Ship and Go](#ship)
+  - [7.2 Go and Ship](#ship)
   - [7.3 Finish](#finish)
   - [7.4 Tool commits](#tool-commits)
   - [7.5 Baselines](#freeze)
@@ -123,11 +123,13 @@ field.
 Redmine serves the web UI, the REST API and the repository web service. Everything else is a
 client of one of them:
 
-- **The extension** shows Next up in a panel, and holds the Start, Open, Ship, Go and Done
+- **The extension** shows Next up in a panel, and holds the Start, Open, Go, Ship and Done
   buttons ([`vscode/README.md`](../vscode/README.md)).
-- **`pr`** commits, pushes, opens or updates the PR, posts review replies, applies Done ticks to
-  the issue's description, and cleans up after a merge. It and its Python scripts live in
-  `~/.claude/skills/gh-issues/scripts/`, outside this repo.
+- **`pr`** commits, pushes, opens or updates the PR, posts review replies and applies Done ticks
+  to the issue's description. After a merge it sends only what's left and leaves the cleanup to
+  Done. It and its Python scripts live in
+  `.claude/skills/gh-issues/scripts/`, with their tests. `~/.claude/skills/gh-issues` links to the
+  main checkout's copy, so every repo uses the one skill and `~/.local/bin/pr` reaches it.
 - **The setup scripts**, `setup.rb`, `import.rb` and `backfill.rb`, run inside the container with
   `rails runner`, on the database directly, so they need no API key.
 - **The lane board plugin** adds the Lanes tab. It only reads.
@@ -138,15 +140,17 @@ client of one of them:
 ### 6.2 Process boundary
 
 `vscode/redmine.js` and `vscode/start.js` are the only extension modules that spawn a process or
-open a network connection, apart from Go's `pr`, which `vscode/extension.js` runs as a VS Code
+open a network connection, apart from Ship's `pr`, which `vscode/extension.js` runs as a VS Code
 task in a terminal of its own. The rest of the extension is plain functions, testable without a
 network or a repo.
 
 - `vscode/redmine.js` makes every call to Redmine. Through the REST API it reads the panel's
   issues and writes Start's and Done's status changes, Ship's PR link and their journal notes.
   Through the repository web service it has Redmine fetch a project's commits after a merge. It
-  reads both keys from the Keychain on each call, so no repo holds either ([`G3`](requirements.md)).
-- `vscode/start.js` runs git, `gh` and `uv` for Start, Ship and Done: it fetches, adds and removes
+  reads the API key from the Keychain once per client, and the web service's key on each call, so
+  no repo holds either ([`G3`](requirements.md)). Next up keeps one client across refreshes until
+  the `plan.*` settings change; each command makes its own.
+- `vscode/start.js` runs git, `gh` and `uv` for Start, Go, Ship and Done: it fetches, adds and removes
   worktrees, syncs them, reads PRs, and pulls and deletes merged branches.
 
 `gh` is already authenticated, so nothing holds a GitHub token ([`G3`](requirements.md)); a library
@@ -175,7 +179,7 @@ through the REST API, with the same Keychain keys.
    (1) START ──────────────────▶ branch <type>/<n>-<slug>, off the base ─▶ In Progress,
                                                                             start date, note
                                  work · .tmp/<n>/commit.txt, pr-body.md
-   (2) SHIP, then GO ──────────▶ pr <n>: commit, push, PR ───────────────▶ Pull requests
+   (2) GO, then SHIP ──────────▶ pr <n>: commit, push, PR ───────────────▶ Pull requests
                                  review rounds: replies/, issue.md ──────▶ Done ticks
    (3) squash merge, title ends (fixes #<n>)
    (4) DONE ───────────────────▶ worktree and branch removed, base up ───▶ commits fetched,
@@ -203,23 +207,25 @@ the panel loaded. A lock file per issue keeps two windows from starting it at on
 ([failure modes, *Start*](failure-modes.md)).
 
 <a id="ship"></a>
-### 7.2 Ship and Go
+### 7.2 Go and Ship
 
 A round is written into `.tmp/<n>/`: `commit.txt` when the tree has changes, `pr-body.md`, a reply
 to each review thread in `replies/<comment id>.md`, and `issue.md`, the issue's description with
 Done boxes ticked. Once the PR body and something beside it are written, the extension opens them
 all for review.
 
-Ship, in the title bar of any of them, saves them and refuses by name a missing PR body, a missing
+Go, in the title bar of any of them, saves them and refuses by name a missing PR body, a missing
 commit message while the tree has changes, or a branch that isn't the issue's. It then opens the
-working tree's changes. Only Go runs anything: it saves and checks again, then runs `pr <n>` in a
+working tree's changes. Only Ship runs anything: it saves and checks again, then runs `pr <n>` in a
 terminal in the worktree.
 
 `pr` commits with `commit.txt`, pushes, and opens the PR or replaces its body. It then posts each
 reply to its thread and resolves the thread, and applies the box changes in `issue.md` to the
 issue's description. It refuses any other difference, so an edit made in Redmine since is kept.
 Each file is deleted once sent, so a second `pr` sends nothing twice. After the first `pr`, the
-issue's `Pull requests` field links the PR, with a journal note.
+issue's `Pull requests` field links the PR, with a journal note. A `pr` whose push adds commits
+to an open PR also asks Copilot to review it again, for the commits that answer a review; `gh pc` asks for a new PR.
+`gh pr edit --help` (2.102.0) says `--add-reviewer` adds or re-requests a reviewer.
 
 <a id="finish"></a>
 ### 7.3 Finish
@@ -256,7 +262,8 @@ script that computes a milestone's baselines over the REST API is not built yet.
 
 Next up is a public saved query in `plan`: open issues, Icebox left out, in `Ordinal` order. It
 answers "what's next" in Redmine's web UI, in the extension's panel and over the REST API
-([`D6`](requirements.md)). The lane board marks an issue ready when it is open and every issue
+([`D6`](requirements.md)). The panel reloads it whenever its window comes into focus, so it shows
+what another window, the web UI or `pr` changed. A focus within five seconds of the last refresh, or while one has waited on Redmine for under three minutes, doesn't reload it again. The lane board marks an issue ready when it is open and every issue
 that blocks it is closed.
 
 <a id="failure-modes"></a>
@@ -308,7 +315,7 @@ The Lanes tab is at `/projects/<identifier>/lanes`, and has no Icebox column
    which include Redmine's REST API ([ADR 0011](adr/0011-redmine-is-the-tracker.md)).
 6. `vscode/redmine.js` and `vscode/start.js` are the only extension modules that spawn a process
    or open a network connection, apart from the VS Code task in `vscode/extension.js` that runs
-   Go's `pr`. Every call the extension makes to Redmine goes through `redmine.js` (§6.2).
+   Ship's `pr`. Every call the extension makes to Redmine goes through `redmine.js` (§6.2).
 7. Points are 1, 2, 3, 5, 8 or 13. An issue above 5 points is split before it is scheduled, as a
    practice: nothing refuses the save ([`B3`](requirements.md)).
 8. An issue has at most one lane: `Lane` is a single-valued list ([`D4`](requirements.md)).

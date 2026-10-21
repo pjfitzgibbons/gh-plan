@@ -20,18 +20,18 @@
     },
     "commands": [
       { "command": "plan.refresh", "title": "Refresh", "category": "Plan", "icon": "$(refresh)" },
-      { "command": "plan.ship", "title": "Ship", "category": "Plan", "icon": "$(diff-multiple)" },
-      { "command": "plan.go", "title": "Go", "category": "Plan", "icon": "$(rocket)" }
+      { "command": "plan.openChanges", "title": "Go", "category": "Plan", "icon": "$(diff-multiple)" },
+      { "command": "plan.runPr", "title": "Ship", "category": "Plan", "icon": "$(rocket)" }
     ],
     "menus": {
       "view/title": [{ "command": "plan.refresh", "when": "view == plan.nextUp", "group": "navigation" }],
       "editor/title": [
-        { "command": "plan.ship", "when": "resourcePath =~ /\\/\\.tmp\\/[1-9][0-9]*\\/(commit\\.txt|pr-body\\.md|issue\\.md|replies\\/[0-9]+\\.md)$/", "group": "navigation" },
-        { "command": "plan.go", "when": "plan.shipArmed && (activeEditor == multiDiffEditor || resourcePath =~ /\\/\\.tmp\\/[1-9][0-9]*\\/(commit\\.txt|pr-body\\.md|issue\\.md|replies\\/[0-9]+\\.md)$/)", "group": "navigation" }
+        { "command": "plan.openChanges", "when": "resourcePath =~ /\\/\\.tmp\\/[1-9][0-9]*\\/(commit\\.txt|pr-body\\.md|issue\\.md|replies\\/[0-9]+\\.md)$/", "group": "navigation" },
+        { "command": "plan.runPr", "when": "plan.shipReady && (activeEditor == multiDiffEditor || resourcePath =~ /\\/\\.tmp\\/[1-9][0-9]*\\/(commit\\.txt|pr-body\\.md|issue\\.md|replies\\/[0-9]+\\.md)$/)", "group": "navigation" }
       ],
       "commandPalette": [
-        { "command": "plan.ship", "when": "resourcePath =~ /\\/\\.tmp\\/[1-9][0-9]*\\/(commit\\.txt|pr-body\\.md|issue\\.md|replies\\/[0-9]+\\.md)$/" },
-        { "command": "plan.go", "when": "plan.shipArmed" }
+        { "command": "plan.openChanges", "when": "resourcePath =~ /\\/\\.tmp\\/[1-9][0-9]*\\/(commit\\.txt|pr-body\\.md|issue\\.md|replies\\/[0-9]+\\.md)$/" },
+        { "command": "plan.runPr", "when": "plan.shipReady" }
       ]
     },
     "taskDefinitions": [
@@ -76,7 +76,7 @@
         "plan.pr": {
           "type": "string",
           "default": "~/.local/bin/pr",
-          "description": "The pr script Ship runs on Go, by its path."
+          "description": "The pr script Ship runs, by its path."
         },
         "plan.keychainService": {
           "type": "string",

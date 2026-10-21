@@ -1,10 +1,12 @@
 # GH Plan for VS Code
 
 A **Plan** icon in the Activity Bar opens **Next up**: Redmine's saved query of that name, one row per
-issue, in the query's order.
+issue, in the query's order. It refreshes whenever its window comes into focus, so closing a
+worktree's window, or coming back from Redmine or a terminal, shows the issues as they are now. A focus within five seconds of the last refresh, or while one has waited on Redmine for under three minutes, is skipped. Open rows stay open, their detail reloads in place, and the scroll stays where it was. While Redmine answers, a progress bar runs across the top of the panel, as
+Source Control's does on a Git refresh.
 
 - **A row** shows the repo marker, the number, the points, the subject, and the status when it isn't
-  New. A click anywhere on it opens the issue in place; the issue loads on the first open only.
+  New. A click anywhere on it opens the issue in place; the issue loads when it first opens.
 - **Start** shows when the pointer is over a New issue's row. It warns when an open issue blocks this
   one, then makes the branch `<type>/<n>-<slug>` and its worktree in `<repo>.worktrees/<n>` beside the
   checkout, off the latest `origin/develop` (or `origin/main`), sets the issue In Progress with a
@@ -21,16 +23,17 @@ issue, in the query's order.
   posts to the finding's thread before resolving it; and `issue.md`, the issue's description with
   the Done boxes ticked, which `pr` applies to Redmine only when the boxes are all that changed.
   When all are already open, a later write or save changes no layout.
-- **Ship** is the diff icon in the title bar of any of them. It saves them all, refuses by name a
+- **Go** is the diff icon in the title bar of any of them. It saves them all, refuses by name a
   missing PR body, a missing commit message while the tree has changes, a reply `pr` can't send, an empty
   reply or two replies to one thread, or a branch that isn't the issue's, and opens the working tree's changes (Git: View Changes). With nothing to commit, it
   opens nothing.
-- **Go** is the rocket that Ship then puts in the changes' title bar, and on the review files. Only
-  Go runs anything: it saves and checks again, then runs `pr <n>` in a terminal in the worktree.
+- **Ship** is the rocket that Go then puts in the changes' title bar, and on the review files. Only
+  Ship runs anything: it saves and checks again, then runs `pr <n>` in a terminal in the worktree.
   Once `pr` succeeds, the review files, the Changes view and any diffs of the worktree's files
-  close; `pr` has deleted each reply and `issue.md` once sent, and the issue's Pull requests field
-  links the PR, with a journal note. Edits made to a reply or `issue.md` while `pr` ran, which it
-  never saw, are kept beside it as `<file>.unsent` before its tab closes. Ship and Go
+  close; `pr` has deleted each reply and `issue.md` once sent, and asked Copilot to review the PR
+  if the push added commits (`gh pc` asks when it opens one). `gh pr edit --help` says `--add-reviewer` re-requests a reviewer. The issue's Pull requests field links the PR, with a journal note, and Next up
+  refreshes. Edits made to a reply or `issue.md` while `pr` ran, which it
+  never saw, are kept beside it as `<file>.unsent` before its tab closes. Go and Ship
   again run `pr` again, which updates the PR body, and leave Redmine as it is once the PR is linked.
 - **Done** shows beside Open on an In Progress row that links a PR. Once that PR has merged, it
   removes the issue's worktree, brings the main checkout's base up to the merge, deletes the
