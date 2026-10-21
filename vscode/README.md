@@ -19,27 +19,29 @@ Source Control's does on a Git refresh.
 - **Review before `pr`:** once an issue's `.tmp/<n>/pr-body.md` is written with something beside
   it for `pr` to send, they open as tabs in the leftmost editor group (or the only one), with no
   split, the PR body in front; groups to its right stay as they are. Beside it can be the commit
-  message, `commit.txt`; a reply to each review finding, `replies/<comment id>.md`, which `pr`
-  posts to the finding's thread before resolving it; and `issue.md`, the issue's description with
-  the Done boxes ticked, which `pr` applies to Redmine only when the boxes are all that changed.
+  message, `commit.txt`, and a reply to each review finding, `replies/<comment id>.md`, which `pr`
+  posts to the finding's thread before resolving it. The PR body's `## Done` section ticks the
+  issue's Done list; the issue's description in Redmine is never ticked.
   When all are already open, a later write or save changes no layout.
 - **Go** is the diff icon in the title bar of any of them. It saves them all, refuses by name a
   missing PR body, a missing commit message while the tree has changes, a reply `pr` can't send, an empty
-  reply or two replies to one thread, or a branch that isn't the issue's, and opens the working tree's changes (Git: View Changes). With nothing to commit, it
-  opens nothing.
+  reply or two replies to one thread, or a branch that isn't the issue's. It then stages every change
+  and opens them (Git: View Changes), so the staged list is what Ship commits. With nothing to
+  commit, it opens nothing.
 - **Ship** is the rocket that Go then puts in the changes' title bar, and on the review files. Only
-  Ship runs anything: it saves and checks again, then runs `pr <n>` in a terminal in the worktree.
+  Ship runs `pr`: it saves and checks again, refuses by name a file changed since Go staged the
+  tree, so nothing goes in unreviewed, then runs `pr <n>` in a terminal in the worktree.
   Once `pr` succeeds, the review files, the Changes view and any diffs of the worktree's files
-  close; `pr` has deleted each reply and `issue.md` once sent, and asked Copilot to review the PR
+  close; `pr` has deleted each reply once sent, and asked Copilot to review the PR
   if the push added commits (`gh pc` asks when it opens one). `gh pr edit --help` says `--add-reviewer` re-requests a reviewer. The issue's Pull requests field links the PR, with a journal note, and Next up
-  refreshes. Edits made to a reply or `issue.md` while `pr` ran, which it
+  refreshes. Edits made to a reply while `pr` ran, which it
   never saw, are kept beside it as `<file>.unsent` before its tab closes. Go and Ship
   again run `pr` again, which updates the PR body, and leave Redmine as it is once the PR is linked.
 - **Done** shows beside Open on an In Progress row that links a PR. Once that PR has merged, it
   removes the issue's worktree, brings the main checkout's base up to the merge, deletes the
-  branch, has Redmine fetch the commits, and closes the issue with a note linking the PR and its
-  merge commit. It refuses an unmerged PR, a worktree with changes or commits the PR lacks, and
-  one holding any file but a dotfile in a `.tmp/<n>/replies/`, or an `.tmp/<n>/issue.md` or `issue.md.unsent`, that `pr` hasn't sent, for any issue, before it changes anything. The main checkout leaves its branch only when that branch is the
+  branch, has Redmine fetch the commits, and closes the issue with a note naming the PR that holds
+  its Done record and linking its merge commit. It refuses an unmerged PR, a worktree with changes or commits the PR lacks, and
+  one holding any file but a dotfile in a `.tmp/<n>/replies/`, that `pr` hasn't sent, for any issue, before it changes anything. An `issue.md` left from before is never sent, and goes with the worktree. The main checkout leaves its branch only when that branch is the
   issue's; a branch whose tip moved past the PR's head is kept and named. Done again finishes what
   a stopped one left, and otherwise changes nothing. Then close the worktree's window.
 

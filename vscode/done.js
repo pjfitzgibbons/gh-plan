@@ -11,7 +11,7 @@ const { field } = require("./redmine");
 // The statuses Done accepts: In Progress, and Closed, which a fixes commit's fetch or an earlier
 // Done leaves while the cleanup or the note may still be to do.
 const FINISHES = new Set(["In Progress", "Closed"]);
-const FIELDS = "state,url,number,title,headRefName,headRefOid,baseRefName,mergeCommit,isCrossRepository";
+const FIELDS = "state,url,number,title,body,headRefName,headRefOid,baseRefName,mergeCommit,isCrossRepository";
 
 // The last PR the issue's Pull requests field links, by URL; null when it links none.
 function linkedPullRequest(issue) {
@@ -33,9 +33,10 @@ function commitUrl(pr) {
   return `${repoUrl(pr)}/commit/${pr.mergeCommit.oid}`;
 }
 
-// The closing note: the PR and its merge commit, each linked.
+// The closing note: the PR, whose body's Done section records what the issue's work met, and its
+// merge commit, each linked.
 function doneNote(pr) {
-  return `Done: ${prLink(pr)} merged as [${pr.mergeCommit.oid.slice(0, 7)}](${commitUrl(pr)}).`;
+  return `Done: verified in ${prLink(pr)}, merged as [${pr.mergeCommit.oid.slice(0, 7)}](${commitUrl(pr)}).`;
 }
 
 // owner/repo, lower-cased: a URL's last two path segments, so an ssh host alias or GitHub's ssh on
@@ -178,12 +179,20 @@ async function finishIn({ redmine, id, project, checkout, common, pr, result, di
   const found = trees.find((t) => !t.main && head && t.branch === head) ||
     existingWorktree(porcelain, id, worktreeDir(checkout, id), "Done");
   if (found && fs.existsSync(found.dir)) await checkMerged(found.dir, pr, !found.main, disposable);
-  // .tmp/ is disposable, so the worktree's removal would delete, unsent, the review replies and
-  // checklist ticks pr sends, this issue's or another's.
+  // .tmp/ is disposable, so the worktree's removal would delete, unsent, the review replies pr
+  // sends, this issue's or another's. An issue.md from before the PR held the Done ticks is never
+  // sent, so it goes with the worktree.
   if (found && !found.main) {
     const left = unsentIn(found.dir);
     if (left.length) {
-      throw new Error(`${found.dir} has replies or checklist ticks pr hasn't sent; send each .tmp/<n>/ with pr done <n> in that worktree, or delete them, then Done again:\n${left.join("\n")}`);
+      throw new Error(`${found.dir} has replies pr hasn't sent; send each .tmp/<n>/ with pr done <n> in that worktree, or delete them, then Done again:\n${left.join("\n")}`);
+    }
+    // The PR body holds the Done ticks, and pr sends it after the merge too; one that differs from
+    // the PR's would go with the worktree, and a Done line ticked late with it.
+    const body = path.join(found.dir, ".tmp", String(id), "pr-body.md");
+    const text = (value) => value.replace(/\r\n/g, "\n").trim();
+    if (fs.existsSync(body) && text(fs.readFileSync(body, "utf8")) !== text(pr.body || "")) {
+      throw new Error(`${body} differs from ${link}'s body; send it with pr done ${id} in that worktree, or delete it to keep the PR's, then Done again`);
     }
   }
   if (found && !found.main && trees.find((t) => t.dir === found.dir)?.locked) {

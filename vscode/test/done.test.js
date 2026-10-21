@@ -8,6 +8,7 @@ const path = require("path");
 const { execFileSync } = require("child_process");
 const { worktreeDir } = require("../start");
 const { linkedPullRequest, doneNote, finish, DISPOSABLE } = require("../done");
+const { prLink } = require("../ship");
 const { Redmine } = require("../redmine");
 
 const ID = 82;
@@ -23,7 +24,7 @@ test("the linked PR is the last one the field names", () => {
 
 test("the note links the PR and its merge commit", () => {
   const pr = { url: PR_URL, number: 9, mergeCommit: { oid: "782fead542ba2591c5dd44838f691bed5bae6e62" } };
-  assert.equal(doneNote(pr), "Done: [demo#9](https://github.com/example/demo/pull/9) merged as [782fead](https://github.com/example/demo/commit/782fead542ba2591c5dd44838f691bed5bae6e62).");
+  assert.equal(doneNote(pr), "Done: verified in [demo#9](https://github.com/example/demo/pull/9), merged as [782fead](https://github.com/example/demo/commit/782fead542ba2591c5dd44838f691bed5bae6e62).");
 });
 
 // An origin and checkout; #82's branch in its worktree, pushed, and squash-merged into main as a
@@ -50,7 +51,7 @@ function sandbox(t, { merged = true } = {}) {
   git(dir, "add", "done.js");
   git(dir, "commit", "--quiet", "-m", "Done");
   git(dir, "push", "--quiet", "-u", "origin", BRANCH);
-  const pr = { state: "OPEN", url: PR_URL, number: 9, title: "Finish it (fixes #82)", headRefName: BRANCH, headRefOid: git(dir, "rev-parse", "HEAD"), baseRefName: "main", mergeCommit: null };
+  const pr = { state: "OPEN", url: PR_URL, number: 9, title: "Finish it (fixes #82)", body: "The body", headRefName: BRANCH, headRefOid: git(dir, "rev-parse", "HEAD"), baseRefName: "main", mergeCommit: null };
   // GitHub's squash merge, made in a clone of origin so the checkout's main is behind it.
   const merge = () => {
     git(root, "clone", "--quiet", "origin.git", "github");
@@ -634,10 +635,34 @@ test("the commit fetch posts the web service's key in the body, and names a refu
   await assert.rejects(new Redmine({ url, sysService: "test-sys" }).fetchCommits("gh-plan"), /refused the key in Keychain item "test-sys" \(403\); run setup.rb with SYS_API_KEY/);
 });
 
-test("replies or checklist ticks pr hasn't sent are refused before anything changes, not deleted with the worktree", async (t) => {
+test("an issue.md from before the PR held the Done ticks doesn't stop Done, and goes with the worktree", async (t) => {
   const s = sandbox(t);
   const round = path.join(s.dir, ".tmp", String(ID));
   fs.writeFileSync(path.join(round, "issue.md"), "- [x] Done\n");
+  fs.writeFileSync(path.join(round, "issue.md.unsent"), "- [x] Done\n");
+  const result = await done(s);
+  assertDone(s);
+  assert.deepEqual(s.updates, [{ id: ID, status_id: 5, notes: doneNote(s.pr) }]);
+  assert.deepEqual(result.notes, ["Brought main up to the merge.", `Removed the worktree ${s.dir}.`, `Deleted the branch ${BRANCH}.`, `#${ID} is Closed.`]);
+});
+
+test("a PR body pr hasn't sent is refused before anything changes, not deleted with the worktree", async (t) => {
+  const s = sandbox(t);
+  const body = path.join(s.dir, ".tmp", String(ID), "pr-body.md");
+  s.pr.body = "Fixes #82.\r\n\r\n## Done\r\n\r\n- [ ] It works.";
+  fs.writeFileSync(body, "Fixes #82.\n\n## Done\n\n- [x] It works.\n");
+  await assert.rejects(done(s), (e) => e.message === `${body} differs from ${prLink(s.pr)}'s body; send it with pr done ${ID} in that worktree, or delete it to keep the PR's, then Done again`);
+  assert.ok(fs.existsSync(body));
+  assert.notEqual(s.git(s.checkout, "rev-parse", "main"), s.pr.mergeCommit.oid);
+  // Once pr has sent it, the PR's body matches, whatever its line endings, and Done goes ahead.
+  s.pr.body = "Fixes #82.\r\n\r\n## Done\r\n\r\n- [x] It works.";
+  await done(s);
+  assertDone(s);
+});
+
+test("replies pr hasn't sent are refused before anything changes, not deleted with the worktree", async (t) => {
+  const s = sandbox(t);
+  const round = path.join(s.dir, ".tmp", String(ID));
   fs.mkdirSync(path.join(round, "replies"));
   fs.writeFileSync(path.join(round, "replies", "11.md"), "Fixed.\n");
   fs.writeFileSync(path.join(round, "replies", "notes.md"), "Misnamed: pr refuses it, so it's still unsent.\n");
@@ -647,18 +672,18 @@ test("replies or checklist ticks pr hasn't sent are refused before anything chan
   // Another issue's round in the same worktree counts too.
   const other = path.join(s.dir, ".tmp", "85");
   fs.mkdirSync(other);
-  fs.writeFileSync(path.join(other, "issue.md"), "- [x] Done\n");
-  await assert.rejects(done(s), (e) => e.message.includes("replies or checklist ticks pr hasn't sent") &&
+  fs.mkdirSync(path.join(other, "replies"));
+  fs.writeFileSync(path.join(other, "replies", "21.md"), "Fixed.\n");
+  await assert.rejects(done(s), (e) => e.message.includes("replies pr hasn't sent") &&
     e.message.includes("pr done <n> in that worktree") &&
-    e.message.endsWith(`\n.tmp/${ID}/issue.md\n.tmp/${ID}/replies/11.md\n.tmp/${ID}/replies/12.txt\n.tmp/${ID}/replies/notes.md\n.tmp/85/issue.md`));
-  assert.ok(fs.existsSync(path.join(round, "issue.md")));
+    e.message.endsWith(`\n.tmp/${ID}/replies/11.md\n.tmp/${ID}/replies/12.txt\n.tmp/${ID}/replies/notes.md\n.tmp/85/replies/21.md`));
+  assert.ok(fs.existsSync(path.join(round, "replies", "11.md")));
   assert.notEqual(s.git(s.checkout, "rev-parse", "main"), s.pr.mergeCommit.oid);
   // Once pr has sent them, it deletes them, and Done goes ahead.
-  fs.rmSync(path.join(round, "issue.md"));
   fs.rmSync(path.join(round, "replies", "11.md"));
   fs.rmSync(path.join(round, "replies", "notes.md"));
   fs.rmSync(path.join(round, "replies", "12.txt"));
-  fs.rmSync(path.join(other, "issue.md"));
+  fs.rmSync(path.join(other, "replies", "21.md"));
   await done(s);
   assertDone(s);
 });

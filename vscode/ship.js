@@ -5,10 +5,9 @@ const path = require("path");
 const { run, git } = require("./start");
 
 // A round's files for pr, in .tmp/<n>/: beside the commit message and PR body, the review replies
-// pr posts, one <comment id>.md each, and issue.md, the issue's description with the boxes pr
-// ticks. A reply's name is digits, as pr_threads.py reads it. package.json's Go and Ship match the
-// same names.
-const ROUND = String.raw`(?:commit\.txt|pr-body\.md|issue\.md|replies\/[0-9]+\.md)`;
+// pr posts, one <comment id>.md each. A reply's name is digits, as pr_threads.py reads it.
+// package.json's Go and Ship match the same names.
+const ROUND = String.raw`(?:commit\.txt|pr-body\.md|replies\/[0-9]+\.md)`;
 const REVIEW_FILE = new RegExp(String.raw`^(.+)\/\.tmp\/([1-9][0-9]*)\/${ROUND}$`);
 const ROUND_FILE = new RegExp(`^${ROUND}$`);
 
@@ -25,23 +24,21 @@ function isRoundFile(file, dir) {
 
 const isFile = (file) => Boolean(fs.statSync(file, { throwIfNoEntry: false })?.isFile());
 
-// What pr has yet to send from .tmp/<n>/ (dir): issue.md and the edits keepEdits saved beside it,
-// and every file in replies/ but dotfiles such as .DS_Store, since pr deletes each reply it sends
-// and refuses or skips a misnamed one. A folder in replies/ is never sent, so it's left alone.
-// Replies are in comment id order.
+// What pr has yet to send from .tmp/<n>/ (dir): every file in replies/ but dotfiles such as
+// .DS_Store, since pr deletes each reply it sends and refuses or skips a misnamed one, and the
+// edits keepEdits saved beside one. A folder in replies/ is never sent, so it's left alone. Replies
+// are in comment id order.
 function unsent(dir) {
-  const list = (d) => (fs.statSync(d, { throwIfNoEntry: false })?.isDirectory() ? fs.readdirSync(d) : []);
   const replies = path.join(dir, "replies");
-  const names = list(replies).filter((name) => !name.startsWith("."));
-  names.sort((a, b) => (parseInt(a, 10) || Infinity) - (parseInt(b, 10) || Infinity) || a.localeCompare(b));
-  const kept = list(dir).filter((name) => /^issue\.md\.unsent[0-9]*$/.test(name)).sort();
-  return [path.join(dir, "issue.md"), ...kept.map((name) => path.join(dir, name)), ...names.map((name) => path.join(replies, name))]
-    .filter(isFile);
+  const names = fs.statSync(replies, { throwIfNoEntry: false })?.isDirectory() ? fs.readdirSync(replies) : [];
+  const files = names.filter((name) => !name.startsWith("."));
+  files.sort((a, b) => (parseInt(a, 10) || Infinity) - (parseInt(b, 10) || Infinity) || a.localeCompare(b));
+  return files.map((name) => path.join(replies, name)).filter(isFile);
 }
 
 // Saves text, edits made to a round file after pr sent and deleted it, beside it as
 // <file>.unsent, or .unsent2 and on if that's taken; never over a file. Returns the path. unsent()
-// lists it, so Done keeps the worktree until it's dealt with.
+// lists a reply's, so Done keeps the worktree until it's dealt with.
 function keepEdits(file, text) {
   for (let n = 1; ; n++) {
     const kept = `${file}.unsent${n > 1 ? n : ""}`;
@@ -84,12 +81,30 @@ function shipTab(input, root, id) {
   return false;
 }
 
+// Stages every change, as pr's commit does, so the Changes view's staged list is what Ship commits.
+async function stage(root) {
+  await git(root, "add", "-A");
+}
+
+// The files changed since Go staged the tree: an edit or deletion the index lacks, or a new file
+// git doesn't ignore.
+async function unstaged(root) {
+  const names = async (...args) => (await git(root, ...args)).split("\0").filter(Boolean);
+  const files = [...await names("diff", "--name-only", "-z"), ...await names("ls-files", "--others", "--exclude-standard", "-z")];
+  return [...new Set(files)].sort();
+}
+
 // What pr will find in root for issue id: its branch, whether the tree has changes, and each reason
-// it can't run yet. .tmp/ is ignored, so the review files never count as changes.
-async function check(root, id) {
+// it can't run yet. .tmp/ is ignored, so the review files never count as changes. For Ship, staged
+// also refuses a file changed since Go staged the tree, which pr would commit unreviewed.
+async function check(root, id, { staged = false } = {}) {
   const branch = (await git(root, "branch", "--show-current")).trim();
   const dirty = (await git(root, "status", "--porcelain")).trim() !== "";
   const problems = [];
+  if (staged) {
+    const late = await unstaged(root);
+    if (late.length) problems.push(`${late.join(", ")} changed since Go; press Go to stage and review ${late.length > 1 ? "them" : "it"}`);
+  }
   if (!new RegExp(`^(?:[\\w-]+/)?${id}-`).test(branch)) problems.push(`the branch ${branch || "(none)"} isn't #${id}'s`);
   if (!fs.existsSync(path.join(root, ".tmp", String(id), "pr-body.md"))) problems.push(`.tmp/${id}/pr-body.md is missing`);
   if (dirty && !fs.existsSync(path.join(root, ".tmp", String(id), "commit.txt"))) {
@@ -98,7 +113,7 @@ async function check(root, id) {
   // pr_threads.py would refuse these only after pr has pushed, or post two replies to one thread.
   const dir = path.join(root, ".tmp", String(id));
   const threads = new Map();
-  for (const file of unsent(dir).filter((file) => file !== path.join(dir, "issue.md"))) {
+  for (const file of unsent(dir)) {
     const rel = path.relative(dir, file);
     if (!isRoundFile(file, dir)) {
       problems.push(`.tmp/${id}/${rel} isn't a reply pr can send; name it replies/<comment id>.md`);
@@ -157,6 +172,6 @@ async function shipped({ root, id, branch, redmine }) {
 }
 
 module.exports = {
-  reviewFile, isRoundFile, unsent, unsentIn, keepEdits, roundFiles, shipTab, check, pullRequest, prLink, linkPullRequest,
+  reviewFile, isRoundFile, unsent, unsentIn, keepEdits, roundFiles, shipTab, stage, check, pullRequest, prLink, linkPullRequest,
   shipped,
 };

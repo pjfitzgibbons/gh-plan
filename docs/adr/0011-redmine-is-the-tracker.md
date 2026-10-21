@@ -8,6 +8,7 @@
 - [4. Alternatives considered](#alternatives)
 - [5. Consequences](#consequences)
 - [6. Amendment: the flow](#flow)
+- [7. Amendment: the verification record](#record)
 
 <a id="status"></a>
 ## 1. Status
@@ -128,7 +129,20 @@ The buttons are in the extension's Next up panel, so the Redmine issue page need
 `vscode://` link. A New issue's row shows Start. An In Progress one shows Open, and Done as well
 once the issue links a PR. Go and Ship are in the title bar of the issue's review files in
 `.tmp/<n>/`. Ship runs `pr`, which commits, pushes, and opens or updates the PR. It then posts each
-review reply in `.tmp/<n>/replies/` to its thread, resolves the thread, and applies the box ticks
-in `.tmp/<n>/issue.md` to the issue's description. After the merge, Done removes the worktree and
-the branch, brings the base up, has Redmine fetch the commits, and closes the issue. Every write to
-GitHub or Redmine happens when Peter presses a button or runs `pr`.
+review reply in `.tmp/<n>/replies/` to its thread and resolves the thread. After the merge, Done
+removes the worktree and the branch, brings the base up, has Redmine fetch the commits, and closes
+the issue. Every write to GitHub or Redmine happens when Peter presses a button or runs `pr`.
+
+<a id="record"></a>
+## 7. Amendment: the verification record
+
+The PR holds the record of what an issue's work met, and Redmine holds the issue's spec and status.
+An issue's Lenses and Done list say what to check, and are never ticked. Each PR's body has a
+`## Done` section that copies the issue's Done lines, ticks the ones the PR meets, and says why any
+isn't met, next to the diff, tests and review that prove them. Done's closing note names that PR,
+as "Done: verified in gh-plan#117".
+
+A ticked description in Redmine was one more write to the issue, refused whenever the description
+had been edited since its copy was taken. The PR body is written beside the work it describes, and
+reviewed with it. An issue finished over several `(refs #<n>)` PRs has no merged view: each PR
+records its own part. Issues closed before this amendment keep their ticks.

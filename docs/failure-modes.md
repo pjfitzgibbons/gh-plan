@@ -63,11 +63,12 @@ Found by the last local review and left unfixed: each is unlikely in use, and it
 
 ## Ship
 
-Ship runs `pr`, then links the PR on the issue. A `pr` whose push adds commits to an open PR asks Copilot to review it again, so each round of review fixes is reviewed in turn; `gh pc` asks for a new PR. A failed request prints a warning in Ship's terminal and doesn't stop `pr`.
+Go stages every change, so the staged list it opens is what Ship commits. Ship refuses a file changed since then, runs `pr`, then links the PR on the issue. A `pr` whose push adds commits to an open PR asks Copilot to review it again, so each round of review fixes is reviewed in turn; `gh pc` asks for a new PR. A failed request prints a warning in Ship's terminal and doesn't stop `pr`.
 
 | Step | Fails | Twice | At once | Stale | Guards |
 |---|---|---|---|---|---|
-| Ask Copilot to review (`pr`) | The terminal says Copilot wasn't asked; `pr` carries on to the replies and ticks. The next `pr` asks only if it pushes commits, so ask under Reviewers | A `pr` that pushes nothing doesn't ask; `gh pr edit --help` (2.102.0) says `--add-reviewer` re-requests a reviewer | Only the `pr` whose push moves the branch asks | — | — |
+| Go stages the tree (`git add -A`) | Go says why, and opens nothing; Ship stays off | Stages nothing new | git locks the index | Ship refuses, by name, an edit, deletion or new file made after Go; Go again stages and shows it | `pr` stages again before it commits, so a change in the moment between Ship's check and `pr` still goes in |
+| Ask Copilot to review (`pr`) | The terminal says Copilot wasn't asked; `pr` carries on to the replies. The next `pr` asks only if it pushes commits, so ask under Reviewers | A `pr` that pushes nothing doesn't ask; `gh pr edit --help` (2.102.0) says `--add-reviewer` re-requests a reviewer | Only the `pr` whose push moves the branch asks | — | — |
 | Read the PR | Nothing linked; the message says Redmine wasn't told. Go and Ship again | — | — | — | Gives up after a minute |
 | Link the PR | The message says Redmine wasn't told. The next Ship links it | Already linked: nothing changes | — | — | — |
 

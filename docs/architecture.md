@@ -180,7 +180,8 @@ through the REST API, with the same Keychain keys.
                                                                             start date, note
                                  work · .tmp/<n>/commit.txt, pr-body.md
    (2) GO, then SHIP ──────────▶ pr <n>: commit, push, PR ───────────────▶ Pull requests
-                                 review rounds: replies/, issue.md ──────▶ Done ticks
+                                 PR body: the Done list, ticked
+                                 review rounds: replies/
    (3) squash merge, title ends (fixes #<n>)
    (4) DONE ───────────────────▶ worktree and branch removed, base up ───▶ commits fetched,
                                                                             Closed, note
@@ -188,6 +189,9 @@ through the REST API, with the same Keychain keys.
 
 The default branch carries the code, and every change reaches it through a pull request. An
 issue's status lives in Redmine, and only Start, Done and a fetched `fixes #<n>` commit change it.
+The issue keeps the spec, its Lenses and Done list; the PR's body records which of those its work
+met, beside the diff, tests and review that prove them
+([ADR 0011, *Amendment: the verification record*](adr/0011-redmine-is-the-tracker.md#record)).
 Every write to GitHub or Redmine happens when Peter presses a button or runs `pr`
 ([ADR 0011, *Amendment: the flow*](adr/0011-redmine-is-the-tracker.md#flow)).
 
@@ -209,20 +213,22 @@ the panel loaded. A lock file per issue keeps two windows from starting it at on
 <a id="ship"></a>
 ### 7.2 Go and Ship
 
-A round is written into `.tmp/<n>/`: `commit.txt` when the tree has changes, `pr-body.md`, a reply
-to each review thread in `replies/<comment id>.md`, and `issue.md`, the issue's description with
-Done boxes ticked. Once the PR body and something beside it are written, the extension opens them
-all for review.
+A round is written into `.tmp/<n>/`: `commit.txt` when the tree has changes, `pr-body.md`, whose
+`## Done` section copies the issue's Done list and ticks the lines the PR meets, and a reply to
+each review thread in `replies/<comment id>.md`. Once the PR body and something beside it are
+written, the extension opens them all for review.
 
 Go, in the title bar of any of them, saves them and refuses by name a missing PR body, a missing
-commit message while the tree has changes, or a branch that isn't the issue's. It then opens the
-working tree's changes. Only Ship runs anything: it saves and checks again, then runs `pr <n>` in a
-terminal in the worktree.
+commit message while the tree has changes, or a branch that isn't the issue's. It then stages every
+change, as `pr`'s commit will, and opens them, so the staged list is what Ship commits. Only Ship
+runs `pr`: it saves and checks again, refuses by name any file changed since Go staged the tree,
+then runs `pr <n>` in a terminal in the worktree.
 
 `pr` commits with `commit.txt`, pushes, and opens the PR or replaces its body. It then posts each
-reply to its thread and resolves the thread, and applies the box changes in `issue.md` to the
-issue's description. It refuses any other difference, so an edit made in Redmine since is kept.
-Each file is deleted once sent, so a second `pr` sends nothing twice. After the first `pr`, the
+reply to its thread and resolves the thread. Each reply is deleted once sent, so a second `pr`
+sends nothing twice. After the merge, `pr` sends only the replies and the PR body, so a Done line
+ticked after the merge reaches the PR. The issue's description is never written: an `issue.md` left from before the
+PR held the Done ticks is named as no longer sent, and left where it is. After the first `pr`, the
 issue's `Pull requests` field links the PR, with a journal note. A `pr` whose push adds commits
 to an open PR also asks Copilot to review it again, for the commits that answer a review; `gh pc` asks for a new PR.
 `gh pr edit --help` (2.102.0) says `--add-reviewer` adds or re-requests a reviewer.
@@ -236,7 +242,8 @@ that finishes issue `<n>` ends its title `(fixes #<n>)`, and one that does part 
 
 Done shows beside Open on an In Progress row that links a PR. Once the PR has merged, it removes
 the issue's worktree, brings the main checkout's base up to the merge, deletes the branch, has
-Redmine fetch the commits, and closes the issue with a note linking the PR and its merge commit.
+Redmine fetch the commits, and closes the issue with a note naming the PR that holds its Done
+record, `Done: verified in gh-plan#117`, and linking its merge commit.
 It checks everything before it changes anything, and Done again finishes what a stopped one left
 ([failure modes, *Done*](failure-modes.md)).
 
@@ -279,8 +286,7 @@ they share:
 | Redmine answers 204 but drops a status it won't allow | The status is unchanged, though the note is saved | The write reads the issue back, refuses, and names the likely rule ([failure modes](failure-modes.md#redmine-drops-a-status-it-wont-allow)) |
 | A `fixes #<n>` commit is merged | Redmine sees it only at its next fetch | Done has the web service fetch; without its key, the Repository tab does |
 | Two windows start or finish one issue | Both would change the same worktree | A lock file per issue refuses the second |
-| The issue's description is edited after `issue.md` is written | The ticks would overwrite the edit | `checklist.py` refuses any difference beyond box state, and keeps the file |
-| A round's files are still unsent at Done | Removing the worktree would delete them | Done refuses before it changes anything, and names them |
+| A review reply is still unsent at Done | Removing the worktree would delete it | Done refuses before it changes anything, and names it |
 | `#<n>` in a commit message | GitHub links it to the repo's own issue or PR `<n>` | None; Redmine's link is the one that counts 🔍 |
 
 <a id="views"></a>
@@ -307,7 +313,8 @@ The Lanes tab is at `/projects/<identifier>/lanes`, and has no Icebox column
    ([ADR 0011](adr/0011-redmine-is-the-tracker.md)).
 2. The default branch carries the code, and every change reaches it through a pull request. An
    issue's status lives in Redmine: the extension's Start and Done set it, and a `fixes #<n>`
-   commit closes the issue when Redmine fetches it (§7.4).
+   commit closes the issue when Redmine fetches it (§7.4). A Done tick is a verification record,
+   not status: it is recorded in the PR's body, and status in Redmine.
 3. Retired with the tool's `plan:` commits ([ADR 0011](adr/0011-redmine-is-the-tracker.md)), so the
    invariants after it keep their numbers.
 4. An issue's start date is written once: Start sets it only when the issue has none (§7.1).

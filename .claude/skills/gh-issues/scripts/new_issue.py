@@ -32,7 +32,7 @@ import sys
 from pathlib import Path
 
 import outline
-from checklist import Redmine, Refused
+from redmine import Redmine, Refused
 
 FIELDS = ["project", "tracker", "subject", "version", "status", "points", "lane", "ordinal",
           "parent", "blocked_by", "relates"]

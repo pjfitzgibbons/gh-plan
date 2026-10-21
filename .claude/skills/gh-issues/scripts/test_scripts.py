@@ -8,8 +8,8 @@ from pathlib import Path
 
 from outline import check, expected
 from pr_threads import emit as threads_emit, post as threads_post, read_replies, read_reply_dir, write_drafts
-import checklist
 import new_issue
+from redmine import Refused
 
 GLOBAL = "| L1 Security | q |\n| L2 Privacy and data | q |\n"
 REPO = "| L11 Invariants | q |\n- **Sections:** the global ones, then `### Notes`.\n"
@@ -132,7 +132,8 @@ class PrDone(unittest.TestCase):
         self.state = top / "state"
         self.state.write_text("MERGED\n")
         self.head = top / "head"
-        (bin / "gh").write_text(f'#!/bin/sh\ncase "$*" in\n  "repo view"*) echo main ;;\n'
+        self.calls = top / "calls"
+        (bin / "gh").write_text(f'#!/bin/sh\necho "$*" >> "{self.calls}"\ncase "$*" in\n  "repo view"*) echo main ;;\n'
                                 f'  *"--json state"*) cat "{self.state}" ;;\n'
                                 f'  *"--json headRefOid"*) cat "{self.head}" ;;\nesac\n')
         (bin / "gh").chmod(0o755)
@@ -144,7 +145,7 @@ class PrDone(unittest.TestCase):
         git(self.main, "commit", "-q", "--allow-empty", "-m", "start")
         self.tree = top / "tree"
         git(self.main, "worktree", "add", "-q", "-b", "fix/9-x", str(self.tree))
-        (self.main / ".git" / "info" / "exclude").write_text("HANDOFF.md\n")
+        (self.main / ".git" / "info" / "exclude").write_text("HANDOFF.md\n.tmp\n")
         (self.tree / "HANDOFF.md").write_text("notes")
         self.head.write_text(git(self.tree, "rev-parse", "HEAD").stdout.decode())
 
@@ -174,11 +175,64 @@ class PrDone(unittest.TestCase):
         subprocess.run(["git", "commit", "-q", "--allow-empty", "-m", "more"], cwd=self.tree, env=self.env, check=True)
         self.assertEqual(self.pr("done").returncode, 2)
 
+    def test_a_merged_pr_gets_the_body_so_a_late_done_tick_reaches_it(self):
+        body = self.tree / ".tmp" / "9" / "pr-body.md"
+        body.parent.mkdir(parents=True)
+        body.write_text("Fixes #9.\n\n## Done\n\n- [x] Checked after the merge.\n")
+        run = self.pr("done")
+        self.assertEqual(run.returncode, 0, run.stderr)
+        self.assertIn("pb 9", self.calls.read_text().splitlines())
+        self.assertTrue(body.exists())
+
+    def test_an_old_issue_md_is_named_as_no_longer_sent_and_left(self):
+        old = self.tree / ".tmp" / "9" / "issue.md"
+        old.parent.mkdir(parents=True)
+        old.write_text("- [x] Done\n")
+        run = self.pr("done")
+        self.assertEqual(run.returncode, 0, run.stderr)
+        self.assertIn(".tmp/9/issue.md is no longer sent", run.stderr)
+        self.assertEqual(old.read_text(), "- [x] Done\n")
+
     def test_pr_done_refuses_a_pr_that_has_not_merged(self):
         self.state.write_text("OPEN\n")
         run = self.pr("done")
         self.assertEqual(run.returncode, 2)
         self.assertIn("has not merged", run.stderr)
+
+
+class PrStaged(unittest.TestCase):
+    """pr.sh from Ship, which sets PR_STAGED: it commits what Go staged, and nothing changed since.
+    PrDone's fixture, with the PR open."""
+
+    repo, tearDown, pr = PrDone.setUp, PrDone.tearDown, PrDone.pr
+
+    def setUp(self):
+        self.repo()
+        self.state.write_text("OPEN\n")
+        self.env["PR_STAGED"] = "1"
+        message = self.tree / ".tmp" / "9" / "commit.txt"
+        message.parent.mkdir(parents=True)
+        message.write_text("Reviewed (fixes #9)\n")
+        (self.tree / "reviewed.txt").write_text("staged by Go")
+        subprocess.run(["git", "add", "-A"], cwd=self.tree, check=True)
+
+    def committed(self):
+        return subprocess.run(["git", "show", "--name-only", "--format=%s", "HEAD"], cwd=self.tree,
+                              capture_output=True, text=True).stdout.split()
+
+    def test_a_change_made_after_go_is_refused_and_nothing_is_committed(self):
+        (self.tree / "reviewed.txt").write_text("edited after Go")
+        (self.tree / "late.txt").write_text("new after Go")
+        run = self.pr()
+        self.assertEqual(run.returncode, 2)
+        self.assertIn("changed since Go staged the tree", run.stderr)
+        self.assertIn("late.txt\n", run.stderr)
+        self.assertIn("reviewed.txt\n", run.stderr)
+        self.assertEqual(self.committed(), ["start"])
+
+    def test_what_go_staged_is_committed(self):
+        self.pr()  # The push then fails: the fixture has no origin.
+        self.assertEqual(self.committed(), ["Reviewed", "(fixes", "#9)", "reviewed.txt"])
 
 
 class PostReplies(unittest.TestCase):
@@ -267,78 +321,6 @@ class PostReplies(unittest.TestCase):
         self.assertNotIn("line 24\n", text)
 
 
-class FakeRedmine:
-    def __init__(self, description, keep=False):
-        self.description_ = description
-        self.keep = keep
-        self.puts = []
-
-    def description(self, n):
-        return self.description_
-
-    def send(self, method, path, body=None):
-        self.puts.append((path, body))
-        if not self.keep:
-            self.description_ = body["issue"]["description"]
-
-
-class Checklist(unittest.TestCase):
-    """checklist.py: only checkbox state may change."""
-
-    ISSUE = "### Done\r\n- [ ] Its sub-issues are closed.\r\n- [x] L12: offline.\r\n* [ ] L7: the buttons."
-
-    def setUp(self):
-        self.tmp = tempfile.TemporaryDirectory()
-        self.file = Path(self.tmp.name) / "issue.md"
-
-    def tearDown(self):
-        self.tmp.cleanup()
-
-    def test_ticks_only_the_boxes_keeping_line_endings_and_notes_each(self):
-        self.file.write_text("### Done\n- [x] Its sub-issues are closed.\n- [x] L12: offline.\n* [ ] L7: the buttons.\n")
-        redmine = FakeRedmine(self.ISSUE)
-        self.assertEqual(checklist.run(79, self.file, redmine), "#79: 1 box changed")
-        path, body = redmine.puts[0]
-        self.assertEqual(path, "/issues/79.json")
-        self.assertEqual(body["issue"]["description"], self.ISSUE.replace("- [ ] Its", "- [x] Its"))
-        self.assertIn("* Ticked: Its sub-issues are closed.", body["issue"]["notes"])
-        self.assertFalse(self.file.exists())
-
-    def test_unticks_too(self):
-        self.file.write_text(self.ISSUE.replace("[x] L12", "[ ] L12"))
-        redmine = FakeRedmine(self.ISSUE)
-        checklist.run(79, self.file, redmine)
-        self.assertIn("* Unticked: L12: offline.", redmine.puts[0][1]["issue"]["notes"])
-
-    def test_no_box_to_change_writes_nothing_and_deletes_the_file(self):
-        self.file.write_text(self.ISSUE)
-        redmine = FakeRedmine(self.ISSUE)
-        self.assertEqual(checklist.run(79, self.file, redmine), "#79: no box to change")
-        self.assertEqual(redmine.puts, [])
-        self.assertFalse(self.file.exists())
-
-    def test_any_other_difference_is_refused_and_the_file_kept(self):
-        for wanted in [self.ISSUE.replace("closed.", "closed, all three."),
-                       self.ISSUE + "\n- [ ] A new line.",
-                       self.ISSUE.rsplit("\r\n", 1)[0]]:
-            self.file.write_text(wanted)
-            redmine = FakeRedmine(self.ISSUE)
-            with self.assertRaisesRegex(checklist.Refused, "differs by more than its box"):
-                checklist.run(79, self.file, redmine)
-            self.assertEqual(redmine.puts, [])
-            self.assertTrue(self.file.exists())
-
-    def test_a_description_redmine_kept_is_refused_and_the_file_kept(self):
-        self.file.write_text(self.ISSUE.replace("- [ ] Its", "- [x] Its"))
-        with self.assertRaisesRegex(checklist.Refused, "kept #79's old description"):
-            checklist.run(79, self.file, FakeRedmine(self.ISSUE, keep=True))
-        self.assertTrue(self.file.exists())
-
-
-if __name__ == "__main__":
-    unittest.main()
-
-
 class FakeTracker:
     """A Redmine answering new_issue.py's reads, keeping what it posts."""
 
@@ -381,7 +363,7 @@ class FakeTracker:
             return {"issues": listed, "total_count": len(listed)}
         n = int(path.split("/")[2].removesuffix(".json"))
         if n not in self.issues:
-            raise checklist.Refused(f"Redmine GET {path}: HTTP 404")
+            raise Refused(f"Redmine GET {path}: HTTP 404")
         i = self.issues[n]
         return {"issue": {"id": n, "subject": i["subject"], "project": {"id": i.get("project_id", 2)},
                           "tracker": {"id": i.get("tracker_id", 2)}, "status": {"id": i.get("status_id", 1)},
@@ -449,17 +431,21 @@ class NewIssue(unittest.TestCase):
             ("ordinal: 350", "estimate: 3", "isn't one of project"),
         ]:
             r = FakeTracker()
-            with self.subTest(new), self.assertRaisesRegex(checklist.Refused, says):
+            with self.subTest(new), self.assertRaisesRegex(Refused, says):
                 self.run_it(r, self.HEAD.replace(old, new))
             self.assertEqual(r.posts, [])
 
     def test_a_body_off_the_outline_refuses_before_any_write(self):
         r = FakeTracker()
         self.file.write_text(self.HEAD + "### Task\nDo it.\n")
-        with self.assertRaisesRegex(checklist.Refused, "missing section: ### Done"):
+        with self.assertRaisesRegex(Refused, "missing section: ### Done"):
             new_issue.run(self.file, r, False, self.lenses, self.extra)
         self.assertEqual(r.posts, [])
 
     def test_a_status_redmine_dropped_is_named(self):
-        with self.assertRaisesRegex(checklist.Refused, "#80 is created, but Redmine didn't keep: status_id"):
+        with self.assertRaisesRegex(Refused, "#80 is created, but Redmine didn't keep: status_id"):
             self.run_it(FakeTracker(drop_status=True))
+
+
+if __name__ == "__main__":
+    unittest.main()

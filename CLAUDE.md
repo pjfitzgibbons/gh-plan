@@ -39,9 +39,10 @@ settings: what this repo needs is here or in `.claude/`.
 - **Issues are Redmine's**, `#<n>` at http://127.0.0.1:3010, never GitHub Issues or files in the repo.
 - **Branches** are `<type>/<n>-<slug>`: `feat/`, `fix/` or `chore/`. Short-lived, off `main`,
   squash-merged. Nothing reaches `main` except by PR.
-- **Review replies and Done ticks are files** that `pr` sends: a reply to a review thread goes in
-  `.tmp/<n>/replies/<comment id>.md`, and the issue's description with boxes ticked in
-  `.tmp/<n>/issue.md` (the gh-issues skill).
+- **Review replies are files** that `pr` sends, one per review thread in
+  `.tmp/<n>/replies/<comment id>.md` (the gh-issues skill).
+- **Done ticks are the PR's.** The PR body's `## Done` section copies the issue's Done list and
+  ticks what the PR meets; the issue's description is never ticked.
 - **A PR title ends `(fixes #<n>)`** when the PR finishes Redmine issue `<n>`, and `(refs #<n>)`
   only when it does part of it. The title becomes the squash commit's subject, and Redmine closes
   the issue when it next fetches that commit.
@@ -54,8 +55,8 @@ settings: what this repo needs is here or in `.claude/`.
 ## Boundaries
 
 - **Peter presses the buttons.** Every commit, push, `gh` write and Redmine write happens on Start,
-  Ship or Done, or a `pr` he runs. Write `.tmp/<n>/commit.txt`, `pr-body.md`, `replies/` and
-  `issue.md` for him to review; reads, inspections, the test suite and cleaning up your own mess
+  Ship or Done, or a `pr` he runs. Write `.tmp/<n>/commit.txt`, `pr-body.md` and `replies/`
+  for him to review; reads, inspections, the test suite and cleaning up your own mess
   you run yourself.
 - **An agent commits only on its own issue branch,** and only when asked.
 - **Never commit secrets.** The tool authenticates by shelling out to `gh` (requirement `G3`); do

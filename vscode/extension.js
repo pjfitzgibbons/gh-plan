@@ -7,7 +7,7 @@ const fs = require("fs");
 const path = require("path");
 const { Redmine } = require("./redmine");
 const { ACTION, checkId, start, expandHome } = require("./start");
-const { reviewFile, roundFiles, shipTab, check, shipped, keepEdits } = require("./ship");
+const { reviewFile, roundFiles, shipTab, stage, check, shipped, keepEdits } = require("./ship");
 const { finish } = require("./done");
 
 // A new window can't be handed a task directly, so Start leaves one in the extension's global
@@ -280,11 +280,11 @@ async function takeHandoffFor(storage, folder) {
   fs.rmSync(file, { force: true });
 }
 
-// When an issue's PR body for pr is written, in .tmp/<n>/, with a commit message, review replies or
-// checklist ticks beside it, they open for review in the leftmost editor group, the PR body in
+// When an issue's PR body for pr is written, in .tmp/<n>/, with a commit message or review replies
+// beside it, they open for review in the leftmost editor group, the PR body in
 // front. Once all are open, a save moves nothing.
 function watchHandover(context) {
-  const watcher = vscode.workspace.createFileSystemWatcher("**/.tmp/*/{commit.txt,pr-body.md,issue.md,replies/*}");
+  const watcher = vscode.workspace.createFileSystemWatcher("**/.tmp/*/{commit.txt,pr-body.md,replies/*}");
   const timers = new Map();
   // The files land moments apart; wait for the writes to settle.
   const changed = (uri) => {
@@ -326,8 +326,8 @@ function watchHandoff(context, storage) {
   context.subscriptions.push(watcher);
 }
 
-// Go, from the title bar of any of an issue's round files: save them, check them, and open the
-// working tree's changes, whose title bar then holds Ship. With nothing to commit, Ship sits on the
+// Go, from the title bar of any of an issue's round files: save them, check them, stage the working
+// tree's changes, as pr's commit will, and open them, whose title bar then holds Ship. With nothing to commit, Ship sits on the
 // review files instead. Only Ship runs pr; once pr succeeds, the review files and diffs close and the
 // issue's Pull requests field links its PR.
 let armed = null;
@@ -338,24 +338,32 @@ function arm(review) {
 }
 
 // Saves the issue's review files, unsaved edits included, and checks what pr will find; null, with
-// the reason shown, when pr can't run.
-async function prepare(uri) {
+// the reason shown, when pr can't run. Ship's check also refuses a change Go didn't stage.
+async function prepare(uri, staged = false) {
   const review = reviewFile((uri || vscode.window.activeTextEditor?.document.uri)?.fsPath || "");
   if (!review) {
-    vscode.window.showErrorMessage("Plan: Go works from an issue's review files in .tmp/<n>/: commit.txt, pr-body.md, issue.md or a reply");
+    vscode.window.showErrorMessage("Plan: Go works from an issue's review files in .tmp/<n>/: commit.txt, pr-body.md or a reply");
     return null;
   }
   const { root, id } = review;
-  // Every file pr may send, replies and issue.md included, so it never sends what's on disk while
+  // Every file pr may send, replies included, so it never sends what's on disk while
   // an edit waits unsaved in its tab. A tab whose file pr already sent and deleted isn't saved, or
   // the next pr would send it again.
   const round = path.join(root, ".tmp", String(id)) + path.sep;
   for (const doc of vscode.workspace.textDocuments) {
     if (doc.isDirty && doc.uri.fsPath.startsWith(round) && fs.existsSync(doc.uri.fsPath)) await doc.save();
   }
+  // Go stages, and pr commits, what's on disk: an edit still unsaved in a tab would be left out.
+  const unsaved = vscode.workspace.textDocuments
+    .filter((doc) => doc.isDirty && doc.uri.scheme === "file" && doc.uri.fsPath.startsWith(`${root}${path.sep}`) && !doc.uri.fsPath.startsWith(round))
+    .map((doc) => path.relative(root, doc.uri.fsPath));
+  if (unsaved.length) {
+    vscode.window.showErrorMessage(`Plan: #${id} can't ship: ${unsaved.join(", ")} ${unsaved.length > 1 ? "have" : "has"} unsaved edits; save or revert, then Go. Nothing ran.`);
+    return null;
+  }
   let found;
   try {
-    found = await check(root, id);
+    found = await check(root, id, { staged });
   } catch (error) {
     vscode.window.showErrorMessage(`Plan: #${id} can't ship. ${error.message}`);
     return null;
@@ -372,8 +380,15 @@ async function go(uri) {
   await arm(ready && { root: ready.root, id: ready.id });
   if (!ready) return;
   if (ready.dirty) {
+    try {
+      await stage(ready.root);
+    } catch (error) {
+      await arm(null);
+      vscode.window.showErrorMessage(`Plan: #${ready.id}'s changes couldn't be staged: ${error.message}`);
+      return;
+    }
     await vscode.commands.executeCommand("git.viewChanges");
-    vscode.window.showInformationMessage(`Plan: #${ready.id}'s changes are open; the rocket runs pr ${ready.id}.`);
+    vscode.window.showInformationMessage(`Plan: #${ready.id}'s changes are staged and open; the rocket commits them with pr ${ready.id}.`);
   } else {
     vscode.window.showInformationMessage(`Plan: nothing to commit; the rocket pushes ${ready.branch} and updates its PR.`);
   }
@@ -385,7 +400,7 @@ async function ship(refresh) {
     return;
   }
   const { root, id } = armed;
-  const found = await prepare(vscode.Uri.file(`${root}/.tmp/${id}/pr-body.md`));
+  const found = await prepare(vscode.Uri.file(`${root}/.tmp/${id}/pr-body.md`), true);
   await arm(null);
   if (!found) return;
 
@@ -397,7 +412,7 @@ async function ship(refresh) {
     return;
   }
   const stay = new Set();
-  // A reply or issue.md edited while pr ran, which pr has since sent and deleted, holds edits pr
+  // A reply edited while pr ran, which pr has since sent and deleted, holds edits pr
   // never saw. They're kept beside it as <file>.unsent, then the tab is reverted: closing it would
   // offer Save, and a save writes it back for the next Ship to send again.
   for (const doc of vscode.workspace.textDocuments) {
@@ -431,7 +446,8 @@ function runPr(root, id) {
   const folder = vscode.workspace.getWorkspaceFolder(vscode.Uri.file(root)) || vscode.TaskScope.Workspace;
   const task = new vscode.Task(
     { type: "plan", issue: id }, folder, `pr ${id}`, "plan",
-    new vscode.ProcessExecution(pr, [String(id)], { cwd: root })
+    // PR_STAGED: pr commits what Go staged, and refuses a change made since.
+    new vscode.ProcessExecution(pr, [String(id)], { cwd: root, env: { PR_STAGED: "1" } })
   );
   task.presentationOptions = { reveal: vscode.TaskRevealKind.Always, panel: vscode.TaskPanelKind.Dedicated, clear: true };
   return new Promise((resolve, reject) => {
