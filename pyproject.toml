@@ -1,19 +1,13 @@
 [project]
 name = "gh-plan"
 version = "0.0.0"
-description = "A planning layer over GitHub Issues: estimates, lanes, dependencies and baselines."
+description = "The Python around GH Plan: Redmine's backup, the attribution hook and the gh-issues scripts."
 requires-python = ">=3.14"
-dependencies = [
-    "pydantic>=2.14.1",
-    "ruamel-yaml>=0.19.1",
-]
+dependencies = []
 
-[build-system]
-requires = ["uv_build>=0.11.7,<0.14"]
-build-backend = "uv_build"
-
-[tool.uv.build-backend]
-module-name = "ghplan"
+[tool.uv]
+# Nothing to build or install: the project only holds the test environment.
+package = false
 
 [tool.pytest.ini_options]
 # The hook's and the gh-issues scripts' suites are plain unittest; pytest collects them so one
@@ -24,7 +18,8 @@ addopts = ["-ra", "--strict-markers", "--strict-config", "--cov", "--cov-report=
 xfail_strict = true
 
 [tool.coverage.run]
-source = ["ghplan"]
+source = ["redmine", ".claude/hooks"]
+omit = ["*/test_*.py"]
 branch = true
 
 [tool.coverage.report]
@@ -39,5 +34,4 @@ dev = [
     "pytest-cov>=7.1.0",
     "pytest-github-actions-annotate-failures>=0.4.2",
     "pytest-md-report>=0.8.0",
-    "pyyaml>=6.0.3",
 ]

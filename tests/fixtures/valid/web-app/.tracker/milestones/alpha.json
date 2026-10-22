@@ -1,6 +1,0 @@
-{
-  "id": "alpha",
-  "title": "Alpha",
-  "exit_criterion": "Checkout works end to end",
-  "order": 100
-}

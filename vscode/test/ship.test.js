@@ -6,17 +6,18 @@ const fs = require("fs");
 const os = require("os");
 const path = require("path");
 const { execFileSync } = require("child_process");
-const { reviewFile, roundFiles, shipTab, check, prLink, linkPullRequest, shipped, unsent, keepEdits } = require("../ship");
+const { reviewFile, roundFiles, shipTab, stage, check, prLink, linkPullRequest, shipped, unsent, keepEdits } = require("../ship");
 
 test("a review file names its issue and checkout; any other file names none", () => {
   assert.deepEqual(reviewFile("/work/gh-plan.worktrees/81/.tmp/81/commit.txt"), { root: "/work/gh-plan.worktrees/81", id: 81 });
   assert.deepEqual(reviewFile("/work/repo/.tmp/7/pr-body.md"), { root: "/work/repo", id: 7 });
-  assert.deepEqual(reviewFile("/work/repo/.tmp/7/issue.md"), { root: "/work/repo", id: 7 });
   assert.deepEqual(reviewFile("/work/repo/.tmp/7/replies/4309488236.md"), { root: "/work/repo", id: 7 });
   // pr_threads.py reads 011.md as comment 11, so Go does too.
   assert.deepEqual(reviewFile("/work/repo/.tmp/7/replies/011.md"), { root: "/work/repo", id: 7 });
   for (const file of [
     "/work/repo/.tmp/81/notes.md",
+    // The Done ticks are the PR body's now; an issue.md left from before is never sent.
+    "/work/repo/.tmp/81/issue.md",
     "/work/repo/.tmp/pr-81-body.md",
     "/work/repo/.tmp/0/commit.txt",
     "/work/repo/.tmp/81x/commit.txt",
@@ -36,7 +37,6 @@ test("Go's tabs are the issue's review files, diffs in its checkout and its Chan
   for (const input of [
     { uri: uri(`${root}/.tmp/81/commit.txt`) },
     { uri: uri(`${root}/.tmp/81/pr-body.md`) },
-    { uri: uri(`${root}/.tmp/81/issue.md`) },
     { uri: uri(`${root}/.tmp/81/replies/4309488236.md`) },
     diff(`${root}/vscode/ship.js`),
     { textDiffs: [diff(`${root}/vscode/ship.js`), diff(`${root}/README.md`)] },
@@ -48,6 +48,7 @@ test("Go's tabs are the issue's review files, diffs in its checkout and its Chan
     undefined,
     {},
     { uri: uri(`${root}/vscode/ship.js`) },
+    { uri: uri(`${root}/.tmp/81/issue.md`) },
     { uri: uri(`${root}/.tmp/7/pr-body.md`) },
     { uri: uri(`${root}/.tmp/81/replies/notes.md`) },
     { uri: uri(`${root}/.tmp/81/notes.md`) },
@@ -117,6 +118,38 @@ test("a reply pr would refuse, skip or post twice is refused before Ship", async
     ".tmp/81/replies/13.md is empty",
     ".tmp/81/replies/notes.md isn't a reply pr can send; name it replies/<comment id>.md",
   ]);
+});
+
+test("Go stages every change, and Ship refuses a file changed after it", async (t) => {
+  const s = sandbox(t);
+  s.write(".tmp/81/pr-body.md");
+  s.write(".tmp/81/commit.txt");
+  s.write("ship.js");
+  s.write(".gitignore", ".tmp\nlocal.log\n");
+  s.write("local.log");
+  // Before Go, Ship would commit all of it unreviewed.
+  assert.deepEqual((await check(s.root, 81, { staged: true })).problems, [
+    ".gitignore, ship.js changed since Go; press Go to stage and review them",
+  ]);
+  await stage(s.root);
+  // pr commits the index Go staged, so the Changes view's staged list is the commit; ignored files stay out.
+  const index = execFileSync("git", ["diff", "--cached", "--name-status"], { cwd: s.root, encoding: "utf8" });
+  assert.equal(index, "M\t.gitignore\nA\tship.js\n");
+  assert.deepEqual(await check(s.root, 81, { staged: true }), { branch: "feat/81-ship-it", dirty: true, problems: [] });
+  s.write("ship.js", "changed after Go\n");
+  fs.rmSync(path.join(s.root, ".gitignore"));
+  s.write("README.md");
+  // An edit, a deletion and a new file, each by name; .tmp/ shows up only because .gitignore went.
+  assert.deepEqual((await check(s.root, 81, { staged: true })).problems, [
+    ".gitignore, .tmp/81/commit.txt, .tmp/81/pr-body.md, README.md, local.log, ship.js changed since Go; press Go to stage and review them",
+  ]);
+  s.write(".gitignore", ".tmp\nlocal.log\n");
+  fs.rmSync(path.join(s.root, "README.md"));
+  assert.deepEqual((await check(s.root, 81, { staged: true })).problems, [
+    "ship.js changed since Go; press Go to stage and review it",
+  ]);
+  // Go's own check doesn't ask, since Go stages what it finds.
+  assert.deepEqual((await check(s.root, 81)).problems, []);
 });
 
 test("another issue's branch is refused", async (t) => {
@@ -238,7 +271,8 @@ test("a round's files open once the PR body has something beside it, replies by 
   assert.deepEqual(names(), ["replies/99.md", "replies/100.md", "pr-body.md"]);
   write("commit.txt");
   write("issue.md");
-  assert.deepEqual(names(), ["commit.txt", "issue.md", "replies/99.md", "replies/100.md", "pr-body.md"]);
+  write("issue.md.unsent");
+  assert.deepEqual(names(), ["commit.txt", "replies/99.md", "replies/100.md", "pr-body.md"]);
   fs.rmSync(path.join(dir, "pr-body.md"));
   assert.deepEqual(names(), []);
 });
@@ -251,10 +285,10 @@ test("edits pr never saw are kept beside the file, never over one, and count as 
   assert.equal(keepEdits(reply, "later\n"), `${reply}.unsent`);
   assert.equal(keepEdits(reply, "later still\n"), `${reply}.unsent2`);
   assert.equal(fs.readFileSync(`${reply}.unsent`, "utf8"), "later\n");
-  const issue = path.join(dir, "issue.md");
-  assert.equal(keepEdits(issue, "- [x] ticked\n"), `${issue}.unsent`);
+  // An issue.md and its kept edits, from before the PR held the Done ticks, are never sent.
+  fs.writeFileSync(path.join(dir, "issue.md"), "- [x] ticked\n");
+  fs.writeFileSync(path.join(dir, "issue.md.unsent"), "- [x] ticked\n");
   assert.deepEqual(unsent(dir).map((file) => path.relative(dir, file)), [
-    "issue.md.unsent",
     "replies/11.md.unsent",
     "replies/11.md.unsent2",
   ]);

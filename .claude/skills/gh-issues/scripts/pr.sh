@@ -3,7 +3,8 @@
 # safe to repeat. Each step runs only when it has something to do:
 #
 #   commit  when the tree has changes: stages everything (.tmp/ is ignored) and commits with the
-#           message in .tmp/N/commit.txt, then deletes that file, so the next change needs a new one
+#           message in .tmp/N/commit.txt, then deletes that file, so the next change needs a new one.
+#           Under Ship (PR_STAGED=1) it commits what Go staged, and refuses a change made since
 #   push    git push -u origin HEAD; a no-op when the remote has the branch's commits
 #   PR      gh pc when the branch has no PR, else gh pb, which replaces the body with
 #           .tmp/N/pr-body.md, then opens the PR in the GitHub Pull Requests extension
@@ -11,11 +12,13 @@
 #           review fixes is reviewed in turn (gh pc asks for a new PR)
 #   replies when .tmp/N/replies/ holds <comment id>.md files: posts each to its review thread,
 #           resolves the thread and deletes the file (pr_threads.py --post)
-#   ticks   when .tmp/N/issue.md exists: applies its checkbox changes to issue N's description in
-#           Redmine, refusing any other difference, then deletes it (checklist.py)
 #
-# Once the PR has merged, pr sends only the replies and ticks, refusing a branch with work the PR
-# lacks, then says to press Done in Next up,
+# The issue's Done list is ticked in the PR body's ## Done section, never in Redmine: a
+# .tmp/N/issue.md left from before is named as no longer sent, and left where it is.
+#
+# Once the PR has merged, pr sends only the replies and the PR body, so a Done line ticked after
+# the merge reaches the PR, refusing a branch with work the PR lacks, then says to press Done in
+# Next up,
 # which cleans up: it checks what removing the worktree and pulling would delete or overwrite,
 # which pr can't see. pr done does the same, and refuses a PR that has not merged.
 #
@@ -23,19 +26,18 @@
 # It refuses the default branch and a branch whose PR closed unmerged.
 set -eu
 
-# The review replies and checklist ticks of .tmp/N/, after the push, so the replies describe code
-# the PR has. Each script checks everything before its first write and deletes each file once it
-# is sent, so a stopped pr resumes where it stopped. They need Python 3.10; /usr/bin/python3 is 3.9.
+# The review replies of .tmp/N/, after the push, so they describe code the PR has. The script
+# checks every reply before its first post and deletes each once it is sent, so a stopped pr resumes
+# where it stopped. It needs Python 3.10; /usr/bin/python3 is 3.9.
 scripts=$(dirname "$(realpath "$0")")
 send_round() {
-  [ -d ".tmp/$n/replies" ] || [ -f ".tmp/$n/issue.md" ] || return 0
+  [ ! -f ".tmp/$n/issue.md" ] ||
+    echo "pr: .tmp/$n/issue.md is no longer sent; tick the issue's Done list in the PR body's ## Done section, and delete the file" >&2
+  [ -d ".tmp/$n/replies" ] || return 0
   python3 -c 'import sys; sys.exit(sys.version_info < (3, 10))' ||
-    { echo "pr: .tmp/$n/ has replies or ticks to send, and python3 is older than 3.10" >&2; exit 2; }
-  if [ -d ".tmp/$n/replies" ]; then
-    number=$(gh pr view "$branch" --json number --jq .number)
-    python3 "$scripts/pr_threads.py" "$number" --post ".tmp/$n/replies"
-  fi
-  [ ! -f ".tmp/$n/issue.md" ] || python3 "$scripts/checklist.py" "$n" ".tmp/$n/issue.md"
+    { echo "pr: .tmp/$n/ has replies to send, and python3 is older than 3.10" >&2; exit 2; }
+  number=$(gh pr view "$branch" --json number --jq .number)
+  python3 "$scripts/pr_threads.py" "$number" --post ".tmp/$n/replies"
 }
 
 finish=0
@@ -64,6 +66,10 @@ case $state in
       exit 2
     fi
     send_round
+    if [ -f ".tmp/$n/pr-body.md" ]; then
+      echo "pr: updating the PR body"
+      gh pb "$n"
+    fi
     echo "pr: the PR for $branch has merged; press Done on #$n in Next up to clean up"
     exit 0 ;;
 esac
@@ -71,7 +77,13 @@ esac
 if [ -n "$(git status --porcelain)" ]; then
   message=".tmp/$n/commit.txt"
   [ -f "$message" ] || { echo "pr: the tree has changes and $message is missing" >&2; git status --short >&2; exit 2; }
-  git add -A
+  if [ -n "${PR_STAGED:-}" ]; then
+    # From Ship: commit what Go staged and showed, never a change made since.
+    late=$(git diff --name-only; git ls-files --others --exclude-standard)
+    [ -z "$late" ] || { echo "pr: changed since Go staged the tree, so not reviewed; press Go again:" >&2; echo "$late" >&2; exit 2; }
+  else
+    git add -A
+  fi
   git commit -q -F "$message"
   rm "$message"
   git log --oneline --stat -1
