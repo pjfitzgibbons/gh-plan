@@ -9,24 +9,13 @@ const { Redmine } = require("./redmine");
 const { ACTION, checkId, start, expandHome } = require("./start");
 const { reviewFile, roundFiles, shipTab, stage, check, shipped, keepEdits } = require("./ship");
 const { finish } = require("./done");
-
-// A new window can't be handed a task directly, so Start leaves one in the extension's global
-// storage, which every window shares; the worktree's window picks it up when it opens, or at once if
-// it was open already, and starts Claude.
-// One file per worktree, so a second Start before the first window opens doesn't replace the first's.
-// A handoff is kept until Claude starts, so a reload can retry it; after a day, opening that
-// worktree no longer starts Claude unasked.
-const HANDOFF_FRESH_MS = 24 * 60 * 60 * 1000;
+const { handoffFile, issueUrl, writeHandoff, takeHandoffFor } = require("./handoff");
 
 // How soon after a refresh starts a window's focus may refresh Next up again, and how long one still
 // waiting holds focus refreshes off: past that, a refresh stuck on the Keychain or a slow Redmine's
 // four reads no longer stops them.
 const FOCUS_GAP = 5000;
 const FOCUS_HOLD = 3 * 60 * 1000;
-
-function handoffFile(storage, dir) {
-  return path.join(storage, `handoff-${crypto.createHash("sha256").update(dir).digest("hex").slice(0, 16)}.json`);
-}
 
 function redmine() {
   const config = vscode.workspace.getConfiguration("plan");
@@ -150,13 +139,8 @@ class NextUp {
       // one that finished what a stopped Start began, or by an Open after Claude failed to start;
       // otherwise reopening started work changes nothing. Setup isn't finished until the handoff is
       // written, so a failed write is retried by the next Start.
-      const handOff = (result) => {
-        const file = handoffFile(this.storage, result.dir);
-        fs.mkdirSync(this.storage, { recursive: true });
-        // Written aside and renamed in, so a watching window never reads it half written.
-        fs.writeFileSync(`${file}.tmp`, JSON.stringify({ dir: result.dir, prompt: `Work on Redmine #${id}`, at: Date.now() }));
-        fs.renameSync(`${file}.tmp`, file);
-      };
+      const handOff = (result) =>
+        writeHandoff(this.storage, { dir: result.dir, prompt: `Work on Redmine #${id}`, url: issueUrl(config.get("redmineUrl"), id) });
       const result = await vscode.window.withProgress(
         { location: vscode.ProgressLocation.Notification, title: `Starting #${id}` },
         () => start({ redmine: redmine(), checkouts: config.get("checkouts"), id, confirm: confirmBlockers, handOff })
@@ -243,41 +227,17 @@ async function confirmBlockers(blockers) {
   return choice === "Start anyway";
 }
 
-// In the worktree's window: start Claude beside, once, if the handoff is fresh and for this folder.
-// A handoff Claude didn't take stays, so the issue's Open button can try again.
+// In the worktree's window: take its handoff (handoff.js), one take at a time.
 let taking = false;
 async function takeHandoff(storage) {
   const folder = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
   if (!folder || taking) return;
   taking = true;
   try {
-    await takeHandoffFor(storage, folder);
+    await takeHandoffFor(vscode, storage, folder);
   } finally {
     taking = false;
   }
-}
-
-async function takeHandoffFor(storage, folder) {
-  const file = handoffFile(storage, folder);
-  let handoff;
-  try {
-    handoff = JSON.parse(fs.readFileSync(file, "utf8"));
-  } catch {
-    return;
-  }
-  if (folder !== handoff.dir) return;
-  if (Date.now() - handoff.at > HANDOFF_FRESH_MS) {
-    fs.rmSync(file, { force: true });
-    return;
-  }
-  try {
-    // Undocumented: Claude Code's own command, (prompt, args, location), read from its source (2.1.301).
-    await vscode.commands.executeCommand("claude-vscode.terminal.open", handoff.prompt, [], "beside");
-  } catch (error) {
-    vscode.window.showErrorMessage(`Plan: couldn't start Claude Code: ${error.message}. To retry, reload this window, or press Open on the issue in Next up.`);
-    return;
-  }
-  fs.rmSync(file, { force: true });
 }
 
 // When an issue's PR body for pr is written, in .tmp/<n>/, with a commit message or review replies

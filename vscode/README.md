@@ -10,7 +10,10 @@ Source Control's does on a Git refresh.
 - **Start** shows when the pointer is over a New issue's row. It warns when an open issue blocks this
   one, then makes the branch `<type>/<n>-<slug>` and its worktree in `<repo>.worktrees/<n>` beside the
   checkout, off the latest `origin/develop` (or `origin/main`), sets the issue In Progress with a
-  journal note, and opens the worktree in a new window with Claude Code beside it. The issue's branch,
+  journal note, and opens the worktree in a new window, with the issue's Redmine page in an Integrated
+  Browser tab in the leftmost editor group and Claude Code beside it on the right. If the page fails to
+  open, an error names its URL and Claude starts anyway. An Open after Claude failed to start opens both
+  again. The issue's branch,
   if it already has one here or on `origin`, is reused on its own base. On an In Progress row the same
   button is **Open**, which reopens the worktree, making it the same way if this machine has none, and
   changes nothing in one already set up. Start refuses an issue whose status has moved on from New or
@@ -80,4 +83,5 @@ code --install-extension /tmp/gh-plan.vsix
 
 Then run **Developer: Reload Window**. Start's Claude step calls Claude Code's undocumented
 `claude-vscode.terminal.open` command, read from its source (2.1.301), so a Claude Code update may
-break it.
+break it. The page lands in the leftmost group under `workbench.browser.newTabPlacement`'s default,
+`activeGroup`; `sideGroup` or `window` puts it in a group of its own.
