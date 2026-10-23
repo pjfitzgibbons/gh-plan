@@ -201,7 +201,8 @@ Start shows on a New issue's row in Next up. It warns when an open issue blocks 
 makes the branch `<type>/<n>-<slug>` and its worktree off the latest `origin/develop`, or
 `origin/main`, and sets the issue In Progress with a journal note. It writes the start date only
 when the issue has none, so an issue's actual start is its first ([`C5`](requirements.md)). It
-opens the worktree in a new window with Claude Code beside it.
+opens the worktree in a new window, with the issue's Redmine page in the leftmost editor group and
+Claude Code beside it.
 
 If the issue's branch already exists here or on `origin`, Start reuses it on its own base. On an
 In Progress row the button is Open, which reopens the worktree, making it the same way if this
