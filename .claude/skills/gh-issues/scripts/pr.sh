@@ -22,7 +22,7 @@
 # which cleans up: it checks what removing the worktree and pulling would delete or overwrite,
 # which pr can't see. pr done does the same, and refuses a PR that has not merged.
 #
-# N defaults to the issue number (or old item ID) in the branch name, as for gh pc (ghbody.sh).
+# N defaults to the issue number in the branch name, as for gh pc (ghbody.sh).
 # It refuses the default branch and a branch whose PR closed unmerged.
 set -eu
 
@@ -48,8 +48,8 @@ cd "$root"
 branch=$(git branch --show-current)
 echo "pr: checking $branch"
 base=$(gh repo view --json defaultBranchRef --jq .defaultBranchRef.name)
-[ "$branch" != "$base" ] || { echo "pr: on $base; switch to the item's branch" >&2; exit 2; }
-n=${1:-$(printf '%s' "$branch" | sed -nE 's,^[^/]+/([0-9]+|[a-z][a-z0-9]*-[a-z]+)-.*,\1,p')}
+[ "$branch" != "$base" ] || { echo "pr: on $base; switch to the issue's branch" >&2; exit 2; }
+n=${1:-$(printf '%s' "$branch" | sed -nE 's,^[^/]+/([0-9]+)-.*,\1,p')}
 [ -n "$n" ] || { echo "pr: no issue number in branch $branch; give it: pr N" >&2; exit 2; }
 
 state=$(gh pr view "$branch" --json state --jq .state 2>/dev/null || true)

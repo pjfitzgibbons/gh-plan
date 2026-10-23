@@ -465,3 +465,22 @@ test("a command whose subprocess holds its output open is still refused at its t
 test("a command that fails within its timeout is refused with its own error", async () => {
   await assert.rejects(run("sh", ["-c", "echo nope >&2; exit 1"], undefined, 5000), { message: "sh -c echo nope >&2; exit 1: nope" });
 });
+
+// A Redmine client for a port nothing listens on, with its key already read.
+async function unreachable() {
+  const server = require("net").createServer();
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const url = `http://127.0.0.1:${server.address().port}`;
+  await new Promise((resolve) => server.close(resolve));
+  const redmine = new Redmine({ url, service: "test" });
+  redmine.keyRead = Promise.resolve("key");
+  return { url, redmine };
+}
+
+test("a Start with Redmine down says so, naming the URL, and makes no branch or worktree", async (t) => {
+  const s = sandbox(t);
+  const { url, redmine } = await unreachable();
+  await assert.rejects(start({ ...s, redmine, id: 80, confirm: () => true }), { message: `Redmine can't be reached at ${url}: ECONNREFUSED` });
+  assert.equal(s.git(s.checkout, "branch", "--list", "feat/80-*"), "");
+  assert.equal(s.git(s.checkout, "worktree", "list", "--porcelain").trim().split("\n\n").length, 1);
+});

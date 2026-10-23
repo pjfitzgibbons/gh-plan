@@ -10,9 +10,9 @@ dependencies = []
 package = false
 
 [tool.pytest.ini_options]
-# The hook's and the gh-issues scripts' suites are plain unittest; pytest collects them so one
+# The hook's and the skill scripts' suites are plain unittest; pytest collects them so one
 # command runs everything.
-testpaths = ["tests", ".claude/hooks", ".claude/skills/gh-issues/scripts"]
+testpaths = ["tests", ".claude/hooks", ".claude/skills/gh-issues/scripts", ".claude/skills/plan-report/scripts"]
 # -ra: end-of-run summary naming every skip, xfail and failure, so nothing passes silently.
 addopts = ["-ra", "--strict-markers", "--strict-config", "--cov", "--cov-report=term"]
 xfail_strict = true

@@ -15,8 +15,6 @@ build/
 htmlcov/
 .pytest_cache/
 .ruff_cache/
-.tracker/.cache/
-.tracker/out/
 .claude/settings.local.json
 CLAUDE.local.md
 .claude/logs/

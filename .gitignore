@@ -9,10 +9,6 @@ node_modules/
 .coverage
 htmlcov/
 
-# Derived tracker state — never committed. The index is rebuildable from item files.
-.tracker/.cache/
-.tracker/out/
-
 # Per-person Claude Code state. Shared config IS committed.
 .claude/settings.local.json
 CLAUDE.local.md
