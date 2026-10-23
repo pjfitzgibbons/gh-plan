@@ -128,6 +128,26 @@ test("Done before the merge changes nothing and says the PR is still open", asyn
   assertDone(s);
 });
 
+// A Redmine client for a port nothing listens on, with its key already read.
+async function unreachable() {
+  const server = require("net").createServer();
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const url = `http://127.0.0.1:${server.address().port}`;
+  await new Promise((resolve) => server.close(resolve));
+  const redmine = new Redmine({ url, service: "test" });
+  redmine.keyRead = Promise.resolve("key");
+  return { url, redmine };
+}
+
+test("a Done with Redmine down says so, naming the URL, and keeps the worktree and branch", async (t) => {
+  const s = sandbox(t);
+  const { url, redmine } = await unreachable();
+  await assert.rejects(finish({ redmine, checkouts: s.checkouts, id: ID, view: s.view }), { message: `Redmine can't be reached at ${url}: ECONNREFUSED` });
+  assert.ok(fs.existsSync(s.dir));
+  assert.deepEqual(branches(s), [BRANCH, "main"]);
+  assert.notEqual(s.git(s.checkout, "rev-parse", "main"), s.pr.mergeCommit.oid);
+});
+
 test("a worktree with work the PR lacks is kept, and Done names it", async (t) => {
   const s = sandbox(t);
   fs.writeFileSync(path.join(s.dir, "more.js"), "// more\n");

@@ -5,17 +5,16 @@
 #               then requests Copilot's review
 #   gh pb [N]   pr edit (this branch's PR) --body-file .tmp/N/pr-body.md
 #
-# N is a Redmine issue number, or an old file-native item ID. It defaults to the one in the branch
-# name: fix/88-go-requests -> 88, feat/pl-ganot-store-py -> pl-ganot.
+# N is a Redmine issue number. It defaults to the one in the branch name: fix/88-go-requests -> 88.
 # GHBODY_DRY=1 prints the gh command instead of running it.
 set -eu
 
 kind=${1:?usage: ghbody.sh pr-create|pr-edit [N]}
 root=$(git rev-parse --show-toplevel)
-n=${2:-$(git branch --show-current | sed -nE 's,^[^/]+/([0-9]+|[a-z][a-z0-9]*-[a-z]+)-.*,\1,p')}
-[ -n "$n" ] || { echo "ghbody: no issue number or item ID given and none in the branch name" >&2; exit 2; }
-printf '%s' "$n" | grep -qE '^([0-9]+|[a-z][a-z0-9]*-[a-z]+)$' ||
-  { echo "ghbody: '$n' is not an item ID or issue number; the body is .tmp/N/pr-body.md" >&2; exit 2; }
+n=${2:-$(git branch --show-current | sed -nE 's,^[^/]+/([0-9]+)-.*,\1,p')}
+[ -n "$n" ] || { echo "ghbody: no issue number given and none in the branch name" >&2; exit 2; }
+printf '%s' "$n" | grep -qE '^[0-9]+$' ||
+  { echo "ghbody: '$n' is not an issue number; the body is .tmp/N/pr-body.md" >&2; exit 2; }
 
 case $kind in
   pr-create | pr-edit) file="$root/.tmp/$n/pr-body.md" ;;
