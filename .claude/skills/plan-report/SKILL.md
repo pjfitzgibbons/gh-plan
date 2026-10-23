@@ -51,16 +51,16 @@ Hours per point comes from `--hours-per-point`, or else the design default of 8.
 | Call-out | Usual cause | Fix |
 |---|---|---|
 | no issue tag | Work on `main`, or before the issue's branch existed | `timew tag @ID owner/repo#N`; the script guesses the next issue worked |
-| still running, tagged a closed issue | Branch still checked out after merge | `timew stop`, then switch to `main` |
-| tagged #N but starts after #N closed | Same: post-merge time on the old branch | retag to the issue actually worked, or `timew untag @ID owner/repo#N` |
+| still running, tagged an issue GitHub closed | Branch still checked out after merge, or a Redmine issue sharing GitHub's number | none until the scripts read Redmine; never `timew stop` on it |
+| tagged #N but starts after GitHub #N closed | Same | none until the scripts read Redmine |
 | flapping between #A ↔ #B | two checkouts of the repo sending signals at once, e.g. a worktree on one branch and the main checkout on another | close or leave the stray checkout; retag the slices |
 | carries several issue tags | one interval counted toward each | `timew split @ID`, then retag |
 | runs over 4 h | a timer left on | `timew shorten @ID …` or split |
 | closed with no tagged time | worked untagged, or on another machine | retag slices, or accept the gap |
 
-**`--assign` and `--from` are off until the scripts read Redmine:** Redmine and GitHub share issue numbers, so a slice tagged with a Redmine issue can read as one tagged after a GitHub issue closed, and retagging it would lose a correct tag. The script refuses them; show the call-outs without corrections. For the same reason, "tagged #N but starts after #N closed" compares a Redmine tag with a GitHub issue's close; don't offer to untag or retag those slices.
+**`--assign` and `--from` are off until the scripts read Redmine:** Redmine and GitHub share issue numbers, so a slice tagged with a Redmine issue can read as one tagged after a GitHub issue closed, and retagging it would lose a correct tag. The script refuses them; show the call-outs without corrections. For the same reason, both closed-issue call-outs compare a Redmine tag with a GitHub issue's close, and say so; don't offer to stop, untag or retag those slices.
 
-Present the call-outs, then the corrections, and say plainly that the guesses are guesses. When Peter says which issue the slices belong to, rerun with `--assign N`: it retags untagged slices, and slices tagged an issue after that issue closed, to #N. `--from M` (repeatable) also moves every finished slice tagged #M in the period to #N. It covers the whole day, so remove any slice of genuine #M work from the script before handing it over. `--assign` to the issue a slice already carries accepts it as it is and writes no fix.
+Once they're back: present the call-outs, then the corrections, and say plainly that the guesses are guesses. When Peter says which issue the slices belong to, rerun with `--assign N`: it retags untagged slices, and slices tagged an issue after that issue closed, to #N. `--from M` (repeatable) also moves every finished slice tagged #M in the period to #N. It covers the whole day, so remove any slice of genuine #M work from the script before handing it over. `--assign` to the issue a slice already carries accepts it as it is and writes no fix.
 
 Never hand over loose `timew` commands. Write them with `--fix-script .tmp/timew-fix-<date>.sh`: tags are single-quoted (an unquoted `#` is a glob in zsh with `extendedglob`), and the script first checks that every @id still starts where it did, because Timewarrior @ids count back from the newest interval and shift as new ones arrive. **Peter runs the script.**
 

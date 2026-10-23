@@ -43,13 +43,25 @@ def alive(pid):
         return False
 
 
+def command(pid):
+    """The process's command line, or "" when it has gone."""
+    return subprocess.run(["ps", "-p", str(pid), "-o", "command="], capture_output=True, text=True).stdout.strip()
+
+
+def ours(state):
+    """Is the recorded pid still the http.server start() spawned for this port and directory? A
+    pid reused after the server exited, by a reboot or a crash, is someone else's process."""
+    return command(state["pid"]).endswith(
+        f"-m http.server {state['port']} --bind {HOST} --directory {state['root']}")
+
+
 def running(root):
     """The {pid, port} of this directory's server, if it is still up."""
     try:
         state = json.loads(state_file(root).read_text())
     except (OSError, ValueError):
         return None
-    if state.get("root") == str(root) and alive(state["pid"]) and answers(state["port"]):
+    if state.get("root") == str(root) and alive(state["pid"]) and ours(state) and answers(state["port"]):
         return state
     return None
 
@@ -90,8 +102,13 @@ def main():
     page = Path(args.file).expanduser().resolve()
     root = page.parent
     if args.stop:
-        state = running(root)
-        if state:
+        # Signalled only when the pid is still the server's own; a slow server that doesn't answer
+        # is stopped too, rather than left running untracked.
+        try:
+            state = json.loads(state_file(root).read_text())
+        except (OSError, ValueError):
+            state = None
+        if state and state.get("root") == str(root) and alive(state["pid"]) and ours(state):
             os.kill(state["pid"], signal.SIGTERM)
             print(f"stopped the server on port {state['port']} for {root}")
         else:

@@ -138,11 +138,11 @@ def build(issues: list[dict], intervals: list[Interval], slug: str, start: datet
             if issue is None:
                 continue
             closed_at = datetime.fromisoformat(issue["closedAt"].replace("Z", "+00:00"))
+            # A GitHub issue's close, while tt's #N is Redmine's: unverified, so no stop is suggested.
             if i.end is None:
-                found.append(f"@{i.id} is still running, tagged #{n}, which closed {hhmm(closed_at)}")
-                fixes.append(Fix(i, None, None, f"still running on closed #{n}: run `timew stop` instead"))
+                found.append(f"@{i.id} is still running, tagged #{n}; GitHub #{n} closed {hhmm(closed_at)} (unverified: Redmine's #{n} may be open)")
             elif i.start >= closed_at:
-                found.append(f"@{i.id} {hhmm(i.start)}–{hhmm(i.end)} is tagged #{n} but starts after #{n} closed {hhmm(closed_at)}")
+                found.append(f"@{i.id} {hhmm(i.start)}–{hhmm(i.end)} is tagged #{n} but starts after GitHub #{n} closed {hhmm(closed_at)} (unverified: Redmine's #{n} may be open)")
                 # Assigned to the issue it already carries: the slice is accepted as it is.
                 if assign and assign != n and n not in move_from:
                     fixes.append(Fix(i, f"{tag}{assign}", t, f"after #{n} closed; assigned to #{assign}"))
