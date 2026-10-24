@@ -487,12 +487,13 @@ test("a Start with Redmine down says so, naming the URL, and makes no branch or 
 
 // A main checkout with a code index, ignored as gh-plan's .gitignore ignores it, and a ccc that
 // logs every run: Start runs none.
-function indexed(t, s, { ignored = true } = {}) {
+// ignored: the .gitignore committed on main, or false for none.
+function indexed(t, s, { ignored = "/.cocoindex_code/\n" } = {}) {
   const { execFileSync } = require("child_process");
   const fs = require("fs");
   const path = require("path");
   if (ignored) {
-    fs.writeFileSync(path.join(s.checkout, ".gitignore"), "/.cocoindex_code/\n");
+    fs.writeFileSync(path.join(s.checkout, ".gitignore"), ignored);
     s.git(s.checkout, "add", ".gitignore");
     s.git(s.checkout, "-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "--quiet", "-m", "ignore the index");
     s.git(s.checkout, "push", "--quiet", "origin", "main");
@@ -574,8 +575,19 @@ test("an index the repo doesn't ignore isn't set up, so Go can't stage it", asyn
   s.issues[50].status = { name: "Closed", is_closed: true };
   indexed(t, s, { ignored: false });
   const result = await start({ ...s, id: 80, confirm: () => true });
-  assert.ok(result.notes.includes(`No code index: .cocoindex_code/ isn't ignored in ${result.dir}.`), result.notes.join(" "));
+  assert.ok(result.notes.includes(`No code index: .cocoindex_code/settings.yml isn't ignored in ${result.dir}.`), result.notes.join(" "));
   assert.ok(!fs.existsSync(path.join(result.dir, ".cocoindex_code")));
+});
+
+test("settings the repo re-includes aren't copied, though their folder is ignored", async (t) => {
+  const s = sandbox(t);
+  const fs = require("fs");
+  const path = require("path");
+  s.issues[50].status = { name: "Closed", is_closed: true };
+  indexed(t, s, { ignored: ".cocoindex_code/*\n!.cocoindex_code/settings.yml\n" });
+  const result = await start({ ...s, id: 80, confirm: () => true });
+  assert.ok(result.notes.includes(`No code index: .cocoindex_code/settings.yml isn't ignored in ${result.dir}.`), result.notes.join(" "));
+  assert.ok(!fs.existsSync(path.join(result.dir, ".cocoindex_code", "settings.yml")));
 });
 
 test("settings that can't be copied are a note, and Start finishes setup", async (t) => {

@@ -408,6 +408,17 @@ test("an index no search has built isn't reset, so no daemon starts for it", asy
   assertDone(s);
 });
 
+test("with the databases mapped elsewhere, Done resets an index it can't see built", async (t) => {
+  const s = sandbox(t);
+  const ccc = withIndex(t, s, { built: false });
+  const mapping = process.env.COCOINDEX_CODE_DB_PATH_MAPPING;
+  process.env.COCOINDEX_CODE_DB_PATH_MAPPING = `${s.root}=${path.join(s.root, "db")}`;
+  t.after(() => (mapping === undefined ? delete process.env.COCOINDEX_CODE_DB_PATH_MAPPING : (process.env.COCOINDEX_CODE_DB_PATH_MAPPING = mapping)));
+  await done(s);
+  assert.deepEqual(ccc.runs(), [`reset -f ${s.dir}`]);
+  assertDone(s);
+});
+
 test("an ignored file where the merge adds a tracked one is refused, not overwritten", async (t) => {
   const s = sandbox(t);
   // The PR's file is ignored in this checkout, as when a PR starts tracking a path it ignored.

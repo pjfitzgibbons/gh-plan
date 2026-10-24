@@ -147,9 +147,10 @@ const onPath = (command) => (process.env.PATH || "").split(path.delimiter).filte
 async function enableIndex(checkout, dir) {
   if (!fs.existsSync(path.join(checkout, INDEX_SETTINGS))) return `No code index in ${checkout} to set up from.`;
   if (!onPath("ccc")) return "No code index: ccc isn't on PATH.";
-  // Not ignored, the index would be untracked files that Go stages and Ship commits.
-  if (!(await git(dir, "check-ignore", "--quiet", `${INDEX}/`).then(() => true, () => false))) {
-    return `No code index: ${INDEX}/ isn't ignored in ${dir}.`;
+  // Not ignored, the settings would be an untracked file that Go stages and Ship commits, or a
+  // tracked one the copy overwrites. The file, not the folder: a rule may re-include it.
+  if (!(await git(dir, "check-ignore", "--quiet", INDEX_SETTINGS).then(() => true, () => false))) {
+    return `No code index: ${INDEX_SETTINGS} isn't ignored in ${dir}.`;
   }
   try {
     fs.mkdirSync(path.join(dir, INDEX), { recursive: true });
@@ -163,9 +164,11 @@ async function enableIndex(checkout, dir) {
 // The daemon keeps a project's databases open once it has indexed it, and goes on writing to them
 // once they're deleted, so a worktree made again at the same path would search a stale index. ccc
 // reset has it let go before Done removes the worktree. Only a worktree that has built its index:
-// on one that hasn't, reset would start a daemon to do nothing. null, or the note saying it didn't.
+// on one that hasn't, reset would start a daemon to do nothing. With COCOINDEX_CODE_DB_PATH_MAPPING
+// set the databases may be elsewhere, so reset decides. null, or the note saying it didn't.
 async function releaseIndex(dir) {
-  if (!fs.existsSync(path.join(dir, INDEX, "target_sqlite.db"))) return null;
+  const mapped = Boolean(process.env.COCOINDEX_CODE_DB_PATH_MAPPING) && fs.existsSync(path.join(dir, INDEX_SETTINGS));
+  if (!mapped && !fs.existsSync(path.join(dir, INDEX, "target_sqlite.db"))) return null;
   if (!onPath("ccc")) return `ccc isn't on PATH, so its daemon may still hold ${dir}'s code index; run ccc daemon restart.`;
   return run("ccc", ["reset", "-f"], dir, 60 * 1000)
     .then(() => null, (error) => `The ccc daemon may still hold ${dir}'s code index: ${error.message}; run ccc daemon restart.`);
