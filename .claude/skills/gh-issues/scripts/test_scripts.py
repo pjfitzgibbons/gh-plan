@@ -336,21 +336,31 @@ class PrRebase(unittest.TestCase):
         bin.mkdir()
         self.calls = top / "calls"
         self.calls.touch()
-        (bin / "gh").write_text(f'#!/bin/sh\necho "$*" >> "{self.calls}"\ncase "$*" in\n  "repo view"*) echo main ;;\n'
-                                '  *"--json state"*) echo OPEN ;;\n'
-                                '  *"--json url"*) echo https://github.com/o/r/pull/1 ;;\nesac\n')
+        (bin / "gh").write_text(
+            f'#!/bin/sh\necho "$*" >> "{self.calls}"\ncase "$*" in\n  "repo view"*) echo main ;;\n'
+            '  *"--json state"*) echo OPEN ;;\n'
+            '  *"--json url"*) echo https://github.com/o/r/pull/1 ;;\nesac\n'
+        )
         (bin / "open").write_text("#!/bin/sh\n")
         # A race script, when present, runs just before pr's push: after its fetch, before the lease.
         self.race = top / "race"
         self.real_git = shutil.which("git")
         # A race that fails makes the push fail.
-        (bin / "git").write_text(f'#!/bin/sh\n[ "$1" != push ] || [ ! -x "{self.race}" ] || "{self.race}" || exit\n'
-                                 f'exec "{self.real_git}" "$@"\n')
+        (bin / "git").write_text(
+            f'#!/bin/sh\n[ "$1" != push ] || [ ! -x "{self.race}" ] || "{self.race}" || exit\n'
+            f'exec "{self.real_git}" "$@"\n'
+        )
         for tool in ("gh", "open", "git"):
             (bin / tool).chmod(0o755)
-        self.env = {**os.environ, "PATH": f"{bin}:{os.environ['PATH']}", "GIT_AUTHOR_NAME": "T", "GIT_AUTHOR_EMAIL": "t@example.com",
-                    "GIT_COMMITTER_NAME": "T", "GIT_COMMITTER_EMAIL": "t@example.com",
-                    "GIT_CONFIG_GLOBAL": "/dev/null"}
+        self.env = {
+            **os.environ,
+            "PATH": f"{bin}:{os.environ['PATH']}",
+            "GIT_AUTHOR_NAME": "T",
+            "GIT_AUTHOR_EMAIL": "t@example.com",
+            "GIT_COMMITTER_NAME": "T",
+            "GIT_COMMITTER_EMAIL": "t@example.com",
+            "GIT_CONFIG_GLOBAL": "/dev/null",
+        }
         self.origin = top / "origin.git"
         self.git(top, "init", "-q", "--bare", "-b", "main", str(self.origin))
         self.other = top / "other"
@@ -368,8 +378,9 @@ class PrRebase(unittest.TestCase):
         self.tmp.cleanup()
 
     def git(self, cwd, *args):
-        return subprocess.run(["git", *args], cwd=cwd, env=self.env, check=True, capture_output=True,
-                              text=True).stdout.strip()
+        return subprocess.run(
+            ["git", *args], cwd=cwd, env=self.env, check=True, capture_output=True, text=True
+        ).stdout.strip()
 
     def commit(self, cwd, name, text, message):
         (cwd / name).write_text(text)
@@ -387,8 +398,13 @@ class PrRebase(unittest.TestCase):
         return tip
 
     def pr(self):
-        return subprocess.run(["sh", str(Path(__file__).parent / "pr.sh")], cwd=self.tree, env=self.env,
-                              capture_output=True, text=True)
+        return subprocess.run(
+            ["sh", str(Path(__file__).parent / "pr.sh")],
+            cwd=self.tree,
+            env=self.env,
+            capture_output=True,
+            text=True,
+        )
 
     def test_a_branch_behind_main_is_rebased_and_pushed_with_no_merge(self):
         tip = self.advance_main()
@@ -445,7 +461,9 @@ class PrRebase(unittest.TestCase):
         self.assertNotIn("pb 9", self.calls.read_text().splitlines())
         # Rebased by hand as the message says: the copy's context differs, so pr refuses it by patch and
         # names the push that replaces GitHub's, leased on its head.
-        subprocess.run(["git", "rebase", "origin/main"], cwd=self.tree, env=self.env, capture_output=True)
+        subprocess.run(
+            ["git", "rebase", "origin/main"], cwd=self.tree, env=self.env, capture_output=True
+        )
         run = self.pr()
         self.assertEqual(run.returncode, 2)
         self.assertIn("a rebase is in progress", run.stderr)
@@ -494,7 +512,9 @@ class PrRebase(unittest.TestCase):
         theirs = self.commit(self.other, "d.txt", "theirs\n", "From elsewhere")
         # After pr's fetch and check, before its push: only the lease can catch it, and a bare
         # --force would overwrite it.
-        self.race.write_text(f"#!/bin/sh\n'{self.real_git}' -C '{self.other}' push -q origin HEAD:feat/9-x\n")
+        self.race.write_text(
+            f"#!/bin/sh\n'{self.real_git}' -C '{self.other}' push -q origin HEAD:feat/9-x\n"
+        )
         self.race.chmod(0o755)
         run = self.pr()
         self.assertNotEqual(run.returncode, 0)
@@ -509,7 +529,9 @@ class PrRebase(unittest.TestCase):
         run = self.pr()
         self.assertEqual(run.returncode, 2)
         self.assertIn("Work (fixes #9)", run.stderr)
-        self.assertIn(f"git push --force-with-lease=refs/heads/feat/9-x:{pushed} origin HEAD", run.stderr)
+        self.assertIn(
+            f"git push --force-with-lease=refs/heads/feat/9-x:{pushed} origin HEAD", run.stderr
+        )
         self.assertEqual(self.on_origin("feat/9-x"), pushed)
 
     def test_a_rebase_that_fails_without_a_conflict_says_why(self):
@@ -530,7 +552,9 @@ class PrRebase(unittest.TestCase):
         self.advance_main("g.txt", lines)
         self.git(self.tree, "fetch", "-q", "origin")
         self.git(self.tree, "reset", "-q", "--hard", "origin/main")
-        original = self.commit(self.tree, "g.txt", lines.replace("7\n", "seven\n"), "Work (fixes #9)")
+        original = self.commit(
+            self.tree, "g.txt", lines.replace("7\n", "seven\n"), "Work (fixes #9)"
+        )
         self.git(self.tree, "push", "-q", "--force", "origin", "HEAD")
         self.advance_main("g.txt", lines.replace("5\n", "five\n"))
         self.race.write_text("#!/bin/sh\nexit 1\n")
@@ -539,8 +563,13 @@ class PrRebase(unittest.TestCase):
         self.assertNotEqual(run.returncode, 0)
         self.assertIn("rebased onto", run.stdout)
         self.assertEqual(self.on_origin("feat/9-x"), original)
-        patch_id = lambda rev: subprocess.run(["git", "patch-id"], input=self.git(self.tree, "show", rev) + "\n",
-                                              capture_output=True, text=True).stdout.split()[0]
+
+        def patch_id(rev):
+            show = self.git(self.tree, "show", rev) + "\n"
+            return subprocess.run(
+                ["git", "patch-id"], input=show, capture_output=True, text=True
+            ).stdout.split()[0]
+
         self.assertNotEqual(patch_id("HEAD"), patch_id(original))
         # The next pr can't tell the copy from a commit that replaced GitHub's, so it refuses, and names
         # a push leased on GitHub's head, which a fetch since can't widen.
