@@ -29,7 +29,7 @@ jobs:
 
       # activate-environment puts the venv's Python 3.14 first on PATH, so scripts/assess's
       # python3 is 3.14 and not the runner's own.
-      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+      - uses: astral-sh/setup-uv@18d369b23da25a81e9458561248e1aafff6a70fa # v10.3.1
         with:
           python-version: "3.14"
           enable-cache: true
