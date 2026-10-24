@@ -320,9 +320,10 @@ The Lanes tab is at `/projects/<identifier>/lanes`, and has no Icebox column
    the repos it plans, and nothing tracker-related is committed in them
    ([ADR 0011](adr/0011-redmine-is-the-tracker.md)).
 2. The default branch carries the code, and every change reaches it through a pull request whose
-   `assess` check passed and whose review threads are resolved. An issue's status lives in Redmine: the extension's Start and Done set it, and a `fixes #<n>`
-   commit closes the issue when Redmine fetches it (§7.4). A Done tick is a verification record,
-   not status: it is recorded in the PR's body, and status in Redmine.
+   `assess` check passed and whose review threads are resolved. An issue's status lives in Redmine:
+   the extension's Start and Done set it, and a `fixes #<n>` commit closes the issue when Redmine
+   fetches it (§7.4). A Done tick is a verification record, not status: it is recorded in the PR's
+   body, and status in Redmine.
 3. Retired with the tool's `plan:` commits ([ADR 0011](adr/0011-redmine-is-the-tracker.md)), so the
    invariants after it keep their numbers.
 4. An issue's start date is written once: Start sets it only when the issue has none (§7.1).

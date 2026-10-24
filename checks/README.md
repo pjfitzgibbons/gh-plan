@@ -8,7 +8,7 @@ any reviewer has to.
 
 - **An executable, run from the repo root.** Any language with a shebang line and `#` comments,
   such as shell, Python or Ruby. Commit it with its `+x` bit (`chmod +x`, then `git add`). A file
-  here without it fails `assess` rather than being skipped.
+  here without it, or a directory here, fails `assess` rather than being skipped.
 - **The rule on the first comment line.** `# rule: <name>`, after the shebang, where `<name>` is the
   kebab-case rule the reviewer gives the finding, such as `git-exit-unchecked`.
   `scripts/assess --rules` lists every checker's rule, and `(none)` for a checker missing the line.

@@ -7,6 +7,7 @@ itself; the checkers are stub executables in a temporary `checks/`.
 import importlib.machinery
 import importlib.util
 import os
+import shutil
 import subprocess
 import sys
 import threading
@@ -98,16 +99,43 @@ def test_two_failures_both_reported(tmp_path, capsys):
     assert "assess: 1 passed, 2 failed" in out
 
 
-def test_checker_that_exits_nonzero_silently_fails(tmp_path, capsys):
+@pytest.mark.parametrize("flags", [[], ["-v"]])
+def test_checker_that_exits_nonzero_silently_fails(tmp_path, capsys, flags):
     checker(tmp_path, "crashes", "raise SystemExit(1)\n")
-    assert assess.main([], root=tmp_path, suites=[]) == 1
-    assert lines(capsys.readouterr().out)[0].startswith("FAIL  checks/crashes")
+    assert assess.main(flags, root=tmp_path, suites=[]) == 1
+    out = capsys.readouterr().out
+    assert lines(out)[0].startswith("FAIL  checks/crashes")
+    assert "checks/crashes: failed, with no output but blank lines" in out
 
 
 def test_checker_without_exec_bit_fails(tmp_path, capsys):
     checker(tmp_path, "forgotten", "# rule: r\n", executable=False)
     assert assess.main([], root=tmp_path, suites=[]) == 1
     assert "checks/forgotten: not executable" in capsys.readouterr().out
+
+
+def test_checker_printing_only_a_blank_line_fails(tmp_path, capsys):
+    checker(tmp_path, "blank", "print()\n")
+    assert assess.main([], root=tmp_path, suites=[]) == 1
+    out = capsys.readouterr().out
+    assert lines(out)[0].startswith("FAIL  checks/blank")
+    assert "checks/blank: failed, with no output but blank lines" in out
+
+
+def test_directory_in_checks_fails(tmp_path, capsys):
+    (tmp_path / "checks" / "nested").mkdir(parents=True)
+    assert assess.main([], root=tmp_path, suites=[]) == 1
+    assert "checks/nested: not a file" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("flags", [[], ["-v"]])
+def test_reason_a_check_never_ran_is_printed(tmp_path, capsys, flags):
+    checker(tmp_path, "forgotten", "# rule: r\n", executable=False)
+    missing = ("missing", ".", [str(tmp_path / "no-such-tool")])
+    assert assess.main(flags, root=tmp_path, suites=[missing]) == 1
+    out = capsys.readouterr().out
+    assert "no-such-tool: No such file or directory" in out
+    assert "checks/forgotten: not executable" in out
 
 
 def test_command_that_cannot_start_fails(tmp_path, capsys):
@@ -160,9 +188,31 @@ def test_rule_of_unreadable_file(tmp_path):
     assert assess.rule(path) is None
 
 
+def older_than_3_10(python: str | None) -> bool:
+    if not python or not os.access(python, os.X_OK):
+        return False
+    v = subprocess.run(
+        [python, "-c", "import sys; print(sys.version_info < (3, 10))"],
+        capture_output=True,
+        text=True,
+    )
+    return v.stdout.strip() == "True"
+
+
+OLD_PYTHON = next(
+    (p for p in (shutil.which("python3.9"), "/usr/bin/python3") if older_than_3_10(p)), None
+)
+
+
 def test_script_runs_on_python_3_9():
     """Annotations stay unevaluated, so an older python3 on PATH doesn't crash at import."""
     assert "from __future__ import annotations" in SCRIPT.read_text()
+
+
+@pytest.mark.skipif(OLD_PYTHON is None, reason="no Python older than 3.10 here")
+def test_script_runs_under_an_old_python():
+    p = subprocess.run([OLD_PYTHON, str(SCRIPT), "--rules"], capture_output=True, text=True)
+    assert p.returncode == 0, p.stderr
 
 
 def test_script_is_executable_and_lists_repo_rules():

@@ -38,13 +38,12 @@ NOT_CHECKERS = {"README.md"}
 
 
 def checkers(checks: Path) -> list[Path]:
-    """Every file in `checks/` but the README and dotfiles, so one missing its +x still fails."""
+    """Every entry in `checks/` but the README and dotfiles, so one missing its +x, or a
+    directory, still fails rather than going unrun."""
     if not checks.is_dir():
         return []
     return sorted(
-        f
-        for f in checks.iterdir()
-        if f.is_file() and f.name not in NOT_CHECKERS and not f.name.startswith(".")
+        f for f in checks.iterdir() if f.name not in NOT_CHECKERS and not f.name.startswith(".")
     )
 
 
@@ -85,16 +84,27 @@ def run(cmd: list[str], cwd: Path, stream: bool) -> tuple[bool, str]:
                 if stream:
                     print(line, end="", flush=True)
     except OSError as e:
-        return False, f"{cmd[0]}: {e.strerror or e}\n"
+        return refuse(f"{cmd[0]}: {e.strerror or e}", stream)
     return p.returncode == 0, "".join(out)
 
 
+def refuse(reason: str, stream: bool) -> tuple[bool, str]:
+    """A check that failed before it ran; with stream, its reason prints like any output."""
+    if stream:
+        print(reason, flush=True)
+    return False, reason + "\n"
+
+
 def run_checker(checker: Path, root: Path, stream: bool) -> tuple[bool, str]:
-    """A checker passes when it exits 0 and prints nothing, to stdout or stderr."""
+    """A checker passes when it exits 0 and prints nothing, to stdout or stderr, not even a
+    blank line."""
+    name = checker.relative_to(root)
+    if not checker.is_file():
+        return refuse(f"{name}: not a file", stream)
     if not os.access(checker, os.X_OK):
-        return False, f"{checker.relative_to(root)}: not executable (chmod +x)\n"
+        return refuse(f"{name}: not executable (chmod +x)", stream)
     ok, out = run([str(checker)], root, stream)
-    return ok and not out.strip(), out
+    return ok and not out, out
 
 
 def assess(root: Path, suites: list, verbose: bool) -> int:
@@ -106,7 +116,11 @@ def assess(root: Path, suites: list, verbose: bool) -> int:
         if verbose:
             print(f"── {name} ──", flush=True)
         ok, out = go()
-        if out.strip() and not ok and not verbose:
+        if not ok and not out.strip():
+            out = f"{name}: failed, with no output but blank lines\n"
+            if verbose:
+                print(out, end="", flush=True)
+        if not ok and not verbose:
             print(f"── {name} ──", flush=True)
             print(out.rstrip("\n"), flush=True)
         line = f"{'PASS' if ok else 'FAIL'}  {name}  ({time.monotonic() - began:.1f}s)"
