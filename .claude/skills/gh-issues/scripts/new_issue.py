@@ -34,8 +34,19 @@ from pathlib import Path
 import outline
 from redmine import Redmine, Refused
 
-FIELDS = ["project", "tracker", "subject", "version", "status", "points", "lane", "ordinal",
-          "parent", "blocked_by", "relates"]
+FIELDS = [
+    "project",
+    "tracker",
+    "subject",
+    "version",
+    "status",
+    "points",
+    "lane",
+    "ordinal",
+    "parent",
+    "blocked_by",
+    "relates",
+]
 CUSTOM = {"points": "Points", "lane": "Lane", "ordinal": "Ordinal"}
 
 
@@ -43,7 +54,9 @@ def parse(text: str) -> tuple[dict[str, str], str]:
     """The front matter's fields, blanks dropped, and the body after it."""
     m = re.match(r"\A---\n(.*?)\n---\n(.*)\Z", text.replace("\r\n", "\n"), re.S)
     if not m:
-        raise Refused("the file starts with a --- front matter block, as references/redmine-issue.md does")
+        raise Refused(
+            "the file starts with a --- front matter block, as references/redmine-issue.md does"
+        )
     fields = {}
     for n, line in enumerate(m[1].split("\n"), start=2):
         if not line.strip():
@@ -82,15 +95,22 @@ def by_name(items: list[dict], name: str, what: str) -> dict:
 def resolve(redmine, fields: dict[str, str]) -> tuple[dict, dict[str, list[int]]]:
     """The issue as Redmine's POST takes it, and the relations to add; Refused naming the first bad field."""
     project = redmine.send("GET", f"/projects/{fields['project']}.json?include=trackers")["project"]
-    issue = {"project_id": project["id"], "subject": fields["subject"],
-             "tracker_id": by_name(project["trackers"], fields["tracker"], "tracker")["id"]}
+    issue = {
+        "project_id": project["id"],
+        "subject": fields["subject"],
+        "tracker_id": by_name(project["trackers"], fields["tracker"], "tracker")["id"],
+    }
     if "version" in fields:
         versions = redmine.send("GET", f"/projects/{fields['project']}/versions.json")["versions"]
         issue["fixed_version_id"] = by_name(versions, fields["version"], "version")["id"]
     statuses = redmine.send("GET", "/issue_statuses.json")["issue_statuses"]
     issue["status_id"] = by_name(statuses, fields.get("status", "New"), "status")["id"]
 
-    custom = [f for f in redmine.send("GET", "/custom_fields.json")["custom_fields"] if f["customized_type"] == "issue"]
+    custom = [
+        f
+        for f in redmine.send("GET", "/custom_fields.json")["custom_fields"]
+        if f["customized_type"] == "issue"
+    ]
     values = []
     for key, name in CUSTOM.items():
         if key not in fields:
@@ -105,7 +125,9 @@ def resolve(redmine, fields: dict[str, str]) -> tuple[dict, dict[str, list[int]]
     if values:
         issue["custom_fields"] = values
 
-    relations = {key: numbers(key, fields[key]) for key in ("blocked_by", "relates") if key in fields}
+    relations = {
+        key: numbers(key, fields[key]) for key in ("blocked_by", "relates") if key in fields
+    }
     if "parent" in fields:
         parent = numbers("parent", fields["parent"])
         if len(parent) != 1:
@@ -113,7 +135,9 @@ def resolve(redmine, fields: dict[str, str]) -> tuple[dict, dict[str, list[int]]
         issue["parent_issue_id"] = parent[0]
     for n in [issue.get("parent_issue_id")] + [n for ns in relations.values() for n in ns]:
         if n is not None:
-            redmine.send("GET", f"/issues/{n}.json")  # an issue that doesn't exist is a 404, Refused
+            redmine.send(
+                "GET", f"/issues/{n}.json"
+            )  # an issue that doesn't exist is a 404, Refused
     return issue, relations
 
 
@@ -121,13 +145,18 @@ def existing(redmine, project_id: int, subject: str) -> int | None:
     """The number of the project's one issue with this subject, open or closed; None if it has none."""
     found, offset = [], 0
     while True:
-        page = redmine.send("GET", f"/issues.json?project_id={project_id}&status_id=*&subproject_id=!*&limit=100&offset={offset}")
+        page = redmine.send(
+            "GET",
+            f"/issues.json?project_id={project_id}&status_id=*&subproject_id=!*&limit=100&offset={offset}",
+        )
         found += [i["id"] for i in page["issues"] if i["subject"] == subject]
         offset += len(page["issues"])
         if not page["issues"] or offset >= page["total_count"]:
             break
     if len(found) > 1:
-        raise Refused(f"{', '.join(f'#{n}' for n in found)} all have this subject; give it a distinct one")
+        raise Refused(
+            f"{', '.join(f'#{n}' for n in found)} all have this subject; give it a distinct one"
+        )
     return found[0] if found else None
 
 
@@ -138,20 +167,31 @@ def linked(relations: list[dict], n: int, other: int, key: str) -> bool:
             continue
         if key == "relates" and r["relation_type"] == "relates":
             return True
-        if key == "blocked_by" and (r["relation_type"], r["issue_id"]) in {("blocks", other), ("blocked", n)}:
+        if key == "blocked_by" and (r["relation_type"], r["issue_id"]) in {
+            ("blocks", other),
+            ("blocked", n),
+        }:
             return True
     return False
 
 
 def kept(issue: dict, wanted: dict) -> list[str]:
     """Each field of wanted that the issue as read back doesn't hold."""
-    have = {"project_id": issue["project"]["id"], "tracker_id": issue["tracker"]["id"],
-            "status_id": issue["status"]["id"], "subject": issue["subject"],
-            "fixed_version_id": (issue.get("fixed_version") or {}).get("id"),
-            "parent_issue_id": (issue.get("parent") or {}).get("id")}
+    have = {
+        "project_id": issue["project"]["id"],
+        "tracker_id": issue["tracker"]["id"],
+        "status_id": issue["status"]["id"],
+        "subject": issue["subject"],
+        "fixed_version_id": (issue.get("fixed_version") or {}).get("id"),
+        "parent_issue_id": (issue.get("parent") or {}).get("id"),
+    }
     lost = [key for key, value in wanted.items() if key in have and have[key] != value]
     custom = {f["id"]: f.get("value") for f in issue.get("custom_fields", [])}
-    lost += [f"custom field {f['id']}" for f in wanted.get("custom_fields", []) if custom.get(f["id"]) != f["value"]]
+    lost += [
+        f"custom field {f['id']}"
+        for f in wanted.get("custom_fields", [])
+        if custom.get(f["id"]) != f["value"]
+    ]
     return lost
 
 
@@ -159,14 +199,18 @@ def run(file: Path, redmine, check_only: bool, lenses: list[str], extra: list[st
     fields, body = parse(file.read_text(encoding="utf-8"))
     findings = outline.check(body, lenses, extra)
     if findings:
-        raise Refused("the body doesn't conform to the outline:\n" + "\n".join(f"  - {f}" for f in findings))
+        raise Refused(
+            "the body doesn't conform to the outline:\n" + "\n".join(f"  - {f}" for f in findings)
+        )
     issue, relations = resolve(redmine, fields)
     n = existing(redmine, issue["project_id"], issue["subject"])
     if check_only:
         return f"{file} is ready: {'#' + str(n) + ' exists, and a run adds only its missing relations' if n else 'a run creates it'}"
 
     if n is None:
-        n = redmine.send("POST", "/issues.json", {"issue": {**issue, "description": body}})["issue"]["id"]
+        n = redmine.send("POST", "/issues.json", {"issue": {**issue, "description": body}})[
+            "issue"
+        ]["id"]
         made = "created"
     else:
         made = "already there"
@@ -176,29 +220,45 @@ def run(file: Path, redmine, check_only: bool, lenses: list[str], extra: list[st
         for other in others:
             if not linked(have, n, other, key):
                 kind = "blocked" if key == "blocked_by" else "relates"
-                redmine.send("POST", f"/issues/{n}/relations.json", {"relation": {"issue_to_id": other, "relation_type": kind}})
+                redmine.send(
+                    "POST",
+                    f"/issues/{n}/relations.json",
+                    {"relation": {"issue_to_id": other, "relation_type": kind}},
+                )
                 added += 1
 
     back = redmine.send("GET", f"/issues/{n}.json?include=relations")["issue"]
-    missing = [f"{key} #{o}" for key, others in relations.items() for o in others
-               if not linked(back.get("relations", []), n, o, key)]
+    missing = [
+        f"{key} #{o}"
+        for key, others in relations.items()
+        for o in others
+        if not linked(back.get("relations", []), n, o, key)
+    ]
     lost = kept(back, issue) + missing
     if lost and made == "created":
         raise Refused(f"#{n} is created, but Redmine didn't keep: {', '.join(lost)}")
     if lost:
-        raise Refused(f"#{n} was already there, and differs from the file in: {', '.join(lost)}; edit it in Redmine")
+        raise Refused(
+            f"#{n} was already there, and differs from the file in: {', '.join(lost)}; edit it in Redmine"
+        )
     url = redmine.url + f"/issues/{n}"
     return f"#{n} {made}, {added} relation{'s' if added != 1 else ''} added: {url}"
 
 
 def main(argv=None) -> int:
-    p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    p.add_argument("--check", action="store_true", help="check everything, reading only; write nothing")
+    p = argparse.ArgumentParser(
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
+    p.add_argument(
+        "--check", action="store_true", help="check everything, reading only; write nothing"
+    )
     p.add_argument("file", type=Path, help="a filled-in copy of references/redmine-issue.md")
     a = p.parse_args(argv)
     rw = outline.repo_writer()
     lenses, extra = outline.expected(
-        outline.GLOBAL_WRITER.read_text(encoding="utf-8") if outline.GLOBAL_WRITER.is_file() else "",
+        outline.GLOBAL_WRITER.read_text(encoding="utf-8")
+        if outline.GLOBAL_WRITER.is_file()
+        else "",
         rw.read_text(encoding="utf-8") if rw else "",
     )
     try:

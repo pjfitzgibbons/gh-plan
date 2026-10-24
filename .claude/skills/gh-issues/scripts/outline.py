@@ -39,7 +39,7 @@ def repo_writer() -> Path | None:
 def expected(global_text: str, repo_text: str) -> tuple[list[str], list[str]]:
     """Lens ids, and the extra sections the repo names."""
     lenses = [m[0] for m in LENS_ROW.findall(global_text + "\n" + repo_text)]
-    lenses = sorted(set(lenses), key=lambda l: int(l[1:]))
+    lenses = sorted(set(lenses), key=lambda lens: int(lens[1:]))
     extra = re.findall(r"`### ([A-Z][\w ]*?)`", repo_text)
     return lenses, list(dict.fromkeys(extra))
 
@@ -59,22 +59,42 @@ def check(body: str, lenses: list[str], extra: list[str]) -> list[str]:
     found = sections(body)
     required = TASK + [s for s in extra if s not in TASK]
     findings = [f"missing section: ### {s}" for s in required if s not in found]
-    findings += [f"old-style heading: {l}" for l in body.splitlines() if re.match(r"^## \w", l)]
+    findings += [
+        f"old-style heading: {line}" for line in body.splitlines() if re.match(r"^## \w", line)
+    ]
     old = [s for s in OLD if s in found and s not in required]
     if old:
-        findings.append(f"old outline ({', '.join(old)}): rewrite to Task, Guardrails, Lenses and Done")
+        findings.append(
+            f"old outline ({', '.join(old)}): rewrite to Task, Guardrails, Lenses and Done"
+        )
 
     if "Done" in found:
         done = [m for line in found["Done"].splitlines() if (m := DONE_LINE.match(line.strip()))]
-        findings += [f"Done: {m[2]!r} is ticked; an issue's description is never ticked, the PR body is" for m in done if m[1] == "x"]
+        findings += [
+            f"Done: {m[2]!r} is ticked; an issue's description is never ticked, the PR body is"
+            for m in done
+            if m[1] == "x"
+        ]
         findings += [f"Done: mark [{m[1]}] on {m[2]!r}; use [ ]" for m in done if m[1] not in " x"]
-        loose = [l.strip() for l in found["Done"].splitlines() if l.strip().startswith("- ") and not DONE_LINE.match(l.strip())]
-        findings += [f"Done: {l!r} is not a checkbox; write each condition as - [ ] …" for l in loose]
+        loose = [
+            line.strip()
+            for line in found["Done"].splitlines()
+            if line.strip().startswith("- ") and not DONE_LINE.match(line.strip())
+        ]
+        findings += [
+            f"Done: {line!r} is not a checkbox; write each condition as - [ ] …" for line in loose
+        ]
         if len(done) < MIN_DONE:
-            findings.append(f"Done: {len(done)} pass/fail condition(s); a Task needs at least {MIN_DONE}, "
-                            "covering each part of it and what the tests prove")
+            findings.append(
+                f"Done: {len(done)} pass/fail condition(s); a Task needs at least {MIN_DONE}, "
+                "covering each part of it and what the tests prove"
+            )
 
-    strays = [m[2] for l in found.get("Guardrails", "").splitlines() if (m := LENS_LINE.match(l.strip()))]
+    strays = [
+        m[2]
+        for line in found.get("Guardrails", "").splitlines()
+        if (m := LENS_LINE.match(line.strip()))
+    ]
     if strays:
         findings.append(f"Guardrails: lens lines ({', '.join(strays)}) belong under ### Lenses")
     seen, ticked = {}, []
@@ -92,18 +112,29 @@ def check(body: str, lenses: list[str], extra: list[str]) -> list[str]:
             elif mark == " " and has_note:
                 findings.append(f"{lens}: has a note but is [ ]; mark it [x] or drop the note")
     if "Lenses" in found:
-        findings += [f"{l}: lens missing" for l in lenses if l not in seen]
-        findings += [f"{l}: listed {n} times" for l, n in seen.items() if n > 1]
-        findings += [f"{l}: not a configured lens" for l in seen if l not in lenses]
+        findings += [f"{lens}: lens missing" for lens in lenses if lens not in seen]
+        findings += [f"{lens}: listed {n} times" for lens, n in seen.items() if n > 1]
+        findings += [f"{lens}: not a configured lens" for lens in seen if lens not in lenses]
         named = set(re.findall(r"^- \[.\] (L\d+):", found.get("Done", ""), re.M))
-        findings += [f"{l}: [x] but no Done condition names it; add - [ ] {l}: …" for l in ticked if l not in named]
-        findings += [f"Done: {l} is named but not [x] under Lenses" for l in sorted(named - set(ticked), key=lambda l: int(l[1:]))]
+        findings += [
+            f"{lens}: [x] but no Done condition names it; add - [ ] {lens}: …"
+            for lens in ticked
+            if lens not in named
+        ]
+        findings += [
+            f"Done: {lens} is named but not [x] under Lenses"
+            for lens in sorted(named - set(ticked), key=lambda lens: int(lens[1:]))
+        ]
     return findings
 
 
 def main(argv=None) -> int:
-    p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    p.add_argument("item", type=Path, help="path to a file holding the description, or a new_issue draft")
+    p = argparse.ArgumentParser(
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
+    p.add_argument(
+        "item", type=Path, help="path to a file holding the description, or a new_issue draft"
+    )
     a = p.parse_args(argv)
     body = a.item.read_text(encoding="utf-8")
 
@@ -116,8 +147,10 @@ def main(argv=None) -> int:
     if not findings:
         print("conforms to the outline")
         return 0
-    print(f"{len(findings)} finding(s) against the outline (lenses {lenses[0] if lenses else 'none'}–{lenses[-1] if lenses else ''}"
-          f"{', plus ' + ', '.join(extra) if extra else ''}):")
+    print(
+        f"{len(findings)} finding(s) against the outline (lenses {lenses[0] if lenses else 'none'}–{lenses[-1] if lenses else ''}"
+        f"{', plus ' + ', '.join(extra) if extra else ''}):"
+    )
     for f in findings:
         print(f"  - {f}")
     return 1

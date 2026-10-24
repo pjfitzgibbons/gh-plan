@@ -44,30 +44,49 @@ def fetch(redmine, n: int) -> dict:
 
 
 def diff(n: int, now: str, body: str, file: Path) -> str:
-    return "".join(difflib.unified_diff(now.splitlines(keepends=True), body.splitlines(keepends=True),
-                                        f"#{n} in Redmine", str(file)))
+    return "".join(
+        difflib.unified_diff(
+            now.splitlines(keepends=True),
+            body.splitlines(keepends=True),
+            f"#{n} in Redmine",
+            str(file),
+        )
+    )
 
 
 def changed(before: dict, after: dict) -> list[str]:
     """Each field other than the description that differs between the two reads of the issue."""
-    return sorted(k for k in (before.keys() | after.keys()) - UNCOMPARED if before.get(k) != after.get(k))
+    return sorted(
+        k for k in (before.keys() | after.keys()) - UNCOMPARED if before.get(k) != after.get(k)
+    )
 
 
 def digest(description: str) -> str:
     return hashlib.sha256(description.encode()).hexdigest()[:12]
 
 
-def run(n: int, file: Path, redmine, check_only: bool, lenses: list[str], extra: list[str],
-        expect: str | None = None) -> str:
+def run(
+    n: int,
+    file: Path,
+    redmine,
+    check_only: bool,
+    lenses: list[str],
+    extra: list[str],
+    expect: str | None = None,
+) -> str:
     try:
         body = normal(file.read_text(encoding="utf-8"))
     except (OSError, UnicodeDecodeError) as e:
         raise Refused(f"can't read it: {e}") from None
     if body.startswith("---\n"):
-        raise Refused("the file starts with front matter; give the description alone, its fields aren't read")
+        raise Refused(
+            "the file starts with front matter; give the description alone, its fields aren't read"
+        )
     findings = outline.check(body, lenses, extra)
     if findings:
-        raise Refused("the body doesn't conform to the outline:\n" + "\n".join(f"  - {f}" for f in findings))
+        raise Refused(
+            "the body doesn't conform to the outline:\n" + "\n".join(f"  - {f}" for f in findings)
+        )
     before = fetch(redmine, n)
     now = normal(before.get("description") or "")
     if now == body:
@@ -76,27 +95,45 @@ def run(n: int, file: Path, redmine, check_only: bool, lenses: list[str], extra:
     if check_only:
         return f"{file} is ready; to write it: issue_body --expect {digest(now)} {n} {file}"
     if expect != digest(now):
-        raise Refused(f"#{n}'s description isn't the one --check showed; run issue_body --check {n} {file}, "
-                      "review its diff, then the command it prints")
+        raise Refused(
+            f"#{n}'s description isn't the one --check showed; run issue_body --check {n} {file}, "
+            "review its diff, then the command it prints"
+        )
 
     redmine.send("PUT", f"/issues/{n}.json", {"issue": {"description": body}})
     after = fetch(redmine, n)
-    lost = ([] if normal(after.get("description") or "") == body else ["description"]) + changed(before, after)
+    lost = ([] if normal(after.get("description") or "") == body else ["description"]) + changed(
+        before, after
+    )
     if lost:
-        raise Refused(f"#{n} was written, and differs from what was sent in: {', '.join(lost)}; check it in Redmine")
+        raise Refused(
+            f"#{n} was written, and differs from what was sent in: {', '.join(lost)}; check it in Redmine"
+        )
     return f"#{n}'s description replaced: {redmine.url}/issues/{n}"
 
 
 def main(argv=None) -> int:
-    p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    p.add_argument("--check", action="store_true", help="check the file and show the diff, reading only; write nothing")
-    p.add_argument("--expect", metavar="DIGEST", help="the description --check showed, as it printed it; the write refuses any other")
+    p = argparse.ArgumentParser(
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
+    p.add_argument(
+        "--check",
+        action="store_true",
+        help="check the file and show the diff, reading only; write nothing",
+    )
+    p.add_argument(
+        "--expect",
+        metavar="DIGEST",
+        help="the description --check showed, as it printed it; the write refuses any other",
+    )
     p.add_argument("issue", type=lambda s: int(s.lstrip("#")), help="the issue's number")
     p.add_argument("file", type=Path, help="the new description, in the issue outline")
     a = p.parse_args(argv)
     rw = outline.repo_writer()
     lenses, extra = outline.expected(
-        outline.GLOBAL_WRITER.read_text(encoding="utf-8") if outline.GLOBAL_WRITER.is_file() else "",
+        outline.GLOBAL_WRITER.read_text(encoding="utf-8")
+        if outline.GLOBAL_WRITER.is_file()
+        else "",
         rw.read_text(encoding="utf-8") if rw else "",
     )
     try:

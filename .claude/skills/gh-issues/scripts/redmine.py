@@ -19,15 +19,23 @@ class Redmine:
     def __init__(self):
         self.url = os.environ.get("REDMINE_URL", "http://127.0.0.1:3010").rstrip("/")
         service = os.environ.get("REDMINE_KEYCHAIN", "redmine-gh-plan")
-        found = subprocess.run(["security", "find-generic-password", "-s", service, "-w"], capture_output=True, text=True)
+        found = subprocess.run(
+            ["security", "find-generic-password", "-s", service, "-w"],
+            capture_output=True,
+            text=True,
+        )
         if found.returncode != 0:
             raise Refused(f"no Keychain item {service}; store your API key from My account in it")
         self.key = found.stdout.strip()
 
     def send(self, method: str, path: str, body: dict | None = None):
         data = json.dumps(body).encode() if body is not None else None
-        req = urllib.request.Request(self.url + path, data=data, method=method,
-                                     headers={"X-Redmine-API-Key": self.key, "Content-Type": "application/json"})
+        req = urllib.request.Request(
+            self.url + path,
+            data=data,
+            method=method,
+            headers={"X-Redmine-API-Key": self.key, "Content-Type": "application/json"},
+        )
         try:
             with urllib.request.urlopen(req) as r:
                 raw = r.read()

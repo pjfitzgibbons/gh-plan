@@ -12,7 +12,9 @@ from pathlib import Path
 
 import pytest
 
-_spec = importlib.util.spec_from_file_location("backup", Path(__file__).parents[1] / "redmine" / "backup.py")
+_spec = importlib.util.spec_from_file_location(
+    "backup", Path(__file__).parents[1] / "redmine" / "backup.py"
+)
 backup = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(backup)
 
@@ -82,7 +84,9 @@ def volume(tmp_path):
 
 def _main(monkeypatch, volume: Path) -> int:
     monkeypatch.setattr(backup, "VOLUME", volume)
-    monkeypatch.setattr(backup.datetime, "date", type("D", (), {"today": staticmethod(lambda: TODAY)}))
+    monkeypatch.setattr(
+        backup.datetime, "date", type("D", (), {"today": staticmethod(lambda: TODAY)})
+    )
     return backup.main([])
 
 
@@ -96,8 +100,15 @@ def test_a_run_leaves_a_dated_backup_and_export(fake, volume, monkeypatch):
     assert sorted(p.name for p in day.iterdir()) == ["export", "files.tar", "redmine.db"]
     with closing(sqlite3.connect(day / "redmine.db")) as db:
         assert db.execute("SELECT count(*) FROM issues").fetchone() == (3,)
-    assert sorted(p.name for p in (day / "export" / "issues").iterdir()) == ["1.json", "2.json", "3.json"]
-    assert json.loads((day / "export" / "issues" / "2.json").read_text())["issue"]["subject"] == "second"
+    assert sorted(p.name for p in (day / "export" / "issues").iterdir()) == [
+        "1.json",
+        "2.json",
+        "3.json",
+    ]
+    assert (
+        json.loads((day / "export" / "issues" / "2.json").read_text())["issue"]["subject"]
+        == "second"
+    )
     assert not list((volume / "redmine_backups").glob(".*.partial"))
     assert fake.alerts == []
 
@@ -138,7 +149,9 @@ def test_a_second_run_that_day_does_nothing(fake, volume, monkeypatch):
 
 
 @pytest.mark.parametrize("step", ["db", "tar", "list", "issue"])
-def test_a_failed_step_leaves_no_dated_folder_and_the_next_run_finishes(fake, volume, monkeypatch, step):
+def test_a_failed_step_leaves_no_dated_folder_and_the_next_run_finishes(
+    fake, volume, monkeypatch, step
+):
     fake.fail = step
     assert _main(monkeypatch, volume) == 1
     assert fake.alerts == [f"{step} broke"]
@@ -276,9 +289,16 @@ def _stub(tmp_path: Path, monkeypatch, name: str, script: str) -> None:
 
 
 def test_docker_failures_name_the_command_and_its_last_line(tmp_path, monkeypatch):
-    _stub(tmp_path, monkeypatch, "docker", 'echo noise >&2; echo "service redmine is not running" >&2; exit 1')
+    _stub(
+        tmp_path,
+        monkeypatch,
+        "docker",
+        'echo noise >&2; echo "service redmine is not running" >&2; exit 1',
+    )
     assert backup.docker_running() is False
-    with pytest.raises(backup.Failure, match="docker compose exec -T failed: service redmine is not running"):
+    with pytest.raises(
+        backup.Failure, match="docker compose exec -T failed: service redmine is not running"
+    ):
         backup.docker(["exec", "-T", "redmine", "true"])
 
 
@@ -299,7 +319,12 @@ def test_no_docker_on_path(monkeypatch, tmp_path):
 def test_the_key_comes_from_the_keychain(tmp_path, monkeypatch):
     _stub(tmp_path, monkeypatch, "security", 'echo "$@" > "$(dirname "$0")/args"; echo secret')
     assert backup.api_key() == "secret"
-    assert (tmp_path / "bin" / "args").read_text().split() == ["find-generic-password", "-s", backup.KEYCHAIN, "-w"]
+    assert (tmp_path / "bin" / "args").read_text().split() == [
+        "find-generic-password",
+        "-s",
+        backup.KEYCHAIN,
+        "-w",
+    ]
     _stub(tmp_path, monkeypatch, "security", "exit 44")
     with pytest.raises(backup.Failure, match=f"no Keychain item {backup.KEYCHAIN}"):
         backup.api_key()
@@ -312,10 +337,18 @@ def test_an_unreachable_api_fails_without_the_query(monkeypatch):
 
 
 def test_the_alert_is_a_critical_osascript_alert(tmp_path, monkeypatch, capsys):
-    _stub(tmp_path, monkeypatch, "osascript", 'for a in "$@"; do echo "$a"; done > "$(dirname "$0")/args"')
+    _stub(
+        tmp_path,
+        monkeypatch,
+        "osascript",
+        'for a in "$@"; do echo "$a"; done > "$(dirname "$0")/args"',
+    )
     backup.alert("/Volumes/X isn't mounted")
     args = (tmp_path / "bin" / "args").read_text().splitlines()
-    assert "as critical" in args[3] and args[-2:] == ["Redmine backup failed", "/Volumes/X isn't mounted"]
+    assert "as critical" in args[3] and args[-2:] == [
+        "Redmine backup failed",
+        "/Volumes/X isn't mounted",
+    ]
     _stub(tmp_path, monkeypatch, "osascript", "echo 'not allowed' >&2; exit 1")
     backup.alert("x")
     assert "the alert didn't show: not allowed" in capsys.readouterr().err

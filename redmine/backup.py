@@ -81,7 +81,11 @@ def log(message: str) -> None:
 
 def alert(message: str) -> None:
     """A caution alert on screen until dismissed. Blocks until then; launchd waits with it."""
-    script = ["on run argv", "display alert (item 1 of argv) message (item 2 of argv) as critical", "end run"]
+    script = [
+        "on run argv",
+        "display alert (item 1 of argv) message (item 2 of argv) as critical",
+        "end run",
+    ]
     args = ["osascript"] + [part for line in script for part in ("-e", line)]
     done = subprocess.run(args + ["Redmine backup failed", message], capture_output=True, text=True)
     if done.returncode != 0:
@@ -102,7 +106,9 @@ def docker(args: list[str], out=None) -> bytes:
         raise Failure("docker is not on PATH") from None
     if done.returncode != 0:
         detail = done.stderr.decode(errors="replace").strip().splitlines()
-        raise Failure(f"docker compose {' '.join(args[:2])} failed: {detail[-1] if detail else done.returncode}")
+        raise Failure(
+            f"docker compose {' '.join(args[:2])} failed: {detail[-1] if detail else done.returncode}"
+        )
     return done.stdout or b""
 
 
@@ -116,7 +122,10 @@ def docker_running() -> bool:
 def backup_db(dest: Path) -> set[int]:
     """Copy the database to dest, check it, and return its issue IDs."""
     with dest.open("wb") as out:
-        docker(["exec", "-T", "-u", "redmine", "redmine", "bundle", "exec", "ruby", "-e", RUBY_BACKUP], out)
+        docker(
+            ["exec", "-T", "-u", "redmine", "redmine", "bundle", "exec", "ruby", "-e", RUBY_BACKUP],
+            out,
+        )
     db = sqlite3.connect(f"file:{dest}?mode=ro", uri=True)
     try:
         check = db.execute("PRAGMA integrity_check").fetchone()[0]
@@ -131,11 +140,15 @@ def backup_db(dest: Path) -> set[int]:
 
 def backup_files(dest: Path) -> None:
     with dest.open("wb") as out:
-        docker(["exec", "-T", "redmine", "tar", "-C", "/usr/src/redmine/files", "-cf", "-", "."], out)
+        docker(
+            ["exec", "-T", "redmine", "tar", "-C", "/usr/src/redmine/files", "-cf", "-", "."], out
+        )
 
 
 def api_key() -> str:
-    done = subprocess.run(["security", "find-generic-password", "-s", KEYCHAIN, "-w"], capture_output=True, text=True)
+    done = subprocess.run(
+        ["security", "find-generic-password", "-s", KEYCHAIN, "-w"], capture_output=True, text=True
+    )
     if done.returncode != 0:
         raise Failure(f"no Keychain item {KEYCHAIN} holds the Redmine API key")
     return done.stdout.strip()
@@ -162,14 +175,17 @@ def export(dest: Path, key: str) -> set[int]:
     dest.mkdir(parents=True)
     for n in ids:
         issue = get(f"/issues/{n}.json?include={INCLUDE}", key)
-        (dest / f"{n}.json").write_text(json.dumps(issue, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+        (dest / f"{n}.json").write_text(
+            json.dumps(issue, indent=2, ensure_ascii=False) + "\n", encoding="utf-8"
+        )
     return set(ids)
 
 
 def prune(root: Path, keep: int, made: str) -> list[str]:
     """Remove all but the newest `keep` dated folders, never `made`. Returns the names removed."""
     dated = sorted(p.name for p in root.iterdir() if p.is_dir() and DATED.fullmatch(p.name))
-    old = [name for name in dated[:-keep] if name != made]  # a clock gone back still keeps tonight's
+    # A clock gone back still keeps tonight's.
+    old = [name for name in dated[:-keep] if name != made]
     for name in old:
         shutil.rmtree(root / name)
     return old
@@ -184,7 +200,9 @@ def run(volume: Path, today: datetime.date) -> int:
         log(f"{day} is already there; nothing to do")
         return 0
     if not docker_running():
-        raise Failure(f"Docker isn't running, so Redmine can't be backed up. Nothing was written to {volume}.")
+        raise Failure(
+            f"Docker isn't running, so Redmine can't be backed up. Nothing was written to {volume}."
+        )
     root.mkdir(exist_ok=True)
     with (root / ".lock").open("w") as lock:
         try:
@@ -207,13 +225,19 @@ def run(volume: Path, today: datetime.date) -> int:
             # An issue made since the database was copied is exported only, which is fine.
             missing = sorted(issues - exported)
             if missing:
-                shown = ", ".join(f"#{n}" for n in missing[:5]) + (", …" if len(missing) > 5 else "")
-                raise Failure(f"the export is missing {len(missing)} of the database's issues: {shown}")
+                shown = ", ".join(f"#{n}" for n in missing[:5]) + (
+                    ", …" if len(missing) > 5 else ""
+                )
+                raise Failure(
+                    f"the export is missing {len(missing)} of the database's issues: {shown}"
+                )
             partial.rename(day)
         finally:
             if partial.exists():
                 shutil.rmtree(partial)
-        log(f"{day}: database with {len(issues)} issues, attachments, {len(exported)} issues exported")
+        log(
+            f"{day}: database with {len(issues)} issues, attachments, {len(exported)} issues exported"
+        )
         for name in prune(root, KEEP, day.name):
             log(f"removed {root / name}, older than the newest {KEEP}")
     return 0
@@ -226,7 +250,9 @@ def plist() -> str:
         # launchd would run a script that `pr done` deletes, and fail before it could alert.
         raise Failure(f"{script} is in a worktree; make the plist from the main checkout")
     docker_dir = os.path.dirname(shutil.which("docker") or "/usr/local/bin/docker")
-    path = ":".join(dict.fromkeys([docker_dir, "/opt/homebrew/bin", "/usr/local/bin", "/usr/bin", "/bin"]))
+    path = ":".join(
+        dict.fromkeys([docker_dir, "/opt/homebrew/bin", "/usr/local/bin", "/usr/bin", "/bin"])
+    )
     logfile = Path.home() / "Library" / "Logs" / "gh-plan-redmine-backup.log"
     return plistlib.dumps(
         {

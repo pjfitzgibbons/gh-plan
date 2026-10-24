@@ -11,16 +11,25 @@ R = "example-org/app"
 
 def issue(n, est, ms, backlog, blockers=()):
     body = f"### Planning\n- Backlog ID: {backlog}\n- Estimate: {est}\n- Milestone: {ms}\n"
-    return {"number": n, "title": f"[{est}] Task {n}", "body": body,
-            "blockedBy": {"nodes": [{"number": b, "state": s} for b, s in blockers]}}
+    return {
+        "number": n,
+        "title": f"[{est}] Task {n}",
+        "body": body,
+        "blockedBy": {"nodes": [{"number": b, "state": s} for b, s in blockers]},
+    }
 
 
 class Next(unittest.TestCase):
     def setUp(self):
-        raw = [issue(10, 2, "phase-1", "1.4"), issue(9, 3, "phase-1", "1.3"),
-               issue(2, 1, "phase-0", "0.1"), issue(16, 3, "phase-1", "1.10", [(10, "OPEN")]),
-               issue(15, 3, "phase-1", "1.9", [(8, "CLOSED")]), issue(49, 3, "— (Icebox)", "U.3"),
-               issue(30, 2, "phase-2", "2.1")]
+        raw = [
+            issue(10, 2, "phase-1", "1.4"),
+            issue(9, 3, "phase-1", "1.3"),
+            issue(2, 1, "phase-0", "0.1"),
+            issue(16, 3, "phase-1", "1.10", [(10, "OPEN")]),
+            issue(15, 3, "phase-1", "1.9", [(8, "CLOSED")]),
+            issue(49, 3, "— (Icebox)", "U.3"),
+            issue(30, 2, "phase-2", "2.1"),
+        ]
         self.tasks = {i["number"]: parse(i) for i in raw}
 
     def test_order_skips_blocked_and_icebox(self):
@@ -35,7 +44,15 @@ class Next(unittest.TestCase):
         self.assertEqual(got[1].wip, ["branch feat/30-x", "timer running"])
 
     def test_assigned_to_me_is_wip_without_a_branch(self):
-        mark_wip(self.tasks, ["main"], "main", set(), R, {10: ["someone-else", "me"], 9: ["someone-else"]}, "me")
+        mark_wip(
+            self.tasks,
+            ["main"],
+            "main",
+            set(),
+            R,
+            {10: ["someone-else", "me"], 9: ["someone-else"]},
+            "me",
+        )
         got = next_tasks(self.tasks, 3)
         self.assertEqual([(t.number, t.wip) for t in got[:1]], [(10, ["assigned to me"])])
         self.assertEqual([t.number for t in got], [10, 2, 9])
@@ -49,9 +66,21 @@ class Days(unittest.TestCase):
     def test_last_active_days_skip_gaps(self):
         utc = timezone.utc
         closed = [{"closedAt": "2026-10-05T18:00:00Z"}]
-        intervals = [Interval(1, datetime(2026, 10, 12, 15, tzinfo=utc), None, {f"repo:{R}"}),
-                     Interval(2, datetime(2026, 10, 9, 15, tzinfo=utc), datetime(2026, 10, 9, 16, tzinfo=utc), {f"repo:{R}"}),
-                     Interval(3, datetime(2026, 10, 11, 15, tzinfo=utc), datetime(2026, 10, 11, 16, tzinfo=utc), {"repo:other/x"})]
+        intervals = [
+            Interval(1, datetime(2026, 10, 12, 15, tzinfo=utc), None, {f"repo:{R}"}),
+            Interval(
+                2,
+                datetime(2026, 10, 9, 15, tzinfo=utc),
+                datetime(2026, 10, 9, 16, tzinfo=utc),
+                {f"repo:{R}"},
+            ),
+            Interval(
+                3,
+                datetime(2026, 10, 11, 15, tzinfo=utc),
+                datetime(2026, 10, 11, 16, tzinfo=utc),
+                {"repo:other/x"},
+            ),
+        ]
         days = active_days(closed, intervals, R, date(2026, 10, 12), 3)
         self.assertEqual(days, [date(2026, 10, 5), date(2026, 10, 9), date(2026, 10, 12)])
 
