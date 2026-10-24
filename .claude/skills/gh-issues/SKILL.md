@@ -28,7 +28,7 @@ An issue is a Redmine issue, `#<n>`, its description in the issue outline. GitHu
 |---|---|
 | `gh pc [N]` | `gh pr create`, titled with the branch's first commit subject, body `.tmp/<n>/pr-body.md`, and asks Copilot to review |
 | `gh pb [N]` | `gh pr edit` on this branch's PR with `.tmp/<n>/pr-body.md` |
-| `pr [N]` | What Ship runs: commits with `.tmp/<n>/commit.txt`, pushes, opens or updates the PR, asks Copilot again when the push adds commits, sends the replies |
+| `pr [N]` | What Ship runs: commits with `.tmp/<n>/commit.txt`, rebases onto `origin/main` when behind it, pushes, opens or updates the PR, sends the replies |
 | `pr done [N]` | After the merge: sends any replies left and the PR body, so a Done line ticked after the merge reaches the PR, then says to press Done in Next up, which cleans up and closes the issue. Bare `pr` does the same once the PR has merged |
 | `issue_body --check N FILE` | Checks the file against the outline, shows the diff against issue `N`'s description, and prints the `issue_body --expect …` command that writes it. Only reads |
 | `issue_body --expect D N FILE` | The printed command: replaces the description, refusing if it changed since `--check`, and reads it back. A file that matches writes nothing |

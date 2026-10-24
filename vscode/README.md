@@ -43,10 +43,17 @@ Source Control's does on a Git refresh.
   Ship runs `pr`: it saves and checks again, refuses by name a file changed since Go staged the
   tree, so nothing goes in unreviewed, then runs `pr <n>` in a terminal in the worktree. That `pr`
   commits what Go staged, and refuses a change made since. Go and Ship both refuse a worktree file
-  with unsaved edits.
+  with unsaved edits. `pr` then fetches `origin` and, when the branch lacks `main`'s tip, rebases
+  it onto `origin/main` and prints "rebased onto <sha>", else "already on main", so the PR isn't
+  behind when Ship opens or updates it, and needs no Update branch, whose merge the Linear
+  history ruleset refuses. A rebase
+  that conflicts is aborted, leaving the branch as it was, and `pr` names the files and stops
+  before the push, as it does when the fetch fails. After a rebase the push replaces the
+  branch on GitHub, leased against the head just fetched. `pr` refuses a branch on GitHub with
+  commits the local one lacks by patch, pushed from another clone or dropped or rewritten here, so a push
+  never drops them, and names a push leased on GitHub's head for when they were dropped on purpose.
   Once `pr` succeeds, the review files, the Changes view and any diffs of the worktree's files
-  close; `pr` has deleted each reply once sent, and asked Copilot to review the PR
-  if the push added commits (`gh pc` asks when it opens one). `gh pr edit --help` says `--add-reviewer` re-requests a reviewer. The issue's Pull requests field links the PR, with a journal note, and Next up
+  close; `pr` has deleted each reply once sent. The issue's Pull requests field links the PR, with a journal note, and Next up
   refreshes. Edits made to a reply while `pr` ran, which it
   never saw, are kept beside it as `<file>.unsent` before its tab closes. Go and Ship
   again run `pr` again, which updates the PR body, and leave Redmine as it is once the PR is linked.

@@ -5,11 +5,16 @@
 #   commit  when the tree has changes: stages everything (.tmp/ is ignored) and commits with the
 #           message in .tmp/N/commit.txt, then deletes that file, so the next change needs a new one.
 #           Under Ship (PR_STAGED=1) it commits what Go staged, and refuses a change made since
-#   push    git push -u origin HEAD; a no-op when the remote has the branch's commits
+#   fetch   every time: fetches origin, and stops before the push when that fails. Refuses a
+#           GitHub branch with commits the local one lacks, so a push never drops them
+#   rebase  when the branch lacks origin's tip of the default branch: rebases onto it, so the PR isn't
+#           behind when pr opens or updates it, and needs no merge from it. A failed rebase is aborted, leaving the
+#           branch as it was, and stops before the push
+#   push    git push -u origin HEAD; a no-op when the remote has the branch's commits. After a
+#           rebase, a force push leased against the head just fetched, so a push from elsewhere
+#           since is refused, never overwritten
 #   PR      gh pc when the branch has no PR, else gh pb, which replaces the body with
 #           .tmp/N/pr-body.md, then opens the PR in the GitHub Pull Requests extension
-#   Copilot when the push moved the PR's branch: asks Copilot to review it again, so each round of
-#           review fixes is reviewed in turn (gh pc asks for a new PR)
 #   replies when .tmp/N/replies/ holds <comment id>.md files: posts each to its review thread,
 #           resolves the thread and deletes the file (pr_threads.py --post)
 #
@@ -45,6 +50,14 @@ finish=0
 
 root=$(git rev-parse --show-toplevel)
 cd "$root"
+# Mid-rebase there is no branch, and a commit would land in the rebase, merge, cherry-pick or revert.
+rebasing() { [ -d "$(git rev-parse --git-path rebase-merge)" ] || [ -d "$(git rev-parse --git-path rebase-apply)" ]; }
+! rebasing ||
+  { echo "pr: a rebase is in progress; finish it with git rebase --continue, or git rebase --abort, then run pr again" >&2; exit 2; }
+for op in MERGE CHERRY_PICK REVERT; do
+  ! git rev-parse -q --verify "${op}_HEAD" >/dev/null ||
+    { echo "pr: a $(echo "$op" | tr A-Z_ a-z-) is in progress; finish or abort it, then run pr again" >&2; exit 2; }
+done
 branch=$(git branch --show-current)
 echo "pr: checking $branch"
 base=$(gh repo view --json defaultBranchRef --jq .defaultBranchRef.name)
@@ -91,26 +104,73 @@ else
   echo "pr: nothing to commit"
 fi
 
-# The PR's head on GitHub before the push, so Copilot is asked again only when the push adds
-# commits. GitHub's, not the local origin/<branch>, which another clone's push leaves behind. A
-# read that fails leaves it empty, so Copilot is asked rather than the push stopped.
-head_before=""
-[ -z "$state" ] || head_before=$(gh pr view "$branch" --json headRefOid --jq .headRefOid || true)
+# Rebase onto origin's base, on committed work only, so the PR needs no Update branch, whose merge
+# the Linear history ruleset refuses. A failed fetch stops here: nothing is pushed on a stale base.
+# --prune, so a branch deleted on GitHub leaves no stale origin/<branch> to lease against.
+if ! why=$(GIT_TERMINAL_PROMPT=0 git fetch -q --prune origin 2>&1); then
+  echo "pr: couldn't fetch origin, so nothing is pushed; check the network and run pr again:" >&2
+  printf '%s\n' "$why" | sed 's/^/  /' >&2
+  exit 2
+fi
+onto=$(git rev-parse -q --verify "refs/remotes/origin/$base") ||
+  { echo "pr: the fetch brought no origin/$base, so nothing is pushed; check remote.origin.fetch" >&2; exit 2; }
+pushed=$(git rev-parse -q --verify "refs/remotes/origin/$branch" || true)
+# GitHub's commits that HEAD lacks, by patch, leaving out main's: a push would drop them, whether
+# another clone pushed them or they were dropped or rewritten here. A merge has no patch, and may
+# carry edits of its own, so one HEAD lacks is refused too. A patch-id counts context lines,
+# so a copy rebased past nearby edits doesn't match its original, and is refused too: the printed
+# push leases on the SHA, so a fetch since, such as VS Code's autofetch, can't widen it.
+if [ -n "$pushed" ]; then
+  lost=$(git log --oneline --cherry-pick --right-only "HEAD...$pushed" "^$onto")
+  if [ -n "$lost" ]; then
+    echo "pr: GitHub's $branch has commits $branch lacks, by patch, so nothing is pushed:" >&2
+    printf '%s\n' "$lost" | sed 's/^/  /' >&2
+    echo "pr: pushed from another clone: git pull --rebase origin $branch, then pr $n" >&2
+    echo "pr: rewritten or dropped here: git push --force-with-lease=refs/heads/$branch:$pushed origin HEAD, then pr $n" >&2
+    exit 2
+  fi
+fi
+short=$(git rev-parse --short "$onto")
+if git merge-base --is-ancestor "$onto" HEAD; then
+  echo "pr: already on $base ($short)"
+else
+  # git overwrites an ignored file at a path the rebase brings in, so a local file there is refused.
+  clash=$(git diff --name-only --diff-filter=A "HEAD...$onto" | while IFS= read -r f; do
+    [ ! -e "$f" ] || printf '%s\n' "$f"
+  done)
+  if [ -n "$clash" ]; then
+    echo "pr: origin/$base adds files $branch has as ignored files, which a rebase would overwrite, so nothing is pushed:" >&2
+    printf '%s\n' "$clash" | sed 's/^/  /' >&2
+    echo "pr: move them aside, then pr $n" >&2
+    exit 2
+  fi
+  if ! why=$(git rebase -q "$onto" 2>&1); then
+    conflicts=$(git diff --name-only --diff-filter=U)
+    # A rebase a hook refused never started, so has nothing to abort.
+    ! rebasing || git rebase --abort ||
+      { echo "pr: rebasing $branch onto origin/$base failed, and so did git rebase --abort; nothing is pushed. Run git rebase --abort, then pr $n" >&2; exit 2; }
+    echo "pr: rebasing $branch onto origin/$base ($short) failed, so it is aborted, $branch is as it was, and nothing is pushed:" >&2
+    printf '%s\n' "${conflicts:-$why}" | sed 's/^/  /' >&2
+    echo "pr: to rebase by hand: git rebase origin/$base, fix and git add each file, git rebase --continue," >&2
+    echo "pr: ${pushed:+git push --force-with-lease=refs/heads/$branch:$pushed origin HEAD, }then pr $n" >&2
+    exit 2
+  fi
+  [ -z "$why" ] || printf '%s\n' "$why"
+  echo "pr: rebased onto $short (origin/$base)"
+fi
+# A branch rewritten without dropping GitHub's commits, by this run's rebase or one by hand, replaces
+# GitHub's, leased against the head just fetched, so a push from elsewhere since is refused too.
+lease=""
+if [ -n "$pushed" ] && ! git merge-base --is-ancestor "$pushed" HEAD; then
+  lease="--force-with-lease=refs/heads/$branch:$pushed"
+fi
 
 # No -q: a slow push shows its progress. A credential prompt fails at once rather than waiting.
-echo "pr: pushing $branch"
-GIT_TERMINAL_PROMPT=0 git push -u origin HEAD
+echo "pr: pushing $branch${lease:+, replacing the rewritten branch on GitHub}"
+# shellcheck disable=SC2086 # $lease is one word, or none
+GIT_TERMINAL_PROMPT=0 git push -u $lease origin HEAD
 
 if [ -n "$state" ]; then
-  # Straight after the push, so a later step that fails can't leave pushed commits unreviewed. A pr
-  # stopped between the push and this request still can: the next one finds nothing new to ask about.
-  if [ "$head_before" != "$(git rev-parse HEAD)" ]; then
-    echo "pr: asking Copilot to review the new commits"
-    gh pr edit "$branch" --add-reviewer @copilot >/dev/null ||
-      echo "pr: Copilot wasn't asked to review the PR; ask under Reviewers" >&2
-  else
-    echo "pr: no new commits; Copilot isn't asked again"
-  fi
   echo "pr: updating the PR body"
   gh pb "$n"
 else
