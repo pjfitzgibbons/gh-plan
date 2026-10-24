@@ -1,13 +1,16 @@
 """Offline tests for the gh-issues scripts. Run from scripts/: python3 -m unittest test_scripts"""
 
+import io
 import os
 import subprocess
 import tempfile
 import unittest
+from unittest import mock
 from pathlib import Path
 
 from outline import check, expected
 from pr_threads import emit as threads_emit, post as threads_post, read_replies, read_reply_dir, write_drafts
+import issue_body
 import new_issue
 from redmine import Refused
 
@@ -445,6 +448,108 @@ class NewIssue(unittest.TestCase):
     def test_a_status_redmine_dropped_is_named(self):
         with self.assertRaisesRegex(Refused, "#80 is created, but Redmine didn't keep: status_id"):
             self.run_it(FakeTracker(drop_status=True))
+
+
+BODY = GOOD.replace("- [x] Tests prove", "- [ ] Tests prove")
+
+
+class FakeIssue:
+    """A Redmine holding one issue, #90, for issue_body.py; it stores descriptions with \\r\\n, as Redmine does."""
+
+    url = "http://redmine.test"
+
+    def __init__(self, description="### Task\r\nOld.\r\n", keep=True, touch=None):
+        self.issue = {"id": 90, "subject": "Code search", "status": {"id": 2}, "description": description,
+                      "custom_fields": [{"id": 1, "value": "3"}], "updated_on": "then"}
+        self.puts = []
+        self.keep, self.touch = keep, touch
+
+    def send(self, method, path, body=None):
+        if path != "/issues/90.json":
+            raise Refused(f"Redmine {method} {path}: HTTP 404")
+        if method == "PUT":
+            self.puts.append(body)
+            if self.keep:
+                self.issue["description"] = body["issue"]["description"].replace("\n", "\r\n")
+            if self.touch:
+                self.issue.update(self.touch)
+            self.issue["updated_on"] = "now"
+            return None
+        return {"issue": dict(self.issue)}
+
+
+class IssueBody(unittest.TestCase):
+    """issue_body.py: the outline check and the diff before any write, and a read-back that names what Redmine didn't keep."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.file = Path(self.tmp.name) / "issue-90-body.md"
+        self.file.write_text(BODY)
+        self.lenses, self.extra = expected(GLOBAL, REPO)
+        out = mock.patch("sys.stdout", new_callable=io.StringIO)
+        self.out = out.start()
+        self.addCleanup(out.stop)
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def run_it(self, redmine, n=90, check_only=False):
+        return issue_body.run(n, self.file, redmine, check_only, self.lenses, self.extra)
+
+    def test_replaces_the_description_and_reads_it_back(self):
+        r = FakeIssue()
+        self.assertEqual(self.run_it(r), "#90's description replaced: http://redmine.test/issues/90")
+        self.assertEqual(r.puts, [{"issue": {"description": BODY}}])
+        self.assertEqual(issue_body.normal(r.issue["description"]), BODY)
+
+    def test_check_shows_the_diff_and_writes_nothing(self):
+        r = FakeIssue()
+        self.assertIn("a run replaces #90's description", self.run_it(r, check_only=True))
+        self.assertIn("--- #90 in Redmine\n", self.out.getvalue())
+        self.assertIn("-Old.\n", self.out.getvalue())
+        self.assertIn("+Do the thing.\n", self.out.getvalue())
+        self.assertEqual(r.puts, [])
+
+    def test_a_matching_file_writes_nothing(self):
+        r = FakeIssue(description=BODY.replace("\n", "\r\n") + "\r\n")
+        self.assertEqual(self.run_it(r), f"#90's description already matches {self.file}; nothing written")
+        self.assertEqual(r.puts, [])
+
+    def test_a_body_off_the_outline_refuses_before_any_request(self):
+        r = FakeIssue()
+        r.send = mock.Mock()
+        self.file.write_text("### Task\nDo it.\n")
+        with self.assertRaisesRegex(Refused, "missing section: ### Done"):
+            self.run_it(r)
+        r.send.assert_not_called()
+
+    def test_a_ticked_done_line_is_refused(self):
+        r = FakeIssue()
+        self.file.write_text(GOOD)
+        with self.assertRaisesRegex(Refused, "'- \\[x\\] Tests prove the thing.' is ticked"):
+            self.run_it(r)
+        self.assertEqual(r.puts, [])
+
+    def test_front_matter_is_refused_even_after_a_bom(self):
+        for head in ("", "\ufeff"):
+            self.file.write_text(head + "---\nsubject: x\n---\n" + BODY)
+            with self.subTest(bom=bool(head)), self.assertRaisesRegex(Refused, "front matter"):
+                self.run_it(FakeIssue())
+
+    def test_an_unknown_issue_is_named(self):
+        r = FakeIssue()
+        with self.assertRaisesRegex(Refused, "#91 doesn't exist"):
+            self.run_it(r, n=91)
+        self.assertEqual(r.puts, [])
+
+    def test_a_description_redmine_did_not_keep_is_named(self):
+        with self.assertRaisesRegex(Refused, "differs from what was sent in: description;"):
+            self.run_it(FakeIssue(keep=False))
+
+    def test_another_field_that_changed_is_named(self):
+        touch = {"status": {"id": 5}, "custom_fields": [{"id": 1, "value": "5"}]}
+        with self.assertRaisesRegex(Refused, "differs from what was sent in: custom_fields, status;"):
+            self.run_it(FakeIssue(touch=touch))
 
 
 if __name__ == "__main__":

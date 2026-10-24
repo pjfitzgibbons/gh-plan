@@ -7,14 +7,14 @@ description: Work Redmine issues and their PRs the way Peter's repos expect. Iss
 
 Adapted from GitHub's `github-issues` skill ([github/awesome-copilot](https://github.com/github/awesome-copilot/tree/main/skills/github-issues), MIT), rewritten around Redmine issues and the outlines in `~/.claude/agents/technical-writer.md`.
 
-An issue is a Redmine issue, `#<n>`, its description in the issue outline. GitHub Issues are not used. The skill lives in gh-plan at `.claude/skills/gh-issues/`, and `~/.claude/skills/gh-issues` links to the main checkout's copy, so every repo uses the one skill. The scripts are stdlib Python and shell. Claude runs only the ones that read; every commit, push, `gh` write and Redmine write happens on a button in the GH Plan extension's Next up panel, or a `pr` Peter runs.
+An issue is a Redmine issue, `#<n>`, its description in the issue outline. GitHub Issues are not used. The skill lives in gh-plan at `.claude/skills/gh-issues/`, and `~/.claude/skills/gh-issues` links to the main checkout's copy, so every repo uses the one skill. The scripts are stdlib Python and shell. Claude runs only the ones that read; every commit, push, `gh` write and Redmine write happens on a button in the GH Plan extension's Next up panel, or a `pr`, `new_issue` or `issue_body` Peter runs.
 
 ## Rules
 
 1. **Read the issue before you write about it.** `redmine-get /issues/<n>.json`, or `?include=journals` for its history. Never write an issue's description from memory.
 2. **Peter presses the buttons.** Claude writes the files in `.tmp/<n>/` (the commit message, the PR body with its Done list ticked, review replies) for Peter to review; Ship sends them with `pr`. Never `git commit`, `git push`, `gh pr create` or a Redmine write on Claude's own.
 3. **Branches are `<type>/<n>-<slug>`**, `feat/`, `fix/` or `chore/`, off the default branch. Start makes the branch and its worktree. Everything reaches the default branch by PR.
-4. **The first commit's subject is the PR's title**, and ends `(fixes #<n>)` when the PR finishes issue `<n>`, `(refs #<n>)` only when it does part of it. `gh pc` titles the PR with the branch's first commit subject, the squash merge keeps it, and Redmine closes the issue when it next fetches that commit. The PR body always opens with the same, `Fixes #<n>.` or `Refs #<n>.`, on its own line. The first commit's message says what the issue asks for and how this commit does it. When the work is split across PRs on purpose, it says only this PR's part.
+4. **The first commit's subject is the PR's title**, and ends `(fixes #<n>)` when the PR finishes issue `<n>`, `(refs #<n>)` only when it does part of it. `gh pc` titles the PR with the branch's first commit subject, the squash merge keeps it, and Redmine closes the issue when it next fetches that commit. The PR body always opens with the same, `Fixes #<n>.` or `Refs #<n>.`, on its own line. The first commit's message says what the issue asks for and how this commit does it. When the work is split across PRs on purpose, it says only this PR's part. Every commit message, this one and a later round's, is terse: ten lines or fewer, subject and trailer included, unless the commit's detail really needs more. The PR body holds the detail.
 5. **A later round's commit describes only what it changes.** Its subject and body name what the round fixes, such as the review findings it answers or a check that failed, and never restate the PR's whole change or tell how earlier rounds led to it: what was found, and how it's fixed. Write it from the round's diff, `git diff` before Go, not from the issue.
 6. **PRs get a body file, never `--fill`.** `gh pr create --fill` copies the commit message into the PR, including the `Assisted-by:` trailer, and PR descriptions carry no attribution. Start from [references/pr-body.md](references/pr-body.md).
 7. **Look it up, don't guess.** If a gh flag isn't familiar, run `gh <cmd> --help` before saying it doesn't exist or flagging it unverified.
@@ -22,7 +22,7 @@ An issue is a Redmine issue, `#<n>`, its description in the issue outline. GitHu
 
 ## Aliases and commands
 
-`gh pc` and `gh pb` are gh aliases over `scripts/ghbody.sh`. Each takes an optional issue number and otherwise reads it from the branch name (`fix/88-go-requests-copilot-s-review` → `88`). `pr`, `new_issue` and `redmine-get` are in `~/.local/bin/`.
+`gh pc` and `gh pb` are gh aliases over `scripts/ghbody.sh`. Each takes an optional issue number and otherwise reads it from the branch name (`fix/88-go-requests-copilot-s-review` → `88`). `pr`, `new_issue`, `issue_body` and `redmine-get` are in `~/.local/bin/`.
 
 | Command | Does |
 |---|---|
@@ -30,6 +30,7 @@ An issue is a Redmine issue, `#<n>`, its description in the issue outline. GitHu
 | `gh pb [N]` | `gh pr edit` on this branch's PR with `.tmp/<n>/pr-body.md` |
 | `pr [N]` | What Ship runs: commits with `.tmp/<n>/commit.txt`, pushes, opens or updates the PR, asks Copilot again when the push adds commits, sends the replies |
 | `pr done [N]` | After the merge: sends any replies left and the PR body, so a Done line ticked after the merge reaches the PR, then says to press Done in Next up, which cleans up and closes the issue. Bare `pr` does the same once the PR has merged |
+| `issue_body [--check] N FILE` | Replaces issue `N`'s description with the file, after the outline check and a diff against the current one, and reads it back; `--check` only reads, and a file that matches writes nothing |
 
 `gh pc` and `gh pb` refuse a body containing `Assisted-by` or `Co-authored-by`. `GHBODY_DRY=1` prints the command instead.
 
@@ -42,7 +43,7 @@ Peter presses **Start** on the issue's row in Next up. It makes the branch and i
    ```
    python3 ~/.claude/skills/gh-issues/scripts/outline.py <file>
    ```
-   Done must be at least two pass/fail checkboxes, and each `[x]` lens needs a Done condition that names it (`- [ ] L6: …`). If the description doesn't conform, show Peter the rewrite in chat; he makes it in Redmine. An issue in the old outline (Summary, Scope, Acceptance, Tests, Lenses) is rewritten now: Summary and Scope become Task, out-of-scope lines become Guardrails, Lenses stays, and Acceptance and Tests become Done's conditions.
+   Done must be at least two pass/fail checkboxes, and each `[x]` lens needs a Done condition that names it (`- [ ] L6: …`). If the description doesn't conform, write the rewrite to `.tmp/<n>/issue-<n>-body.md`, the description alone, and run `issue_body --check <n> .tmp/<n>/issue-<n>-body.md`, which only reads: the outline check and the diff. Then give Peter the same command without `--check`; it writes the description and nothing else, and reads it back. The same goes for an issue the work changes. An issue in the old outline (Summary, Scope, Acceptance, Tests, Lenses) is rewritten now: Summary and Scope become Task, out-of-scope lines become Guardrails, Lenses stays, and Acceptance and Tests become Done's conditions.
 3. **Code once the description conforms.**
 
 ## Shipping

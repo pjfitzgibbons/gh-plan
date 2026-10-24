@@ -56,9 +56,9 @@ settings: what this repo needs is here or in `.claude/`.
 ## Boundaries
 
 - **Peter presses the buttons.** Every commit, push, `gh` write and Redmine write happens on Start,
-  Ship or Done, or a `pr` he runs. Write `.tmp/<n>/commit.txt`, `pr-body.md` and `replies/`
-  for him to review; reads, inspections, the test suite and cleaning up your own mess
-  you run yourself.
+  Ship or Done, or a `pr`, `new_issue` or `issue_body` he runs. Write `.tmp/<n>/commit.txt`,
+  `pr-body.md`, `replies/` and issue drafts for him to review; reads, inspections, the test
+  suite and cleaning up your own mess you run yourself.
 - **An agent commits only on its own issue branch,** and only when asked.
 - **Never commit secrets.** The tool authenticates by shelling out to `gh` (requirement `G3`); do
   not add a library that needs a PAT.
