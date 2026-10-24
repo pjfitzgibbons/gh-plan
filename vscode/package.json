@@ -10,7 +10,7 @@
   "main": "./extension.js",
   "activationEvents": ["onStartupFinished"],
   "scripts": { "test": "node --test", "lint": "eslint ." },
-  "devDependencies": { "@eslint/js": "9.39.5", "eslint": "9.39.5", "globals": "16.5.0" },
+  "devDependencies": { "@eslint/js": "10.0.1", "eslint": "10.13.0", "globals": "16.5.0" },
   "contributes": {
     "viewsContainers": {
       "activitybar": [{ "id": "plan", "title": "Plan", "icon": "media/plan.svg" }]
