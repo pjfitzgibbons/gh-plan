@@ -31,7 +31,7 @@ Do the thing.
 
 ### Done
 - [ ] The thing is done.
-- [x] Tests prove the thing.
+- [ ] Tests prove the thing.
 - [ ] L1: no secret appears in the diff.
 
 ### Notes
@@ -88,7 +88,7 @@ class Outline(unittest.TestCase):
         self.assertEqual(f, ["L2: has a note but is [ ]; mark it [x] or drop the note"])
 
     def test_one_done_condition_is_too_few(self):
-        f = check(GOOD.replace("- [x] Tests prove the thing.\n", "").replace("- [ ] The thing is done.\n", ""),
+        f = check(GOOD.replace("- [ ] Tests prove the thing.\n", "").replace("- [ ] The thing is done.\n", ""),
                   self.lenses, self.extra)
         self.assertEqual(len(f), 1)
         self.assertTrue(f[0].startswith("Done: 1 pass/fail condition(s); a Task needs at least 2"))
@@ -96,6 +96,10 @@ class Outline(unittest.TestCase):
     def test_done_lines_are_checkboxes(self):
         f = check(GOOD.replace("- [ ] The thing is done.", "- The thing is done."), self.lenses, self.extra)
         self.assertIn("Done: '- The thing is done.' is not a checkbox; write each condition as - [ ] …", f)
+
+    def test_a_ticked_done_line_is_named(self):
+        f = check(GOOD.replace("- [ ] The thing is done.", "- [x] The thing is done."), self.lenses, self.extra)
+        self.assertEqual(f, ["Done: 'The thing is done.' is ticked; an issue's description is never ticked, the PR body is"])
 
     def test_bug_shape(self):
         bug = GOOD.replace("Do the thing.", "**Steps** run it. **Expected** y. **Actual** z.")
@@ -450,7 +454,7 @@ class NewIssue(unittest.TestCase):
             self.run_it(FakeTracker(drop_status=True))
 
 
-BODY = GOOD.replace("- [x] Tests prove", "- [ ] Tests prove")
+BODY = GOOD
 
 
 class FakeIssue:
@@ -493,8 +497,10 @@ class IssueBody(unittest.TestCase):
     def tearDown(self):
         self.tmp.cleanup()
 
-    def run_it(self, redmine, n=90, check_only=False):
-        return issue_body.run(n, self.file, redmine, check_only, self.lenses, self.extra)
+    def run_it(self, redmine, n=90, check_only=False, expect=None):
+        if expect is None and not check_only and n == 90:
+            expect = issue_body.digest(issue_body.normal(redmine.issue["description"]))
+        return issue_body.run(n, self.file, redmine, check_only, self.lenses, self.extra, expect)
 
     def test_replaces_the_description_and_reads_it_back(self):
         r = FakeIssue()
@@ -504,10 +510,21 @@ class IssueBody(unittest.TestCase):
 
     def test_check_shows_the_diff_and_writes_nothing(self):
         r = FakeIssue()
-        self.assertIn("a run replaces #90's description", self.run_it(r, check_only=True))
+        said = self.run_it(r, check_only=True)
+        seen = issue_body.digest("### Task\nOld.\n")
+        self.assertEqual(said, f"{self.file} is ready; to write it: issue_body --expect {seen} 90 {self.file}")
         self.assertIn("--- #90 in Redmine\n", self.out.getvalue())
         self.assertIn("-Old.\n", self.out.getvalue())
         self.assertIn("+Do the thing.\n", self.out.getvalue())
+        self.assertEqual(r.puts, [])
+
+    def test_a_description_edited_since_check_is_not_overwritten(self):
+        r = FakeIssue()
+        seen = issue_body.digest(issue_body.normal(r.issue["description"]))
+        r.issue["description"] = "### Task\r\nOld, with a typo fixed.\r\n"
+        for expect in (seen, ""):
+            with self.subTest(expect=expect), self.assertRaisesRegex(Refused, "isn't the one --check showed"):
+                self.run_it(r, expect=expect)
         self.assertEqual(r.puts, [])
 
     def test_a_matching_file_writes_nothing(self):
@@ -525,8 +542,8 @@ class IssueBody(unittest.TestCase):
 
     def test_a_ticked_done_line_is_refused(self):
         r = FakeIssue()
-        self.file.write_text(GOOD)
-        with self.assertRaisesRegex(Refused, "'- \\[x\\] Tests prove the thing.' is ticked"):
+        self.file.write_text(GOOD.replace("- [ ] Tests prove", "- [x] Tests prove"))
+        with self.assertRaisesRegex(Refused, "'Tests prove the thing.' is ticked"):
             self.run_it(r)
         self.assertEqual(r.puts, [])
 
@@ -534,6 +551,15 @@ class IssueBody(unittest.TestCase):
         for head in ("", "\ufeff"):
             self.file.write_text(head + "---\nsubject: x\n---\n" + BODY)
             with self.subTest(bom=bool(head)), self.assertRaisesRegex(Refused, "front matter"):
+                self.run_it(FakeIssue())
+
+    def test_a_file_that_cannot_be_read_is_refused(self):
+        for content in (None, b"\xff\xfe###"):
+            if content is None:
+                self.file.unlink(missing_ok=True)
+            else:
+                self.file.write_bytes(content)
+            with self.subTest(content=content), self.assertRaisesRegex(Refused, "can't read it"):
                 self.run_it(FakeIssue())
 
     def test_an_unknown_issue_is_named(self):

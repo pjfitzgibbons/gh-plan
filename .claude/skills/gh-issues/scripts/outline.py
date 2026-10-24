@@ -5,7 +5,7 @@
 
 The front matter is skipped: only the `###` sections after it are checked. The body is Task,
 Guardrails, Lenses and Done. Lenses is the lens checklist, every lens listed, and Done is a set of
-pass/fail checkboxes, at least two of them. Every [x] lens has a Done condition that names it
+pass/fail checkboxes, at least two of them, none ticked: the PR body ticks them. Every [x] lens has a Done condition that names it
 (`- [ ] L6: …`), so the review topic is checked before the item is finished.
 
 The outline is ~/.claude/agents/technical-writer.md (*Outlines*) plus the repo's
@@ -66,7 +66,8 @@ def check(body: str, lenses: list[str], extra: list[str]) -> list[str]:
 
     if "Done" in found:
         done = [m for line in found["Done"].splitlines() if (m := DONE_LINE.match(line.strip()))]
-        findings += [f"Done: mark [{m[1]}] on {m[2]!r}; use [ ] or [x]" for m in done if m[1] not in " x"]
+        findings += [f"Done: {m[2]!r} is ticked; an issue's description is never ticked, the PR body is" for m in done if m[1] == "x"]
+        findings += [f"Done: mark [{m[1]}] on {m[2]!r}; use [ ]" for m in done if m[1] not in " x"]
         loose = [l.strip() for l in found["Done"].splitlines() if l.strip().startswith("- ") and not DONE_LINE.match(l.strip())]
         findings += [f"Done: {l!r} is not a checkbox; write each condition as - [ ] …" for l in loose]
         if len(done) < MIN_DONE:
