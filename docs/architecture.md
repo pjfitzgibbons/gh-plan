@@ -168,6 +168,7 @@ through the REST API, with the same Keychain keys.
 | Editor integration | A VS Code extension in JavaScript, tested with `node --test` | [`vscode/README.md`](../vscode/README.md) |
 | Pull requests | Subprocess to `gh` | Requirement [`G3`](requirements.md) |
 | Keys | The macOS Keychain | Requirement [`G3`](requirements.md) |
+| Checks | `scripts/assess`, run by GitHub Actions as `main`'s one required check | [`checks/README.md`](../checks/README.md) |
 
 <a id="operations"></a>
 ## 7. Operations
@@ -225,6 +226,10 @@ runs `pr`: it saves and checks again, refuses by name any file changed since Go 
 then runs `pr <n>` in a terminal in the worktree. Under Ship, `pr` commits the index Go staged and
 refuses a change made since, rather than staging again. Go and Ship refuse a worktree file with
 unsaved edits, which neither the stage nor the commit would hold.
+
+Before the commit message is written, `scripts/assess` runs every check, and the agent review runs
+only once it passes. The PR's `assess` check runs it again; `main` requires that check and every
+review thread resolved before a merge.
 
 `pr` commits with `commit.txt`, pushes, and opens the PR or replaces its body. It then posts each
 reply to its thread and resolves the thread. Each reply is deleted once sent, so a second `pr`
@@ -314,8 +319,8 @@ The Lanes tab is at `/projects/<identifier>/lanes`, and has no Icebox column
 1. Redmine is the tracker. Its database holds every issue, with its status and history, outside
    the repos it plans, and nothing tracker-related is committed in them
    ([ADR 0011](adr/0011-redmine-is-the-tracker.md)).
-2. The default branch carries the code, and every change reaches it through a pull request. An
-   issue's status lives in Redmine: the extension's Start and Done set it, and a `fixes #<n>`
+2. The default branch carries the code, and every change reaches it through a pull request whose
+   `assess` check passed and whose review threads are resolved. An issue's status lives in Redmine: the extension's Start and Done set it, and a `fixes #<n>`
    commit closes the issue when Redmine fetches it (§7.4). A Done tick is a verification record,
    not status: it is recorded in the PR's body, and status in Redmine.
 3. Retired with the tool's `plan:` commits ([ADR 0011](adr/0011-redmine-is-the-tracker.md)), so the

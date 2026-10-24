@@ -46,6 +46,8 @@ target-version = "py310"
 per-file-target-version = { "redmine/backup.py" = "py39" }
 # The script folders import each other by bare name: their modules are first-party.
 src = [".", ".claude/hooks", ".claude/skills/gh-issues/scripts", ".claude/skills/plan-report/scripts"]
+# Python scripts without a .py name, which ruff would otherwise skip.
+extend-include = ["scripts/assess"]
 
 [tool.ruff.format]
 # The docs' Python blocks are laid out by hand, aligned comments and all.

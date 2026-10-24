@@ -21,16 +21,19 @@ settings: what this repo needs is here or in `.claude/`.
 
 ## Commands
 
+- **Assess:** `scripts/assess` runs every check below and each checker in `checks/`, one line
+  each, and exits 1 if any failed; it is CI's one required check. Run it before writing
+  `commit.txt`, and whenever asked. `--rules` lists the rules `checks/` covers.
 - **Tests:** `uv run pytest` runs `tests/` (the backup and contents-list suites), `.claude/hooks/`
   and the gh-issues scripts, and fails under 90% coverage of `redmine/` and `.claude/hooks/`.
-- **Python lint:** `uv run ruff check .` and `uv run ruff format --check .`, the CI's `ruff` job;
-  `uv run ruff format .` fixes the format.
+- **Python lint:** `uv run ruff check .` and `uv run ruff format --check .`; `uv run ruff format .`
+  fixes the format.
 - **The VS Code extension:** `npm test` and `npm run lint`, in `vscode/`, after `npm install`.
 - **Review findings:** weigh severity, visibility and frequency. Fix silent failures that lose
   work, files, commits or the tracker's state, and hard crashes, even rare ones. A rare warning or
   a clean error-stop can stay.
-- **Before each push:** `/code-review high` on the branch's whole diff, review fixes included. The
-  PR body says it ran.
+- **Before each push:** `/code-review high`, once `scripts/assess` passes, on the branch's whole
+  diff, review fixes included. The PR body says it ran.
 - **Python:** `python3` on PATH. `/usr/bin/python3` is 3.9 and can't run the skill scripts.
 - **An issue's work:** Start, Go, Ship and Done in the extension's Next up panel
   ([`vscode/README.md`](vscode/README.md)).
