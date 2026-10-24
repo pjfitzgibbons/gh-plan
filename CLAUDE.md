@@ -49,6 +49,10 @@ settings: what this repo needs is here or in `.claude/`.
 - **A PR title ends `(fixes #<n>)`** when the PR finishes Redmine issue `<n>`, and `(refs #<n>)`
   only when it does part of it. The title becomes the squash commit's subject, and Redmine closes
   the issue when it next fetches that commit.
+- **Dependabot's PRs are the exception** to the branch and title rules (`.github/dependabot.yml`):
+  `dependabot/` branches, `chore:` titles, no Redmine issue and no Done. A person, never an agent,
+  merges one once CI passes, and a Redmine one by `redmine/README.md`'s *Upgrading*; CI doesn't
+  build Redmine.
 - **An AI is never an author** (the Linux kernel's
   [coding-assistants](https://docs.kernel.org/process/coding-assistants.html) rule). No
   `Co-Authored-By`, `Signed-off-by`, `Claude-Session` or "Generated with" line names an AI, in a

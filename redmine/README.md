@@ -61,6 +61,9 @@ drive, and builds each folder as `.<date>.partial`, renaming it when complete, s
 leaves no dated folder. It keeps the newest 14 dated folders and removes older ones, never the one
 it just made. Beside them it keeps a `.lock` and clears its own leftover `.<date>.partial`; it
 touches nothing else in `redmine_backups`. A run on a day that already has its folder does nothing.
+`python3 redmine/backup.py --again` backs up now, to a folder of its own named with the date and
+time, `<YYYY-MM-DD>-<HHMMSS>`. The 14 kept are the nightly folders; a timed one stays while it's no
+older than the oldest of them. A second `--again` in the same second fails, with an alert.
 
 When the drive isn't mounted, Docker isn't running, or any step fails, the job logs why, shows a
 caution alert naming the cause that stays until dismissed, and exits 1. The drive counts as
@@ -87,7 +90,7 @@ volume's `-wal` and `-shm` files first: SQLite would replay a stale WAL into the
 ```
 docker compose -f redmine/compose.yml stop
 docker run --rm -v gh-plan-redmine_db:/db -v gh-plan-redmine_files:/files -v <backup>:/backup:ro \
-  --entrypoint sh gh-plan-redmine:7.0.2-opale-1.7.2 -c 'rm -f /db/redmine.db-wal /db/redmine.db-shm &&
+  --entrypoint sh gh-plan-redmine:local -c 'rm -f /db/redmine.db-wal /db/redmine.db-shm &&
   cp /backup/redmine.db /db/ && tar -xf /backup/files.tar -C /files && chown -R redmine:redmine /db /files'
 docker compose -f redmine/compose.yml up -d
 ```
@@ -99,7 +102,7 @@ mkdir -p /tmp/restore/sqlite /tmp/restore/files
 cp <backup>/redmine.db /tmp/restore/sqlite/ && tar -xf <backup>/files.tar -C /tmp/restore/files
 docker run -d --name redmine-restore -p 127.0.0.1:3011:3000 \
   -v /tmp/restore/sqlite:/usr/src/redmine/sqlite -v /tmp/restore/files:/usr/src/redmine/files \
-  gh-plan-redmine:7.0.2-opale-1.7.2
+  gh-plan-redmine:local
 REDMINE_URL=http://127.0.0.1:3011 redmine-get '/issues.json?status_id=*&limit=1'
 docker rm -f redmine-restore
 ```
@@ -201,14 +204,42 @@ are scanned as usual.
 
 ## Upgrading
 
+Dependabot opens a PR in a week that has a new patch `redmine` tag (`.github/dependabot.yml`),
+which is step 2 done; a minor or major is planned as an issue. Do step 1, merge it, `git pull` the
+gh-plan checkout on `main`, then do steps 3 to 6 from it. Upgrading before the merge would leave
+`main` building an older Redmine than the database has been migrated to. Only step 4 applies the
+new tag: a plain `up -d` keeps running the `gh-plan-redmine:local` already built, so nothing
+migrates the database before the backup. That holds only while the image exists: with no
+`gh-plan-redmine:local` (a new Mac, a pruned Docker), `up -d` builds whatever `FROM` names. So
+build it with `up -d --build` on `main` before merging a Redmine PR, whenever `docker images
+gh-plan-redmine:local` lists nothing.
+
+Build and `up` only from the checkout on `main`. Every checkout shares one compose project and the
+one `:local` tag, so a worktree's `up -d --build` replaces the live Redmine with its branch's
+`Dockerfile`, and a later `up -d` from `main` keeps running that image.
+
 1. Read the Redmine changelog for every release between the two tags.
-2. Change `FROM` in the `Dockerfile` to the new tag, and `image:` in `compose.yml` to match. Pin an
-   exact tag such as `7.0.3`, never `7.0`. A new Opale release changes the `ADD` line's URL and
-   checksum (`shasum -a 256` of the zip).
-3. Back up the `db` volume.
+2. Change `FROM` in the `Dockerfile` to the new tag. Pin an exact tag such as `7.0.3`, never
+   `7.0`. A new Opale release changes the `ADD` line's URL and checksum (`shasum -a 256` of the
+   zip).
+3. Keep the image the running container uses, for a rollback, then back up. The tag fails, and
+   nothing is backed up, when Redmine isn't running. `--again` backs up now, where the nightly
+   folder may be hours old. Note the folder it names, and make no change in Redmine from here to
+   step 6.
+   ```
+   docker tag "$(docker inspect -f '{{.Image}}' "$(docker compose -f redmine/compose.yml ps -q redmine)")" gh-plan-redmine:previous &&
+     python3 redmine/backup.py --again
+   ```
 4. `docker compose -f redmine/compose.yml up -d --build`. The image migrates the database on start.
 5. Check that *Administration › Plugins* still lists the lane board, and its tab still loads.
 6. Re-run the setup, which should print `nothing to change`.
+
+If step 5 or 6 fails, roll back at once: the restore loses every change made since step 3's
+backup. `docker tag gh-plan-redmine:previous gh-plan-redmine:local`, then restore the folder step
+3 wrote as *Backup and export* says, but finish with `up -d --force-recreate`, so the container
+starts from the previous image. Then a PR reverts the `FROM` bump, so `main` names the Redmine
+that runs, and adds `versions: ["<the failed tag>"]` to the `redmine` entry in
+`.github/dependabot.yml`'s `ignore`, so Dependabot doesn't offer that tag again.
 
 Anything that recreates the container signs everyone out: an upgrade, `down` then `up`, or a
 change to `compose.yml`. The session secret is generated inside the container, so a new

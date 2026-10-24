@@ -78,3 +78,27 @@ jobs:
           total=$(uv run coverage report --format=total --fail-under=0) || total="?"
           echo "::error title=Coverage below threshold::Total coverage ${total}% is under fail_under in pyproject.toml"
           exit 1
+
+  # The extension's suite and lint, so a Dependabot npm PR is tested like any other.
+  vscode:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: vscode
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: vscode/package-lock.json
+
+      # npm ci installs package-lock.json exactly and fails if it disagrees with package.json.
+      # --ignore-scripts: a dev tool's install script never runs, and none of them needs one.
+      - run: npm ci --ignore-scripts
+      - run: npm test
+      - run: npm run lint

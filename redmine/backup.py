@@ -2,6 +2,7 @@
 """Back Redmine up and export it to the USB drive, once a day (redmine/README.md, Backup and export).
 
     python3 redmine/backup.py           back up and export, unless today's folder is there
+    python3 redmine/backup.py --again   back up and export now, to <YYYY-MM-DD>-<HHMMSS>/
     python3 redmine/backup.py --plist   print the LaunchAgent that runs it nightly
 
 Each run writes one dated folder, <drive>/redmine_backups/<YYYY-MM-DD>/:
@@ -12,9 +13,10 @@ Each run writes one dated folder, <drive>/redmine_backups/<YYYY-MM-DD>/:
                     every issue with its journal, relations and custom fields, from the REST API
 
 It builds the folder as .<date>.partial and renames it when complete, so a failed run leaves no
-dated folder and the next run starts again. It keeps the newest KEEP dated folders and removes
-the older ones. Beside them it keeps a .lock and clears its own leftover partials; nothing else in
-redmine_backups is touched.
+dated folder and the next run starts again. --again writes a folder of its own beside today's,
+<YYYY-MM-DD>-<HHMMSS>. It keeps the newest KEEP nightly folders and every timed one no older than
+the oldest of those, and removes the rest. Beside them it keeps a .lock and clears its own leftover
+partials; nothing else in redmine_backups is touched.
 
 It reads Redmine and never writes to it, and it writes nothing outside the drive. When the drive
 isn't mounted, Docker isn't running or any step fails, it logs why, shows a caution alert that
@@ -45,7 +47,8 @@ HOUR = 3
 COMPOSE = Path(__file__).resolve().parent / "compose.yml"
 URL = os.environ.get("REDMINE_URL", "http://127.0.0.1:3010")
 KEYCHAIN = os.environ.get("REDMINE_KEYCHAIN", "redmine-gh-plan")
-DATED = re.compile(r"\d{4}-\d{2}-\d{2}")
+NIGHTLY = re.compile(r"\d{4}-\d{2}-\d{2}")
+DATED = re.compile(r"\d{4}-\d{2}-\d{2}(-\d{6})?")
 # Everything an issue's page shows but its custom fields, which every issue response carries.
 INCLUDE = "children,attachments,relations,changesets,journals"
 
@@ -182,23 +185,34 @@ def export(dest: Path, key: str) -> set[int]:
 
 
 def prune(root: Path, keep: int, made: str) -> list[str]:
-    """Remove all but the newest `keep` dated folders, never `made`. Returns the names removed."""
+    """Remove all but the newest `keep` nightly folders, and the timed ones older than the oldest
+    kept, never `made`. Returns the names removed."""
     dated = sorted(p.name for p in root.iterdir() if p.is_dir() and DATED.fullmatch(p.name))
+    nightly = [name for name in dated if NIGHTLY.fullmatch(name)]
+    oldest = nightly[-keep] if len(nightly) >= keep else ""
     # A clock gone back still keeps tonight's.
-    old = [name for name in dated[:-keep] if name != made]
+    old = [name for name in dated if name < oldest and name != made]
     for name in old:
         shutil.rmtree(root / name)
     return old
 
 
-def run(volume: Path, today: datetime.date) -> int:
+def already(day: Path) -> int:
+    """A nightly folder that's there is done; a timed one that's there is a clash."""
+    if not NIGHTLY.fullmatch(day.name):
+        raise Failure(f"{day} is already there; run --again in a second")
+    log(f"{day} is already there; nothing to do")
+    return 0
+
+
+def run(volume: Path, name: str) -> int:
+    """Back up to the folder `name`: today's date, or the date and time for --again."""
     if not mounted(volume):
         raise Failure(f"{volume} isn't mounted. Nothing was written.")
     root = volume / "redmine_backups"
-    day = root / today.isoformat()
+    day = root / name
     if day.exists():
-        log(f"{day} is already there; nothing to do")
-        return 0
+        return already(day)
     if not docker_running():
         raise Failure(
             f"Docker isn't running, so Redmine can't be backed up. Nothing was written to {volume}."
@@ -210,12 +224,11 @@ def run(volume: Path, today: datetime.date) -> int:
         except BlockingIOError:
             raise Failure(f"another backup holds {root / '.lock'}") from None
         if day.exists():  # the run that held the lock made it
-            log(f"{day} is already there; nothing to do")
-            return 0
+            return already(day)
         for stale in root.glob(".*.partial"):
             if DATED.fullmatch(stale.name[1 : -len(".partial")]):  # only what this job made
                 shutil.rmtree(stale)
-        partial = root / f".{today.isoformat()}.partial"
+        partial = root / f".{day.name}.partial"
         partial.mkdir()
         try:
             issues = backup_db(partial / "redmine.db")
@@ -267,7 +280,7 @@ def plist() -> str:
     ).decode()
 
 
-def main(argv: list[str]) -> int:
+def main(argv: list[str], now: datetime.datetime | None = None) -> int:
     if argv == ["--plist"]:
         try:
             print(plist(), end="")
@@ -275,11 +288,12 @@ def main(argv: list[str]) -> int:
             print(e, file=sys.stderr)
             return 1
         return 0
-    if argv:
+    if argv not in ([], ["--again"]):
         print(__doc__.split("\n\n")[1], file=sys.stderr)
         return 2
     try:
-        return run(VOLUME, datetime.date.today())
+        now = now or datetime.datetime.now()
+        return run(VOLUME, now.strftime("%Y-%m-%d-%H%M%S" if argv else "%Y-%m-%d"))
     except Exception as e:  # every failure is shown, not left in a log nobody reads
         message = str(e) if isinstance(e, Failure) else f"{type(e).__name__}: {e}"
         log(message)

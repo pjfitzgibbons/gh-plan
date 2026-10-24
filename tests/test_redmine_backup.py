@@ -18,7 +18,8 @@ _spec = importlib.util.spec_from_file_location(
 backup = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(backup)
 
-TODAY = datetime.date(2026, 10, 20)
+NOW = datetime.datetime(2026, 10, 20, 14, 30, 5)
+TODAY = NOW.date()
 ISSUES = {1: "first", 2: "second", 3: "third"}
 
 
@@ -82,12 +83,9 @@ def volume(tmp_path):
     return tmp_path / "drive"
 
 
-def _main(monkeypatch, volume: Path) -> int:
+def _main(monkeypatch, volume: Path, *argv: str, now: datetime.datetime = NOW) -> int:
     monkeypatch.setattr(backup, "VOLUME", volume)
-    monkeypatch.setattr(
-        backup.datetime, "date", type("D", (), {"today": staticmethod(lambda: TODAY)})
-    )
-    return backup.main([])
+    return backup.main(list(argv), now)
 
 
 def _tree(root: Path) -> list[str]:
@@ -146,6 +144,37 @@ def test_a_second_run_that_day_does_nothing(fake, volume, monkeypatch):
     fake.docker_up = False  # it doesn't even look
     assert _main(monkeypatch, volume) == 0
     assert fake.calls == [] and fake.alerts == [] and _tree(volume) == before
+
+
+def test_again_writes_a_timed_folder_beside_todays(fake, volume, monkeypatch):
+    assert _main(monkeypatch, volume) == 0
+    root = volume / "redmine_backups"
+    (root / "2026-10-20" / "nightly").write_text("")
+    assert _main(monkeypatch, volume, "--again") == 0
+    assert (root / "2026-10-20" / "nightly").exists()
+    timed = root / "2026-10-20-143005"
+    assert backup.DATED.fullmatch(timed.name)
+    assert sorted(p.name for p in timed.iterdir()) == ["export", "files.tar", "redmine.db"]
+    assert fake.alerts == []
+
+
+def test_a_second_again_in_the_same_second_fails(fake, volume, monkeypatch):
+    assert _main(monkeypatch, volume, "--again") == 0
+    before = _tree(volume)
+    assert _main(monkeypatch, volume, "--again") == 1
+    assert "already there" in fake.alerts[-1]
+    assert _tree(volume) == before
+
+
+def test_a_failed_again_leaves_no_timed_folder(fake, volume, monkeypatch):
+    assert _main(monkeypatch, volume) == 0
+    fake.fail = "tar"
+    root = volume / "redmine_backups"
+    nightly = _tree(root / "2026-10-20")
+    assert _main(monkeypatch, volume, "--again") == 1
+    assert _tree(root / "2026-10-20") == nightly
+    assert not list(root.glob("2026-10-20-*"))
+    assert not list(root.glob(".*.partial"))
 
 
 @pytest.mark.parametrize("step", ["db", "tar", "list", "issue"])
@@ -234,6 +263,22 @@ def test_keeps_the_newest_copies_and_nothing_else_is_touched(fake, volume, monke
     assert len(kept) == backup.KEEP == 14
     assert kept[-1] == "2026-10-20" and kept[0] == "2026-10-07"
     assert (root / "redmine-20261017-0603.db").read_text() == "by hand"
+
+
+def test_timed_copies_go_with_the_nightly_ones_around_them(fake, volume, monkeypatch):
+    root = volume / "redmine_backups"
+    for d in range(1, 16):
+        day = (TODAY - datetime.timedelta(days=d)).isoformat()
+        (root / day).mkdir(parents=True)
+        (root / f"{day}-120000").mkdir()
+    assert _main(monkeypatch, volume, "--again") == 0
+    assert _main(monkeypatch, volume) == 0
+    kept = sorted(p.name for p in root.iterdir() if backup.DATED.fullmatch(p.name))
+    nightly = [name for name in kept if backup.NIGHTLY.fullmatch(name)]
+    assert len(nightly) == backup.KEEP and nightly[0] == "2026-10-07"
+    assert [name for name in kept if name not in nightly] == [
+        f"{(TODAY - datetime.timedelta(days=d)).isoformat()}-120000" for d in range(13, 0, -1)
+    ] + ["2026-10-20-143005"]
 
 
 def test_a_clock_gone_back_keeps_tonights_copy(fake, volume, monkeypatch):
