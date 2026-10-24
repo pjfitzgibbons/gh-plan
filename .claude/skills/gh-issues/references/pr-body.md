@@ -15,11 +15,11 @@ Fixes #<n>.
 
 ## Risk
 
-<What could break, and who would notice: a failing check, an error on a button, or nothing until a file is missing.>
+<What could break, and who would notice: a failing check, an error on a button, or nothing until a file is missing. A summary; Failure modes, when the body has it, holds the per-step table.>
 
 ## How to revert
 
-<A revert PR, from `git revert <the squash commit>` on its own branch, and anything the revert leaves behind: a Redmine field set, a file on disk, a branch or worktree.>
+<What a revert of this PR leaves behind: a Redmine field it set, a file it wrote, a setting it changed; or that it leaves nothing. SKILL.md's *Reverting a PR* has the steps.>
 
 ## <A change, named as the reader would look for it>
 
@@ -40,6 +40,7 @@ Rules (delete this comment):
   isn't. The issue's description is never ticked: this section is the record, and Done's closing
   note names the PR.
 - Testing, Risk and How to revert are never dropped: when there's nothing to say, say so and why.
+  Risk summarises; Failure modes, when present, holds the per-step detail.
 - One section per change a reviewer would look for. Drop Failure modes when nothing writes
   (docs/failure-modes.md has the columns).
 - No attribution lines.

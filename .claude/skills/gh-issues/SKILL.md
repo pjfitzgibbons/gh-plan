@@ -49,7 +49,11 @@ Peter presses **Start** on the issue's row in Next up. It makes the branch and i
 
 ## Shipping
 
-When the work is done and tested, write `.tmp/<n>/commit.txt` (rules 4 and 5, ending `Assisted-by: Claude:<model>`) and `.tmp/<n>/pr-body.md`, its `## Done` section ticked as below and followed by Testing, Risk and How to revert as the template lays them out, plus any replies. The extension opens them as tabs. Peter reviews them and presses **Go**, which checks them, then stages every change and opens the changes. **Ship** refuses any file changed since Go, then runs `pr <n>` and links the PR in the issue's Pull requests field. Go and Ship again run `pr` again, for the next round. After the merge, **Done** cleans up and closes the issue.
+When the work is done and tested, write `.tmp/<n>/commit.txt` (rules 4 and 5, ending `Assisted-by: Claude:<model>`) and `.tmp/<n>/pr-body.md`, its `## Done` section ticked as below and followed by Testing, Risk and How to revert as [references/pr-body.md](references/pr-body.md) lays them out, plus any replies. The extension opens them as tabs. Peter reviews them and presses **Go**, which checks them, then stages every change and opens the changes. **Ship** refuses any file changed since Go, then runs `pr <n>` and links the PR in the issue's Pull requests field. Go and Ship again run `pr` again, for the next round. After the merge, **Done** cleans up and closes the issue.
+
+## Reverting a PR
+
+A revert is an issue of its own, started and shipped like any other. On its branch, `git revert --no-commit <the squash commit>` stages the revert and `git revert --quit` ends the revert git started, which `pr` would otherwise refuse as in progress; then `.tmp/<m>/commit.txt` gives it a subject that ends `(fixes #<m>)`, the revert's own issue. Never commit `git revert`'s own subject or use GitHub's Revert button: both copy the original's `(fixes #<n>)`, and Redmine closes #<n> again when it fetches the commit. When the reverted PR fixed #<n>, #<n> stays closed with that PR in its Pull requests field, so a person reopens it. The reverted PR's How to revert section lists anything else to undo.
 
 ## Drafting a new issue
 
@@ -75,7 +79,7 @@ A file with no reply below its context stops `pr` before the first post; delete 
 
 ## Ticking the issue's Done list
 
-The PR records what the issue's work met; the issue keeps the spec, and its description is never ticked. The PR body's `## Done` section, after its opening paragraph, copies each line of the issue's `### Done` as Redmine has it now (`redmine-get /issues/<n>.json`), ticks the ones the PR meets, and says after any unticked line why it isn't met, or which PR will meet it. The sections below it hold the proof. Update it each round, and `pr` sends it with the body. Done's closing note names the PR: "Done: verified in gh-plan#117".
+The PR records what the issue's work met; the issue keeps the spec, and its description is never ticked. The PR body's `## Done` section, after its opening paragraph, copies each line of the issue's `### Done` as Redmine has it now (`redmine-get /issues/<n>.json`), ticks the ones the PR meets, and says after any unticked line why it isn't met, or which PR will meet it. Testing and the change sections below it hold the proof. Update it each round, and `pr` sends it with the body. Done's closing note names the PR: "Done: verified in gh-plan#117".
 
 A `.tmp/<n>/issue.md` from before is never sent: `pr` names it and leaves it, and Done removes it with the worktree.
 
