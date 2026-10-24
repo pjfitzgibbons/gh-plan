@@ -2,6 +2,7 @@
 
 import io
 import os
+import shutil
 import subprocess
 import tempfile
 import unittest
@@ -320,8 +321,370 @@ class PrStaged(unittest.TestCase):
         self.assertEqual(self.committed(), ["start"])
 
     def test_what_go_staged_is_committed(self):
-        self.pr()  # The push then fails: the fixture has no origin.
+        self.pr()  # The fetch then fails: the fixture has no origin.
         self.assertEqual(self.committed(), ["Reviewed", "(fixes", "#9)", "reviewed.txt"])
+
+
+class PrRebase(unittest.TestCase):
+    """pr.sh with an open PR whose branch was pushed: it rebases onto origin's main before the push,
+    against a bare origin, a fake gh and a second clone that pushes behind its back."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        top = Path(self.tmp.name)
+        bin = top / "bin"
+        bin.mkdir()
+        self.calls = top / "calls"
+        self.calls.touch()
+        (bin / "gh").write_text(
+            f'#!/bin/sh\necho "$*" >> "{self.calls}"\ncase "$*" in\n  "repo view"*) echo main ;;\n'
+            '  *"--json state"*) echo OPEN ;;\n'
+            '  *"--json url"*) echo https://github.com/o/r/pull/1 ;;\nesac\n'
+        )
+        (bin / "open").write_text("#!/bin/sh\n")
+        # A race script, when present, runs just before pr's push: after its fetch, before the lease.
+        self.race = top / "race"
+        self.real_git = shutil.which("git")
+        # A race that fails makes the push fail.
+        (bin / "git").write_text(
+            f'#!/bin/sh\n[ "$1" != push ] || [ ! -x "{self.race}" ] || "{self.race}" || exit\n'
+            f'exec "{self.real_git}" "$@"\n'
+        )
+        for tool in ("gh", "open", "git"):
+            (bin / tool).chmod(0o755)
+        self.env = {
+            **os.environ,
+            "PATH": f"{bin}:{os.environ['PATH']}",
+            "GIT_AUTHOR_NAME": "T",
+            "GIT_AUTHOR_EMAIL": "t@example.com",
+            "GIT_COMMITTER_NAME": "T",
+            "GIT_COMMITTER_EMAIL": "t@example.com",
+            "GIT_CONFIG_GLOBAL": "/dev/null",
+        }
+        self.origin = top / "origin.git"
+        self.git(top, "init", "-q", "--bare", "-b", "main", str(self.origin))
+        self.other = top / "other"
+        self.git(top, "clone", "-q", str(self.origin), str(self.other))
+        self.commit(self.other, "a.txt", "one\n", "start")
+        self.git(self.other, "push", "-q", "origin", "HEAD:main")
+        self.tree = top / "tree"
+        self.git(top, "clone", "-q", str(self.origin), str(self.tree))
+        (self.tree / ".git" / "info" / "exclude").write_text(".tmp\n")
+        self.git(self.tree, "checkout", "-q", "-b", "feat/9-x")
+        self.commit(self.tree, "a.txt", "one\nbranch\n", "Work (fixes #9)")
+        self.git(self.tree, "push", "-q", "-u", "origin", "HEAD")
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def git(self, cwd, *args):
+        return subprocess.run(
+            ["git", *args], cwd=cwd, env=self.env, check=True, capture_output=True, text=True
+        ).stdout.strip()
+
+    def commit(self, cwd, name, text, message):
+        (cwd / name).write_text(text)
+        self.git(cwd, "add", "-A")
+        self.git(cwd, "commit", "-q", "-m", message)
+        return self.git(cwd, "rev-parse", "HEAD")
+
+    def on_origin(self, ref):
+        return self.git(self.origin, "rev-parse", ref)
+
+    def advance_main(self, name="c.txt", text="main\n"):
+        self.git(self.other, "pull", "-q", "origin", "main")
+        tip = self.commit(self.other, name, text, "Main moves on")
+        self.git(self.other, "push", "-q", "origin", "HEAD:main")
+        return tip
+
+    def pr(self):
+        return subprocess.run(
+            ["sh", str(Path(__file__).parent / "pr.sh")],
+            cwd=self.tree,
+            env=self.env,
+            capture_output=True,
+            text=True,
+        )
+
+    def test_a_branch_behind_main_is_rebased_and_pushed_with_no_merge(self):
+        tip = self.advance_main()
+        local_main = self.git(self.tree, "rev-parse", "main")
+        run = self.pr()
+        self.assertEqual(run.returncode, 0, run.stderr)
+        self.assertIn(f"rebased onto {tip[:7]}", run.stdout)
+        self.assertEqual(self.on_origin("feat/9-x"), self.git(self.tree, "rev-parse", "HEAD"))
+        self.assertEqual(self.on_origin("feat/9-x^"), tip)
+        self.assertEqual(self.git(self.origin, "rev-list", "--merges", "main..feat/9-x"), "")
+        # Invariant 2: main, on origin and in the clone, is never written.
+        self.assertEqual(self.on_origin("main"), tip)
+        self.assertEqual(self.git(self.tree, "rev-parse", "main"), local_main)
+        self.assertIn("pb 9", self.calls.read_text().splitlines())
+        self.assertNotIn("copilot", self.calls.read_text())
+
+    def test_a_rebase_with_a_new_commit_pushes_it(self):
+        self.advance_main()
+        message = self.tree / ".tmp" / "9" / "commit.txt"
+        message.parent.mkdir(parents=True)
+        message.write_text("More\n")
+        (self.tree / "b.txt").write_text("more\n")
+        run = self.pr()
+        self.assertEqual(run.returncode, 0, run.stderr)
+        self.assertIn("rebased onto", run.stdout)
+        self.assertEqual(self.on_origin("feat/9-x"), self.git(self.tree, "rev-parse", "HEAD"))
+        self.assertEqual(self.git(self.tree, "log", "-1", "--format=%s"), "More")
+
+    def test_a_branch_on_mains_tip_is_pushed_without_a_rebase_or_force(self):
+        message = self.tree / ".tmp" / "9" / "commit.txt"
+        message.parent.mkdir(parents=True)
+        message.write_text("More\n")
+        (self.tree / "b.txt").write_text("more\n")
+        before = self.git(self.tree, "rev-parse", "HEAD")
+        run = self.pr()
+        self.assertEqual(run.returncode, 0, run.stderr)
+        self.assertIn("already on main", run.stdout)
+        self.assertNotIn("rebased", run.stdout)
+        self.assertNotIn("replacing", run.stdout)
+        self.assertEqual(self.git(self.tree, "rev-parse", "HEAD^"), before)
+        self.assertEqual(self.on_origin("feat/9-x"), self.git(self.tree, "rev-parse", "HEAD"))
+
+    def test_a_conflicting_rebase_is_aborted_and_nothing_is_pushed(self):
+        self.advance_main("a.txt", "one\nmain\n")
+        before = self.git(self.tree, "rev-parse", "HEAD")
+        run = self.pr()
+        self.assertEqual(run.returncode, 2)
+        self.assertIn("  a.txt\n", run.stderr)
+        self.assertIn("git rebase origin/main", run.stderr)
+        self.assertEqual(self.git(self.tree, "rev-parse", "HEAD"), before)
+        self.assertEqual(self.git(self.tree, "status", "--porcelain"), "")
+        self.assertFalse((self.tree / ".git" / "rebase-merge").exists())
+        self.assertEqual(self.on_origin("feat/9-x"), before)
+        self.assertNotIn("pb 9", self.calls.read_text().splitlines())
+        # Rebased by hand as the message says: the copy's context differs, so pr refuses it by patch and
+        # names the push that replaces GitHub's, leased on its head.
+        subprocess.run(
+            ["git", "rebase", "origin/main"], cwd=self.tree, env=self.env, capture_output=True
+        )
+        run = self.pr()
+        self.assertEqual(run.returncode, 2)
+        self.assertIn("a rebase is in progress", run.stderr)
+        (self.tree / "a.txt").write_text("one\nmain\nbranch\n")
+        self.git(self.tree, "add", "a.txt")
+        self.git(self.tree, "-c", "core.editor=true", "rebase", "--continue")
+        run = self.pr()
+        self.assertEqual(run.returncode, 2)
+        self.assertEqual(self.on_origin("feat/9-x"), before)
+        lease = f"--force-with-lease=refs/heads/feat/9-x:{before}"
+        self.assertIn(lease, run.stderr)
+        self.git(self.tree, "push", "-q", lease, "origin", "HEAD")
+        run = self.pr()
+        self.assertEqual(run.returncode, 0, run.stderr)
+        self.assertIn("already on main", run.stdout)
+        self.assertEqual(self.on_origin("feat/9-x"), self.git(self.tree, "rev-parse", "HEAD"))
+
+    def test_a_conflicting_rebase_on_the_apply_backend_is_aborted(self):
+        self.git(self.tree, "config", "rebase.backend", "apply")
+        self.advance_main("a.txt", "one\nmain\n")
+        before = self.git(self.tree, "rev-parse", "HEAD")
+        run = self.pr()
+        self.assertEqual(run.returncode, 2)
+        self.assertIn("so it is aborted", run.stderr)
+        self.assertEqual(self.git(self.tree, "rev-parse", "HEAD"), before)
+        self.assertFalse((self.tree / ".git" / "rebase-apply").exists())
+
+    def test_another_clones_push_is_refused_and_stays_on_github(self):
+        self.advance_main()
+        self.git(self.other, "fetch", "-q", "origin")
+        self.git(self.other, "checkout", "-q", "-b", "feat/9-x", "origin/feat/9-x")
+        theirs = self.commit(self.other, "d.txt", "theirs\n", "From elsewhere")
+        self.git(self.other, "push", "-q", "origin", "HEAD:feat/9-x")
+        before = self.git(self.tree, "rev-parse", "HEAD")
+        run = self.pr()
+        self.assertEqual(run.returncode, 2)
+        self.assertIn("has commits feat/9-x lacks", run.stderr)
+        self.assertIn("From elsewhere", run.stderr)
+        self.assertEqual(self.on_origin("feat/9-x"), theirs)
+        self.assertEqual(self.git(self.tree, "rev-parse", "HEAD"), before)
+
+    def test_a_push_from_elsewhere_after_the_fetch_fails_the_lease(self):
+        self.advance_main()
+        self.git(self.other, "fetch", "-q", "origin")
+        self.git(self.other, "checkout", "-q", "-b", "feat/9-x", "origin/feat/9-x")
+        theirs = self.commit(self.other, "d.txt", "theirs\n", "From elsewhere")
+        # After pr's fetch and check, before its push: only the lease can catch it, and a bare
+        # --force would overwrite it.
+        self.race.write_text(
+            f"#!/bin/sh\n'{self.real_git}' -C '{self.other}' push -q origin HEAD:feat/9-x\n"
+        )
+        self.race.chmod(0o755)
+        run = self.pr()
+        self.assertNotEqual(run.returncode, 0)
+        self.assertIn("rebased onto", run.stdout)
+        self.assertIn("stale info", run.stderr)
+        self.assertEqual(self.on_origin("feat/9-x"), theirs)
+
+    def test_a_pushed_commit_dropped_by_a_reset_is_refused(self):
+        self.advance_main()
+        pushed = self.on_origin("feat/9-x")
+        self.git(self.tree, "reset", "-q", "--hard", "HEAD^")
+        run = self.pr()
+        self.assertEqual(run.returncode, 2)
+        self.assertIn("Work (fixes #9)", run.stderr)
+        self.assertIn(
+            f"git push --force-with-lease=refs/heads/feat/9-x:{pushed} origin HEAD", run.stderr
+        )
+        self.assertEqual(self.on_origin("feat/9-x"), pushed)
+
+    def test_a_rebase_that_fails_without_a_conflict_says_why(self):
+        self.advance_main()
+        hook = self.tree / ".git" / "hooks" / "pre-rebase"
+        hook.write_text("#!/bin/sh\necho 'pre-rebase hook says no' >&2\nexit 1\n")
+        hook.chmod(0o755)
+        before = self.git(self.tree, "rev-parse", "HEAD")
+        run = self.pr()
+        self.assertEqual(run.returncode, 2)
+        self.assertIn("  pre-rebase hook says no", run.stderr)
+        self.assertEqual(self.git(self.tree, "rev-parse", "HEAD"), before)
+        self.assertEqual(self.on_origin("feat/9-x"), before)
+
+    def test_a_rebase_whose_push_failed_is_refused_with_a_leased_push(self):
+        # Main edits a line beside the branch's, so the rebased copy's patch-id differs.
+        lines = "".join(f"{i}\n" for i in range(1, 10))
+        self.advance_main("g.txt", lines)
+        self.git(self.tree, "fetch", "-q", "origin")
+        self.git(self.tree, "reset", "-q", "--hard", "origin/main")
+        original = self.commit(
+            self.tree, "g.txt", lines.replace("7\n", "seven\n"), "Work (fixes #9)"
+        )
+        self.git(self.tree, "push", "-q", "--force", "origin", "HEAD")
+        self.advance_main("g.txt", lines.replace("5\n", "five\n"))
+        self.race.write_text("#!/bin/sh\nexit 1\n")
+        self.race.chmod(0o755)
+        run = self.pr()
+        self.assertNotEqual(run.returncode, 0)
+        self.assertIn("rebased onto", run.stdout)
+        self.assertEqual(self.on_origin("feat/9-x"), original)
+
+        def patch_id(rev):
+            show = self.git(self.tree, "show", rev) + "\n"
+            return subprocess.run(
+                ["git", "patch-id"], input=show, capture_output=True, text=True
+            ).stdout.split()[0]
+
+        self.assertNotEqual(patch_id("HEAD"), patch_id(original))
+        # The next pr can't tell the copy from a commit that replaced GitHub's, so it refuses, and names
+        # a push leased on GitHub's head, which a fetch since can't widen.
+        self.race.unlink()
+        run = self.pr()
+        self.assertEqual(run.returncode, 2)
+        self.assertEqual(self.on_origin("feat/9-x"), original)
+        lease = f"--force-with-lease=refs/heads/feat/9-x:{original}"
+        self.assertIn(lease, run.stderr)
+        self.git(self.tree, "push", "-q", lease, "origin", "HEAD")
+        run = self.pr()
+        self.assertEqual(run.returncode, 0, run.stderr)
+        self.assertEqual(self.on_origin("feat/9-x"), self.git(self.tree, "rev-parse", "HEAD"))
+
+    def test_githubs_update_with_rebase_is_not_taken_for_lost_commits(self):
+        self.advance_main()
+        self.git(self.other, "fetch", "-q", "origin")
+        self.git(self.other, "checkout", "-q", "-b", "feat/9-x", "origin/feat/9-x")
+        self.git(self.other, "rebase", "-q", "origin/main")
+        self.git(self.other, "push", "-q", "--force", "origin", "HEAD:feat/9-x")
+        run = self.pr()
+        self.assertEqual(run.returncode, 0, run.stderr)
+        self.assertEqual(self.on_origin("feat/9-x^"), self.on_origin("main"))
+
+    def test_a_merge_in_progress_is_refused_before_the_commit(self):
+        head = self.git(self.tree, "rev-parse", "HEAD")
+        (self.tree / ".git" / "MERGE_HEAD").write_text(head + "\n")
+        run = self.pr()
+        self.assertEqual(run.returncode, 2)
+        self.assertIn("a merge is in progress", run.stderr)
+
+    def test_a_merge_on_github_with_edits_of_its_own_is_refused(self):
+        self.advance_main()
+        self.git(self.other, "fetch", "-q", "origin")
+        self.git(self.other, "checkout", "-q", "-b", "feat/9-x", "origin/feat/9-x")
+        self.git(self.other, "merge", "-q", "--no-commit", "origin/main")
+        (self.other / "d.txt").write_text("fixed in the merge\n")
+        self.git(self.other, "add", "d.txt")
+        self.git(self.other, "commit", "-q", "-m", "Merge main")
+        self.git(self.other, "push", "-q", "origin", "HEAD:feat/9-x")
+        merge = self.on_origin("feat/9-x")
+        run = self.pr()
+        self.assertEqual(run.returncode, 2)
+        self.assertIn("Merge main", run.stderr)
+        self.assertEqual(self.on_origin("feat/9-x"), merge)
+
+    def test_an_ignored_file_main_starts_tracking_is_refused_before_the_rebase(self):
+        (self.tree / ".git" / "info" / "exclude").write_text("local.cfg\n")
+        (self.tree / "local.cfg").write_text("mine\n")
+        self.advance_main("local.cfg", "main's\n")
+        before = self.git(self.tree, "rev-parse", "HEAD")
+        run = self.pr()
+        self.assertEqual(run.returncode, 2)
+        self.assertIn("  local.cfg\n", run.stderr)
+        self.assertEqual((self.tree / "local.cfg").read_text(), "mine\n")
+        self.assertEqual(self.git(self.tree, "rev-parse", "HEAD"), before)
+
+    def test_an_ignored_file_at_a_path_main_renames_to_is_refused(self):
+        self.advance_main("old.cfg", "main's\n")
+        self.git(self.tree, "fetch", "-q", "origin")
+        self.git(self.tree, "rebase", "-q", "origin/main")
+        self.git(self.tree, "push", "-q", "-f", "origin", "HEAD")
+        self.git(self.other, "mv", "old.cfg", "local.cfg")
+        self.git(self.other, "commit", "-q", "-m", "Rename")
+        self.git(self.other, "push", "-q", "origin", "HEAD:main")
+        (self.tree / ".git" / "info" / "exclude").write_text("local.cfg\n")
+        (self.tree / "local.cfg").write_text("mine\n")
+        run = self.pr()
+        self.assertEqual(run.returncode, 2)
+        self.assertIn("  local.cfg\n", run.stderr)
+        self.assertEqual((self.tree / "local.cfg").read_text(), "mine\n")
+
+    def test_an_ignored_file_at_a_non_ascii_path_main_adds_is_refused(self):
+        (self.tree / ".git" / "info" / "exclude").write_text("é.cfg\n")
+        (self.tree / "é.cfg").write_text("mine\n")
+        self.advance_main("é.cfg", "main's\n")
+        run = self.pr()
+        self.assertEqual(run.returncode, 2)
+        self.assertIn("  é.cfg\n", run.stderr)
+        self.assertEqual((self.tree / "é.cfg").read_text(), "mine\n")
+
+    def test_a_file_the_branch_and_main_both_add_is_rebased(self):
+        self.commit(self.tree, "x.txt", "same\n", "Add x")
+        self.git(self.tree, "push", "-q", "origin", "HEAD")
+        tip = self.advance_main("x.txt", "same\n")
+        run = self.pr()
+        self.assertEqual(run.returncode, 0, run.stderr)
+        self.assertIn(f"rebased onto {tip[:7]}", run.stdout)
+
+    def test_a_local_merge_is_refused_before_the_rebase(self):
+        self.advance_main()
+        self.git(self.tree, "fetch", "-q", "origin")
+        self.git(self.tree, "merge", "-q", "--no-commit", "origin/main")
+        (self.tree / "d.txt").write_text("fixed in the merge\n")
+        self.git(self.tree, "add", "d.txt")
+        self.git(self.tree, "commit", "-q", "-m", "Merge main")
+        self.git(self.tree, "push", "-q", "origin", "HEAD")
+        self.advance_main("e.txt")
+        merge = self.git(self.tree, "rev-parse", "HEAD")
+        run = self.pr()
+        self.assertEqual(run.returncode, 2)
+        self.assertIn("Merge main", run.stderr)
+        self.assertEqual(self.git(self.tree, "rev-parse", "HEAD"), merge)
+        self.assertEqual(self.on_origin("feat/9-x"), merge)
+
+    def test_an_unreachable_origin_stops_before_the_push(self):
+        self.advance_main()
+        self.git(self.tree, "remote", "set-url", "origin", str(self.origin.parent / "gone.git"))
+        before = self.git(self.tree, "rev-parse", "HEAD")
+        run = self.pr()
+        self.assertEqual(run.returncode, 2)
+        self.assertIn("couldn't fetch origin", run.stderr)
+        self.assertIn("gone.git", run.stderr)
+        self.assertEqual(self.git(self.tree, "rev-parse", "HEAD"), before)
+        self.assertNotIn("pb 9", self.calls.read_text().splitlines())
 
 
 class PostReplies(unittest.TestCase):
