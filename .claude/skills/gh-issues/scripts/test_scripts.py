@@ -6,11 +6,13 @@ import shutil
 import subprocess
 import tempfile
 import unittest
+import urllib.error
 from pathlib import Path
 from unittest import mock
 
 import issue_body
 import new_issue
+import redmine_set
 from outline import check, expected
 from pr_threads import (
     emit as threads_emit,
@@ -19,7 +21,7 @@ from pr_threads import (
     read_reply_dir,
     write_drafts,
 )
-from redmine import Refused
+from redmine import Refused, reasons, unkept
 
 GLOBAL = "| L1 Security | q |\n| L2 Privacy and data | q |\n"
 REPO = "| L11 Invariants | q |\n- **Sections:** the global ones, then `### Notes`.\n"
@@ -883,7 +885,7 @@ class FakeTracker:
             return {"issues": listed, "total_count": len(listed)}
         n = int(path.split("/")[2].removesuffix(".json"))
         if n not in self.issues:
-            raise Refused(f"Redmine GET {path}: HTTP 404")
+            raise Refused(f"Redmine GET {path}: HTTP 404", 404)
         i = self.issues[n]
         return {
             "issue": {
@@ -996,7 +998,7 @@ class NewIssue(unittest.TestCase):
         self.assertEqual(r.posts, [])
 
     def test_a_status_redmine_dropped_is_named(self):
-        with self.assertRaisesRegex(Refused, "#80 is created, but Redmine didn't keep: status_id"):
+        with self.assertRaisesRegex(Refused, "#80 is created, but Redmine didn't keep: status"):
             self.run_it(FakeTracker(drop_status=True))
 
 
@@ -1022,7 +1024,7 @@ class FakeIssue:
 
     def send(self, method, path, body=None):
         if path != "/issues/90.json":
-            raise Refused(f"Redmine {method} {path}: HTTP 404")
+            raise Refused(f"Redmine {method} {path}: HTTP 404", 404)
         if method == "PUT":
             self.puts.append(body)
             if self.keep:
@@ -1139,6 +1141,536 @@ class IssueBody(unittest.TestCase):
             Refused, "differs from what was sent in: custom_fields, status;"
         ):
             self.run_it(FakeIssue(touch=touch))
+
+
+class FakePlan:
+    """A Redmine holding #69, closed in version M0 (closed), and versions for redmine_set.py; it keeps every write."""
+
+    url = "http://redmine.test"
+    STATUSES = [
+        {"id": 1, "name": "New", "is_closed": False},
+        {"id": 2, "name": "In Progress", "is_closed": False},
+        {"id": 5, "name": "Closed", "is_closed": True},
+    ]
+
+    def __init__(self, keep=True):
+        self.versions = {
+            1: {"id": 1, "name": "M0", "status": "closed", "description": "", "sharing": "tree"},
+            8: {
+                "id": 8,
+                "name": "M1 Claude review",
+                "status": "open",
+                "description": None,
+                "sharing": "tree",
+            },
+            9: {
+                "id": 9,
+                "name": "M2 Locked",
+                "status": "locked",
+                "description": "",
+                "sharing": "tree",
+            },
+        }
+        for v in self.versions.values():
+            v["project"] = {"id": 2, "name": "Plan"}
+        self.issue = {
+            "id": 69,
+            "subject": "Old title",
+            "project": {"id": 2},
+            "status": dict(self.STATUSES[2]),
+            "fixed_version": {"id": 1, "name": "M0"},
+            "description": "### Task\r\nOld.\r\n",
+            "custom_fields": [{"id": 1, "value": "3"}],
+            "journals": [{"id": 1, "notes": "Started."}],
+        }
+        self.writes = []
+        self.keep = keep
+
+    def send(self, method, path, body=None):
+        path, _, _ = path.partition("?")
+        if method != "GET":
+            self.writes.append((method, path, body))
+            if not self.keep:
+                return None
+        if path == "/issues/69.json":
+            if method == "PUT":
+                self.put_issue(body["issue"])
+                return None
+            return {"issue": {**self.issue, "allowed_statuses": self.STATUSES}}
+        if path == "/projects/plan.json":
+            return {"project": {"id": 2}}
+        if path == "/issue_statuses.json":
+            return {
+                "issue_statuses": FakePlan.STATUSES
+                + [{"id": 7, "name": "Icebox", "is_closed": False}]
+            }
+        if path in ("/projects/2/versions.json", "/projects/plan/versions.json"):
+            if method == "POST":
+                n = max(self.versions) + 1
+                self.versions[n] = {
+                    "id": n,
+                    "description": "",
+                    "status": "open",
+                    "project": {"id": 2, "name": "Plan"},
+                    **body["version"],
+                }
+                return {"version": {"id": n}}
+            return {"versions": [dict(v) for v in self.versions.values()]}
+        if path.startswith("/versions/"):
+            n = int(path.split("/")[2].removesuffix(".json"))
+            if method == "PUT":
+                self.versions[n].update(body["version"])
+                return None
+            return {"version": dict(self.versions[n])}
+        if path == "/custom_fields.json":
+            return {
+                "custom_fields": [
+                    {
+                        "id": 1,
+                        "name": "Points",
+                        "customized_type": "issue",
+                        "possible_values": [{"value": v} for v in "1 2 3 5 8 13".split()],
+                    }
+                ]
+            }
+        raise Refused(f"Redmine {method} {path}: HTTP 404", 404)
+
+    def put_issue(self, put):
+        i = self.issue
+        if "status_id" in put:
+            i["status"] = dict(next(s for s in self.STATUSES if s["id"] == put["status_id"]))
+        if "fixed_version_id" in put:
+            v = self.versions.get(put["fixed_version_id"])
+            i["fixed_version"] = {"id": v["id"], "name": v["name"]} if v else None
+        if "subject" in put:
+            i["subject"] = put["subject"]
+        if "custom_fields" in put:
+            i["custom_fields"] = put["custom_fields"]
+        if "description" in put:
+            i["description"] = put["description"].replace("\n", "\r\n")
+        if "notes" in put:
+            i["journals"] = i["journals"] + [
+                {"id": max([j["id"] for j in i["journals"]], default=0) + 1, "notes": put["notes"]}
+            ]
+
+
+class RedmineSet(unittest.TestCase):
+    """redmine_set.py: each transition, --check, a rerun that writes nothing, and the refusals before any write."""
+
+    def setUp(self):
+        out = mock.patch("sys.stdout", new_callable=io.StringIO)
+        self.out = out.start()
+        self.addCleanup(out.stop)
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.lenses, self.extra = expected(GLOBAL, REPO)
+
+    def issue(self, r, *args):
+        a = redmine_set.parser().parse_args(["issue", "69", *args])
+        return redmine_set.set_issue(r, 69, a, self.lenses, self.extra)
+
+    def version(self, r, *args):
+        a = redmine_set.parser().parse_args(["version", *args])
+        return redmine_set.set_version(r, a.name, a)
+
+    def test_status_and_note_change_together(self):
+        r = FakePlan()
+        said = self.issue(r, "--no-version", "--status", "In Progress", "--note", "Reopened.")
+        self.assertEqual(said, "#69 changed: http://redmine.test/issues/69")
+        self.assertEqual(
+            r.writes,
+            [
+                (
+                    "PUT",
+                    "/issues/69.json",
+                    {"issue": {"status_id": 2, "fixed_version_id": "", "notes": "Reopened."}},
+                )
+            ],
+        )
+        for line in ("status: Closed → In Progress", "version: M0 → none", "note: Reopened."):
+            self.assertIn(line, self.out.getvalue())
+
+    def test_version_is_set_and_cleared(self):
+        r = FakePlan()
+        self.issue(r, "--version", "M1 Claude review")
+        self.assertEqual(r.issue["fixed_version"]["id"], 8)
+        self.assertIn("version: M0 → M1 Claude review", self.out.getvalue())
+        self.issue(r, "--no-version")
+        self.assertIsNone(r.issue["fixed_version"])
+        self.assertEqual(r.writes[1][2], {"issue": {"fixed_version_id": ""}})
+
+    def test_subject_points_and_description(self):
+        r = FakePlan()
+        file = Path(self.tmp.name) / "issue-69-body.md"
+        file.write_text(GOOD)
+        seen = issue_body.digest("### Task\nOld.\n")
+        args = ["--subject", "New title", "--points", "5", "--description", str(file)]
+        self.issue(r, *args, "--expect", seen)
+        self.assertEqual(
+            r.writes[0][2]["issue"],
+            {
+                "subject": "New title",
+                "custom_fields": [{"id": 1, "value": "5"}],
+                "description": GOOD,
+            },
+        )
+        out = self.out.getvalue()
+        self.assertIn("subject: Old title → New title", out)
+        self.assertIn("points: 3 → 5", out)
+        self.assertIn("+Do the thing.\n", out)
+
+    def test_a_description_edited_since_check_is_not_overwritten(self):
+        r = FakePlan()
+        file = Path(self.tmp.name) / "issue-69-body.md"
+        file.write_text(GOOD)
+        a = redmine_set.parser().parse_args(["--check", "issue", "69", "--description", str(file)])
+        said = redmine_set.set_issue(r, 69, a, self.lenses, self.extra)
+        seen = issue_body.digest("### Task\nOld.\n")
+        self.assertIn(f"without --check and with --expect {seen}", said)
+        r.issue["description"] = "### Task\r\nOld, edited.\r\n"
+        for expect in ([], ["--expect", seen]):
+            with (
+                self.subTest(expect=expect),
+                self.assertRaisesRegex(Refused, "isn't the one --check showed"),
+            ):
+                self.issue(r, "--description", str(file), *expect)
+        self.assertEqual(r.writes, [])
+
+    def test_front_matter_in_a_description_is_refused(self):
+        r = FakePlan()
+        file = Path(self.tmp.name) / "draft.md"
+        file.write_text("---\nsubject: x\n---\n" + GOOD)
+        with self.assertRaisesRegex(Refused, "starts with front matter"):
+            self.issue(r, "--description", str(file))
+        self.assertEqual(r.writes, [])
+
+    def test_a_note_repeats_unless_it_is_the_latest(self):
+        r = FakePlan()
+        r.issue["journals"] = [
+            {"id": 1, "notes": "Reopened."},
+            {"id": 2, "notes": "Closed."},
+            {"id": 3, "notes": ""},
+        ]
+        self.issue(r, "--note", "Reopened.")
+        self.assertEqual(r.writes[0][2], {"issue": {"notes": "Reopened."}})
+        self.assertEqual(
+            self.issue(r, "--note", "Reopened."), "#69 is already as asked; nothing written"
+        )
+
+    def test_points_with_no_listed_values_are_taken_as_given(self):
+        r = FakePlan()
+        field = {"id": 1, "name": "Points", "possible_values": []}
+        with mock.patch.object(redmine_set, "issue_fields", return_value=[field]):
+            self.issue(r, "--points", "4")
+        self.assertEqual(r.writes[0][2], {"issue": {"custom_fields": [{"id": 1, "value": "4"}]}})
+
+    def test_points_without_an_admin_key_use_the_issue_s_own_field(self):
+        r = FakePlan()
+        r.issue["custom_fields"] = [{"id": 1, "name": "Points", "value": "3"}]
+        forbidden = Refused("Redmine GET /custom_fields.json: HTTP 403", 403)
+        with mock.patch.object(redmine_set, "issue_fields", side_effect=forbidden):
+            self.issue(r, "--points", "5")
+        self.assertEqual(r.writes[0][2], {"issue": {"custom_fields": [{"id": 1, "value": "5"}]}})
+        r.issue["custom_fields"] = []
+        with (
+            mock.patch.object(redmine_set, "issue_fields", side_effect=forbidden),
+            self.assertRaisesRegex(Refused, "no issue custom field 'Points'"),
+        ):
+            self.issue(r, "--points", "8")
+        broken = Refused("Redmine GET /custom_fields.json: HTTP 500", 500)
+        with (
+            mock.patch.object(redmine_set, "issue_fields", side_effect=broken),
+            self.assertRaisesRegex(Refused, "HTTP 500"),
+        ):
+            self.issue(r, "--points", "8")
+        self.assertEqual(len(r.writes), 1)
+
+    def test_a_repeated_note_is_sent_with_a_change(self):
+        r = FakePlan()
+        r.issue["journals"] = [{"id": 1, "notes": "Moved."}]
+        self.issue(r, "--version", "M1 Claude review", "--note", "Moved.")
+        self.assertEqual(r.writes[0][2], {"issue": {"fixed_version_id": 8, "notes": "Moved."}})
+
+    def test_a_status_with_nowhere_to_go_says_so_and_why(self):
+        r = FakePlan()
+        r.STATUSES = [r.STATUSES[2]]
+        with self.assertRaisesRegex(
+            Refused, "it can't move to any status now; Redmine allows only its workflow's"
+        ):
+            self.issue(r, "--status", "New")
+        self.assertEqual(r.writes, [])
+
+    def test_the_reopen_check_reads_the_versions_once(self):
+        r = FakePlan()
+        with mock.patch.object(r, "send", wraps=r.send) as send, self.assertRaises(Refused):
+            self.issue(r, "--status", "In Progress")
+        paths = [c.args[1] for c in send.call_args_list]
+        self.assertEqual(paths.count("/projects/2/versions.json"), 1)
+        self.assertFalse([p for p in paths if p.startswith("/versions/")])
+
+    def test_create_makes_its_own_beside_another_project_s_shared_version(self):
+        r = FakePlan()
+        r.versions[20] = {
+            "id": 20,
+            "name": "M7",
+            "status": "open",
+            "project": {"id": 3, "name": "tempotag"},
+        }
+        said = self.version(r, "M7", "--create")
+        self.assertEqual(said, "version M7 created: http://redmine.test/versions/21")
+        self.assertEqual(r.writes[0][1], "/projects/plan/versions.json")
+
+    def test_expect_without_a_description_is_refused(self):
+        with (
+            mock.patch("sys.stderr", new_callable=io.StringIO) as err,
+            self.assertRaises(SystemExit),
+        ):
+            redmine_set.main(["issue", "69", "--expect", "3f2a9c01d4e5"])
+        self.assertIn("give it with --description", err.getvalue())
+
+    def test_a_version_name_two_projects_share_is_refused(self):
+        r = FakePlan()
+        r.versions[20] = {
+            "id": 20,
+            "name": "M1 Claude review",
+            "status": "open",
+            "project": {"id": 3, "name": "tempotag"},
+        }
+        with self.assertRaisesRegex(
+            Refused, "2 versions are named M1 Claude review, in Plan, tempotag"
+        ):
+            self.issue(r, "--version", "M1 Claude review")
+        self.assertEqual(r.writes, [])
+
+    def test_the_latest_note_is_found_in_either_journal_order(self):
+        r = FakePlan()
+        r.issue["journals"] = [{"id": 9, "notes": "Moved."}, {"id": 4, "notes": "Started."}]
+        self.assertEqual(
+            self.issue(r, "--note", "Moved."), "#69 is already as asked; nothing written"
+        )
+        self.issue(r, "--note", "Started.")
+        self.assertEqual(r.writes[0][2], {"issue": {"notes": "Started."}})
+
+    def test_a_status_change_reads_no_status_list_when_allowed(self):
+        r = FakePlan()
+        r.issue["fixed_version"] = None
+        with mock.patch.object(r, "send", wraps=r.send) as send:
+            self.issue(r, "--status", "In Progress")
+        self.assertNotIn("/issue_statuses.json", [c.args[1] for c in send.call_args_list])
+
+    def test_a_version_name_two_projects_share_is_refused_for_a_version_too(self):
+        r = FakePlan()
+        r.versions[20] = {
+            "id": 20,
+            "name": "M0",
+            "status": "open",
+            "project": {"id": 3, "name": "tempotag"},
+        }
+        with self.assertRaisesRegex(Refused, "2 versions are named M0"):
+            self.version(r, "M0", "--status", "open")
+        self.assertEqual(
+            self.version(r, "M0", "--create", "--status", "closed"),
+            "version M0 is already as asked; nothing written",
+        )
+        self.assertEqual(r.writes, [])
+
+    def test_check_prints_each_change_and_writes_nothing(self):
+        r = FakePlan()
+        a = redmine_set.parser().parse_args(
+            ["--check", "issue", "69", "--status", "Closed", "--subject", "New", "--note", "Hi."]
+        )
+        said = redmine_set.set_issue(r, 69, a, self.lenses, self.extra)
+        self.assertEqual(said, "#69: 2 changes to make; nothing written")
+        self.assertIn("subject: Old title → New", self.out.getvalue())
+        self.assertIn("note: Hi.", self.out.getvalue())
+        self.assertEqual(r.writes, [])
+        self.assertIn(
+            "nothing written",
+            self.version(r, "M1 Claude review", "--status", "closed", "--check"),
+        )
+        self.assertIn("would be created", self.version(r, "M9", "--create", "--check"))
+        self.assertEqual(r.writes, [])
+
+    def test_a_second_run_writes_nothing_and_says_so(self):
+        r = FakePlan()
+        args = ["--version", "M1 Claude review", "--points", "5", "--note", "Moved."]
+        self.issue(r, *args)
+        self.assertEqual(self.issue(r, *args), "#69 is already as asked; nothing written")
+        self.assertIn("latest note is already this one", self.out.getvalue())
+        self.assertEqual(len(r.writes), 1)
+        self.version(r, "M1 Claude review", "--status", "closed")
+        self.assertEqual(
+            self.version(r, "M1 Claude review", "--status", "closed"),
+            "version M1 Claude review is already as asked; nothing written",
+        )
+        self.assertEqual(len(r.writes), 2)
+
+    def test_version_closes_and_is_created_shared_with_the_tree(self):
+        r = FakePlan()
+        self.assertEqual(
+            self.version(r, "M1 Claude review", "--status", "closed"),
+            "version M1 Claude review changed: http://redmine.test/versions/8",
+        )
+        self.assertEqual(
+            r.writes[0], ("PUT", "/versions/8.json", {"version": {"status": "closed"}})
+        )
+        self.assertIn("status: open → closed", self.out.getvalue())
+        said = self.version(r, "M5 Next", "--create", "--description", "Next up.")
+        self.assertEqual(said, "version M5 Next created: http://redmine.test/versions/10")
+        self.assertEqual(
+            r.writes[1],
+            (
+                "POST",
+                "/projects/plan/versions.json",
+                {"version": {"name": "M5 Next", "sharing": "tree", "description": "Next up."}},
+            ),
+        )
+        self.assertEqual(
+            self.version(r, "M5 Next", "--create", "--description", "Next up."),
+            "version M5 Next is already as asked; nothing written",
+        )
+
+    def test_reopening_in_a_closed_version_names_both_ways_on(self):
+        r = FakePlan()
+        with self.assertRaises(Refused) as e:
+            self.issue(r, "--status", "In Progress")
+        said = str(e.exception)
+        self.assertIn("#69 is in version M0, which is closed", said)
+        self.assertIn("--no-version", said)
+        self.assertIn("redmine-set version M0 --status open", said)
+        self.assertEqual(r.writes, [])
+
+    def test_bad_names_and_values_refuse_before_any_write(self):
+        for args, says in [
+            (["--status", "Done"], "no status 'Done'"),
+            (["--status", "Icebox"], "can't move from Closed to Icebox; it can move to: New"),
+            (["--version", "M9"], "no version 'M9'; versions: M0, M1 Claude review"),
+            (["--version", "M2 Locked"], "M2 Locked is locked.*'M2 Locked' --status open"),
+            (["--points", "4"], "points: '4' isn't one of 1, 2, 3"),
+            (["--description", "/no/such/file"], "can't read it"),
+        ]:
+            r = FakePlan()
+            with self.subTest(args), self.assertRaisesRegex(Refused, says):
+                self.issue(r, "--note", "Never sent.", *args)
+            self.assertEqual(r.writes, [])
+        for args, says in [
+            (["M9", "--status", "closed"], "no version 'M9'"),
+            (["M0", "--status", "shut"], "isn't one of open, locked, closed"),
+        ]:
+            r = FakePlan()
+            with self.subTest(args), self.assertRaisesRegex(Refused, says):
+                self.version(r, *args)
+            self.assertEqual(r.writes, [])
+
+    def test_a_description_off_the_outline_refuses_before_any_write(self):
+        r = FakePlan()
+        file = Path(self.tmp.name) / "bad.md"
+        file.write_text("### Task\nDo it.\n")
+        with self.assertRaisesRegex(Refused, "missing section: ### Done"):
+            self.issue(r, "--description", str(file))
+        self.assertEqual(r.writes, [])
+
+    def test_an_unknown_issue_is_named(self):
+        r = FakePlan()
+        a = redmine_set.parser().parse_args(["issue", "70", "--status", "Closed"])
+        with self.assertRaisesRegex(Refused, "#70 doesn't exist"):
+            redmine_set.set_issue(r, 70, a, self.lenses, self.extra)
+
+    def test_a_write_redmine_did_not_keep_is_named(self):
+        with self.assertRaisesRegex(Refused, "didn't keep: version, subject, note;"):
+            self.issue(FakePlan(keep=False), "--no-version", "--subject", "New", "--note", "Hi.")
+        with self.assertRaisesRegex(Refused, "M1 Claude review was written.*didn't keep: status"):
+            self.version(FakePlan(keep=False), "M1 Claude review", "--status", "closed")
+
+    def test_a_dropped_status_names_what_was_kept(self):
+        r = FakePlan()
+        real = r.put_issue
+        r.put_issue = lambda put: real({k: v for k, v in put.items() if k != "status_id"})
+        with self.assertRaisesRegex(
+            Refused, "didn't keep: status; it kept: version, note; check it in Redmine"
+        ):
+            self.issue(r, "--no-version", "--status", "In Progress", "--note", "Reopened.")
+
+    def test_main_prints_the_result_and_exits_on_a_refusal(self):
+        r = FakePlan()
+        with mock.patch.object(redmine_set, "Redmine", return_value=r):
+            self.assertEqual(redmine_set.main(["issue", "#69", "--subject", "New"]), 0)
+            self.assertIn("redmine-set: #69 changed", self.out.getvalue())
+            with self.assertRaisesRegex(SystemExit, "redmine-set: no version 'M9'"):
+                redmine_set.main(["version", "M9", "--status", "open"])
+
+
+class RedmineErrors(unittest.TestCase):
+    """redmine.py: Redmine's own error text reaches the message."""
+
+    def error(self, body):
+        e = urllib.error.HTTPError("u", 422, "Unprocessable", {}, io.BytesIO(body))
+        self.addCleanup(e.close)
+        return e
+
+    def test_redmine_error_text_is_shown(self):
+        e = self.error(b'{"errors":["An issue assigned to a closed version cannot be reopened"]}')
+        self.assertEqual(reasons(e), ": An issue assigned to a closed version cannot be reopened")
+
+    def test_a_string_of_errors_is_one_reason(self):
+        self.assertEqual(reasons(self.error(b'{"errors": "Forbidden"}')), ": Forbidden")
+
+    def test_a_body_without_errors_adds_nothing(self):
+        for body in (b"", b"<html>", b"{}", b'{"errors": []}'):
+            with self.subTest(body):
+                self.assertEqual(reasons(self.error(body)), "")
+
+
+class ReadBack(unittest.TestCase):
+    """redmine.unkept: the one read-back check new_issue, issue_body and redmine_set share."""
+
+    BACK = {
+        "status": {"id": 2},
+        "fixed_version": None,
+        "subject": "Title",
+        "description": "### Task\r\nDo it.\r\n",
+        "custom_fields": [{"id": 1, "value": "3"}],
+        "journals": [
+            {"id": 1, "notes": "Older."},
+            {"id": 2, "notes": "Latest."},
+            {"id": 3, "notes": ""},
+        ],
+    }
+
+    def test_a_write_redmine_kept_names_nothing(self):
+        sent = {
+            "status_id": 2,
+            "fixed_version_id": "",
+            "subject": "Title",
+            "description": "### Task\nDo it.\n",
+            "custom_fields": [{"id": 1, "value": "3"}],
+            "notes": "Latest.",
+        }
+        self.assertEqual(unkept(self.BACK, sent), [])
+
+    def test_each_field_redmine_did_not_keep_is_named(self):
+        sent = {
+            "project_id": 2,
+            "status_id": 5,
+            "fixed_version_id": 8,
+            "subject": "New",
+            "description": "### Task\nOther.\n",
+            "custom_fields": [{"id": 1, "value": "5"}, {"id": 2, "value": "infra"}],
+            "notes": "Older.",
+        }
+        self.assertEqual(
+            unkept(self.BACK, sent, {1: "points"}),
+            [
+                "project",
+                "status",
+                "version",
+                "subject",
+                "description",
+                "points",
+                "custom field 2",
+                "note",
+            ],
+        )
 
 
 if __name__ == "__main__":

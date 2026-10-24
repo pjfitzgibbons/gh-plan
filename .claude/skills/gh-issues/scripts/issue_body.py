@@ -25,22 +25,9 @@ import sys
 from pathlib import Path
 
 import outline
-from redmine import Redmine, Refused
+from redmine import Redmine, Refused, fetch, normal, unkept
 
 UNCOMPARED = {"description", "updated_on"}
-
-
-def normal(text: str) -> str:
-    return text.lstrip("\ufeff").replace("\r\n", "\n").strip() + "\n"
-
-
-def fetch(redmine, n: int) -> dict:
-    try:
-        return redmine.send("GET", f"/issues/{n}.json")["issue"]
-    except Refused as e:
-        if "HTTP 404" in str(e):
-            raise Refused(f"#{n} doesn't exist") from None
-        raise
 
 
 def diff(n: int, now: str, body: str, file: Path) -> str:
@@ -52,6 +39,24 @@ def diff(n: int, now: str, body: str, file: Path) -> str:
             str(file),
         )
     )
+
+
+def read_body(file: Path, lenses: list[str], extra: list[str]) -> str:
+    """The file's description, normalised; Refused when it can't be read, has front matter or is off the outline."""
+    try:
+        body = normal(file.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError) as e:
+        raise Refused(f"can't read it: {e}") from None
+    if body.startswith("---\n"):
+        raise Refused(
+            "the file starts with front matter; give the description alone, its fields aren't read"
+        )
+    findings = outline.check(body, lenses, extra)
+    if findings:
+        raise Refused(
+            "the body doesn't conform to the outline:\n" + "\n".join(f"  - {f}" for f in findings)
+        )
+    return body
 
 
 def changed(before: dict, after: dict) -> list[str]:
@@ -74,19 +79,7 @@ def run(
     extra: list[str],
     expect: str | None = None,
 ) -> str:
-    try:
-        body = normal(file.read_text(encoding="utf-8"))
-    except (OSError, UnicodeDecodeError) as e:
-        raise Refused(f"can't read it: {e}") from None
-    if body.startswith("---\n"):
-        raise Refused(
-            "the file starts with front matter; give the description alone, its fields aren't read"
-        )
-    findings = outline.check(body, lenses, extra)
-    if findings:
-        raise Refused(
-            "the body doesn't conform to the outline:\n" + "\n".join(f"  - {f}" for f in findings)
-        )
+    body = read_body(file, lenses, extra)
     before = fetch(redmine, n)
     now = normal(before.get("description") or "")
     if now == body:
@@ -102,9 +95,7 @@ def run(
 
     redmine.send("PUT", f"/issues/{n}.json", {"issue": {"description": body}})
     after = fetch(redmine, n)
-    lost = ([] if normal(after.get("description") or "") == body else ["description"]) + changed(
-        before, after
-    )
+    lost = unkept(after, {"description": body}) + changed(before, after)
     if lost:
         raise Refused(
             f"#{n} was written, and differs from what was sent in: {', '.join(lost)}; check it in Redmine"
@@ -129,13 +120,7 @@ def main(argv=None) -> int:
     p.add_argument("issue", type=lambda s: int(s.lstrip("#")), help="the issue's number")
     p.add_argument("file", type=Path, help="the new description, in the issue outline")
     a = p.parse_args(argv)
-    rw = outline.repo_writer()
-    lenses, extra = outline.expected(
-        outline.GLOBAL_WRITER.read_text(encoding="utf-8")
-        if outline.GLOBAL_WRITER.is_file()
-        else "",
-        rw.read_text(encoding="utf-8") if rw else "",
-    )
+    lenses, extra = outline.load_expected()
     try:
         print(f"issue_body: {run(a.issue, a.file, Redmine(), a.check, lenses, extra, a.expect)}")
     except Refused as e:

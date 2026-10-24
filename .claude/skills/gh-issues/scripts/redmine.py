@@ -1,9 +1,11 @@
-"""The Redmine API client the gh-issues scripts (new_issue.py, issue_body.py) write through.
+"""The Redmine API client the gh-issues scripts (new_issue.py, issue_body.py, redmine_set.py) write
+through.
 
 The API key comes from the Keychain item redmine-gh-plan (REDMINE_KEYCHAIN picks another), and
 goes only in a request header. REDMINE_URL defaults to http://127.0.0.1:3010.
 """
 
+import http.client
 import json
 import os
 import subprocess
@@ -12,7 +14,108 @@ import urllib.request
 
 
 class Refused(Exception):
-    pass
+    def __init__(self, message: str, code: int | None = None):
+        super().__init__(message)
+        self.code = code  # the HTTP status, when Redmine answered with an error
+
+
+# A field Redmine takes as <name>_id and returns as {"id": …}, and the name a message gives it.
+LINKS = {
+    "project_id": ("project", "project"),
+    "tracker_id": ("tracker", "tracker"),
+    "status_id": ("status", "status"),
+    "fixed_version_id": ("fixed_version", "version"),
+    "parent_issue_id": ("parent", "parent"),
+}
+
+
+def normal(text: str) -> str:
+    """A description as compared: no BOM, \\n line endings, one trailing newline. Redmine stores \\r\\n."""
+    return text.lstrip("\ufeff").replace("\r\n", "\n").strip() + "\n"
+
+
+def latest_note(journals: list[dict]) -> str | None:
+    """The newest journal note by id: Redmine reverses journals for a user who reads comments newest-first."""
+    noted = [j for j in journals if j.get("notes")]
+    return max(noted, key=lambda j: j["id"])["notes"] if noted else None
+
+
+def by_name(items: list[dict], name: str, what: str) -> dict:
+    found = [i for i in items if i["name"] == name]
+    if not found:
+        raise Refused(f"no {what} {name!r}; {what}s: {', '.join(i['name'] for i in items)}")
+    return found[0]
+
+
+def issue_fields(redmine) -> list[dict]:
+    """The issue custom fields, with their values; Redmine lists them only for an admin's key."""
+    return [
+        f
+        for f in redmine.send("GET", "/custom_fields.json")["custom_fields"]
+        if f["customized_type"] == "issue"
+    ]
+
+
+def field_id(fields: list[dict], name: str, key: str, value: str) -> int:
+    """The id of the custom field with this name; Refused when there's none, or value isn't one of its values."""
+    field = by_name(fields, name, "issue custom field")
+    allowed = [v["value"] for v in field.get("possible_values", [])]
+    if allowed and value not in allowed:
+        raise Refused(f"{key}: {value!r} isn't one of {', '.join(allowed)}")
+    return field["id"]
+
+
+def fetch(redmine, n: int, include: str = "") -> dict:
+    try:
+        return redmine.send(
+            "GET", f"/issues/{n}.json" + (f"?include={include}" if include else "")
+        )["issue"]
+    except Refused as e:
+        if e.code == 404:
+            raise Refused(f"#{n} doesn't exist") from None
+        raise
+
+
+def unkept(issue: dict, sent: dict, names: dict[int, str] | None = None) -> list[str]:
+    """Each field of an issue write that the issue as read back doesn't hold, by name.
+
+    sent is the body's "issue" as POSTed or PUT. A cleared link ("" or None) is kept when the read-back
+    has none. A note is kept when it is the latest note in the journals, read with include=journals.
+    A custom field is named from names by its id, else "custom field <id>".
+    """
+    lost = []
+    for key, value in sent.items():
+        if key in LINKS:
+            attr, name = LINKS[key]
+            have = (issue.get(attr) or {}).get("id")
+            if have != (value if value not in ("", None) else None):
+                lost.append(name)
+        elif key == "subject" and issue.get("subject") != value:
+            lost.append("subject")
+        elif key == "description" and normal(issue.get("description") or "") != normal(value):
+            lost.append("description")
+        elif key == "notes":
+            if latest_note(issue.get("journals", [])) != value:
+                lost.append("note")
+        elif key == "custom_fields":
+            have = {f["id"]: f.get("value") for f in issue.get("custom_fields", [])}
+            lost += [
+                (names or {}).get(f["id"], f"custom field {f['id']}")
+                for f in value
+                if have.get(f["id"]) != f["value"]
+            ]
+    return lost
+
+
+def reasons(e: urllib.error.HTTPError) -> str:
+    """Redmine's own error text, as its 422 body {"errors": [...]} gives it; empty for any other body."""
+    try:
+        errors = json.loads(e.read())["errors"]
+    except (OSError, http.client.HTTPException, ValueError, TypeError, KeyError):
+        return ""
+    if isinstance(errors, str):
+        errors = [errors]
+    return ": " + "; ".join(str(m) for m in errors) if errors else ""
 
 
 class Redmine:
@@ -40,7 +143,7 @@ class Redmine:
             with urllib.request.urlopen(req) as r:
                 raw = r.read()
         except urllib.error.HTTPError as e:
-            raise Refused(f"Redmine {method} {path}: HTTP {e.code}") from None
+            raise Refused(f"Redmine {method} {path}: HTTP {e.code}{reasons(e)}", e.code) from None
         except urllib.error.URLError as e:
             raise Refused(f"Redmine can't be reached at {self.url}: {e.reason}") from None
         return json.loads(raw) if raw.strip() else None
