@@ -627,6 +627,54 @@ class PrRebase(unittest.TestCase):
         self.assertEqual((self.tree / "local.cfg").read_text(), "mine\n")
         self.assertEqual(self.git(self.tree, "rev-parse", "HEAD"), before)
 
+    def test_an_ignored_file_at_a_path_main_renames_to_is_refused(self):
+        self.advance_main("old.cfg", "main's\n")
+        self.git(self.tree, "fetch", "-q", "origin")
+        self.git(self.tree, "rebase", "-q", "origin/main")
+        self.git(self.tree, "push", "-q", "-f", "origin", "HEAD")
+        self.git(self.other, "mv", "old.cfg", "local.cfg")
+        self.git(self.other, "commit", "-q", "-m", "Rename")
+        self.git(self.other, "push", "-q", "origin", "HEAD:main")
+        (self.tree / ".git" / "info" / "exclude").write_text("local.cfg\n")
+        (self.tree / "local.cfg").write_text("mine\n")
+        run = self.pr()
+        self.assertEqual(run.returncode, 2)
+        self.assertIn("  local.cfg\n", run.stderr)
+        self.assertEqual((self.tree / "local.cfg").read_text(), "mine\n")
+
+    def test_an_ignored_file_at_a_non_ascii_path_main_adds_is_refused(self):
+        (self.tree / ".git" / "info" / "exclude").write_text("é.cfg\n")
+        (self.tree / "é.cfg").write_text("mine\n")
+        self.advance_main("é.cfg", "main's\n")
+        run = self.pr()
+        self.assertEqual(run.returncode, 2)
+        self.assertIn("  é.cfg\n", run.stderr)
+        self.assertEqual((self.tree / "é.cfg").read_text(), "mine\n")
+
+    def test_a_file_the_branch_and_main_both_add_is_rebased(self):
+        self.commit(self.tree, "x.txt", "same\n", "Add x")
+        self.git(self.tree, "push", "-q", "origin", "HEAD")
+        tip = self.advance_main("x.txt", "same\n")
+        run = self.pr()
+        self.assertEqual(run.returncode, 0, run.stderr)
+        self.assertIn(f"rebased onto {tip[:7]}", run.stdout)
+
+    def test_a_local_merge_is_refused_before_the_rebase(self):
+        self.advance_main()
+        self.git(self.tree, "fetch", "-q", "origin")
+        self.git(self.tree, "merge", "-q", "--no-commit", "origin/main")
+        (self.tree / "d.txt").write_text("fixed in the merge\n")
+        self.git(self.tree, "add", "d.txt")
+        self.git(self.tree, "commit", "-q", "-m", "Merge main")
+        self.git(self.tree, "push", "-q", "origin", "HEAD")
+        self.advance_main("e.txt")
+        merge = self.git(self.tree, "rev-parse", "HEAD")
+        run = self.pr()
+        self.assertEqual(run.returncode, 2)
+        self.assertIn("Merge main", run.stderr)
+        self.assertEqual(self.git(self.tree, "rev-parse", "HEAD"), merge)
+        self.assertEqual(self.on_origin("feat/9-x"), merge)
+
     def test_an_unreachable_origin_stops_before_the_push(self):
         self.advance_main()
         self.git(self.tree, "remote", "set-url", "origin", str(self.origin.parent / "gone.git"))

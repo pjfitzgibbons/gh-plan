@@ -7,7 +7,7 @@ const fs = require("fs");
 const path = require("path");
 const { Redmine } = require("./redmine");
 const { ACTION, checkId, start, expandHome } = require("./start");
-const { reviewFile, roundFiles, shipTab, stage, check, shipped, keepEdits } = require("./ship");
+const { reviewFile, roundFiles, shipTab, stage, openStaged, check, shipped, keepEdits } = require("./ship");
 const { finish } = require("./done");
 const { handoffFile, issueUrl, writeHandoff, takeHandoffFor } = require("./handoff");
 
@@ -335,6 +335,18 @@ async function prepare(uri, staged = false) {
   return { ...review, ...found };
 }
 
+// VS Code's git extension's repository for root; null when the extension is missing or disabled, or
+// hasn't found the checkout.
+async function gitRepository(root) {
+  try {
+    const extension = vscode.extensions.getExtension("vscode.git");
+    const exports = extension && (extension.isActive ? extension.exports : await extension.activate());
+    return exports?.getAPI(1).getRepository(vscode.Uri.file(root)) ?? null;
+  } catch {
+    return null;
+  }
+}
+
 async function go(uri) {
   const ready = await prepare(uri);
   await arm(ready && { root: ready.root, id: ready.id });
@@ -347,8 +359,12 @@ async function go(uri) {
       vscode.window.showErrorMessage(`Plan: #${ready.id}'s changes couldn't be staged: ${error.message}`);
       return;
     }
-    await vscode.commands.executeCommand("git.viewStagedChanges");
-    vscode.window.showInformationMessage(`Plan: #${ready.id}'s changes are staged and open; the rocket commits them with pr ${ready.id}.`);
+    const missed = await openStaged(await gitRepository(ready.root), (command) => vscode.commands.executeCommand(command));
+    if (missed) {
+      vscode.window.showWarningMessage(`Plan: #${ready.id}'s changes are staged, but they didn't open: ${missed} Source Control's Staged Changes lists them; the rocket on the review file commits them with pr ${ready.id}.`);
+    } else {
+      vscode.window.showInformationMessage(`Plan: #${ready.id}'s changes are staged and open; the rocket commits them with pr ${ready.id}.`);
+    }
   } else {
     vscode.window.showInformationMessage(`Plan: nothing to commit; the rocket pushes ${ready.branch} and updates its PR.`);
   }

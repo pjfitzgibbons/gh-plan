@@ -86,6 +86,21 @@ async function stage(root) {
   await git(root, "add", "-A");
 }
 
+// Opens what Go staged, and returns why not, or null once it's open. VS Code's git extension reads
+// the index on its own schedule, so straight after stage() its staged group can still be empty, and
+// git.viewStagedChanges says so and opens nothing: the repository's status() reads it first.
+// repository is the git extension's for the checkout, or null without one.
+async function openStaged(repository, execute) {
+  if (!repository) return "VS Code's git extension has no repository for it.";
+  try {
+    await repository.status();
+  } catch (error) {
+    return `VS Code's git extension couldn't read it: ${sentence(error)}`;
+  }
+  await execute("git.viewStagedChanges");
+  return null;
+}
+
 // The files changed since Go staged the tree: an edit or deletion the index lacks, or a new file
 // git doesn't ignore.
 async function unstaged(root) {
@@ -172,6 +187,6 @@ async function shipped({ root, id, branch, redmine }) {
 }
 
 module.exports = {
-  reviewFile, isRoundFile, unsent, unsentIn, keepEdits, roundFiles, shipTab, stage, check, pullRequest, prLink, linkPullRequest,
+  reviewFile, isRoundFile, unsent, unsentIn, keepEdits, roundFiles, shipTab, stage, openStaged, check, pullRequest, prLink, linkPullRequest,
   shipped,
 };

@@ -134,9 +134,19 @@ short=$(git rev-parse --short "$onto")
 if git merge-base --is-ancestor "$onto" HEAD; then
   echo "pr: already on $base ($short)"
 else
+  # A rebase replays commits, not merges, so a merge's own edits would be dropped without a word.
+  merges=$(git log --oneline --merges "$onto..HEAD")
+  if [ -n "$merges" ]; then
+    echo "pr: $branch has merges a rebase onto origin/$base would drop, with any edits made in them, so nothing is pushed:" >&2
+    printf '%s\n' "$merges" | sed 's/^/  /' >&2
+    echo "pr: redo each merge's edits as a commit, git rebase origin/$base, then pr $n" >&2
+    exit 2
+  fi
   # git overwrites an ignored file at a path the rebase brings in, so a local file there is refused.
-  clash=$(git diff --name-only --diff-filter=A "HEAD...$onto" | while IFS= read -r f; do
-    [ ! -e "$f" ] || printf '%s\n' "$f"
+  # Not a path HEAD tracks, which the rebase merges. No renames, so a path main renames to counts as
+  # added, and -z, so a non-ASCII path isn't quoted.
+  clash=$(git diff --name-only --no-renames -z --diff-filter=A "HEAD...$onto" | tr '\0' '\n' | while IFS= read -r f; do
+    [ ! -e "$f" ] || git cat-file -e "HEAD:$f" 2>/dev/null || printf '%s\n' "$f"
   done)
   if [ -n "$clash" ]; then
     echo "pr: origin/$base adds files $branch has as ignored files, which a rebase would overwrite, so nothing is pushed:" >&2

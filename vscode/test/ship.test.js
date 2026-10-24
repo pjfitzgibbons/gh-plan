@@ -6,7 +6,7 @@ const fs = require("fs");
 const os = require("os");
 const path = require("path");
 const { execFileSync } = require("child_process");
-const { reviewFile, roundFiles, shipTab, stage, check, prLink, linkPullRequest, shipped, unsent, keepEdits } = require("../ship");
+const { reviewFile, roundFiles, shipTab, stage, openStaged, check, prLink, linkPullRequest, shipped, unsent, keepEdits } = require("../ship");
 
 test("a review file names its issue and checkout; any other file names none", () => {
   assert.deepEqual(reviewFile("/work/gh-plan.worktrees/81/.tmp/81/commit.txt"), { root: "/work/gh-plan.worktrees/81", id: 81 });
@@ -292,4 +292,20 @@ test("edits pr never saw are kept beside the file, never over one, and count as 
     "replies/11.md.unsent",
     "replies/11.md.unsent2",
   ]);
+});
+
+test("Go reads the index into VS Code's git extension before it opens the staged changes", async () => {
+  const calls = [];
+  const repository = { status: async () => { calls.push("status"); } };
+  assert.equal(await openStaged(repository, async (command) => { calls.push(command); }), null);
+  assert.deepEqual(calls, ["status", "git.viewStagedChanges"]);
+});
+
+test("without the git extension's repository, or when it can't read the index, Go opens nothing and says why", async () => {
+  const opened = [];
+  const execute = async (command) => { opened.push(command); };
+  assert.match(await openStaged(null, execute), /no repository/);
+  const failing = { status: async () => { throw new Error("index.lock exists"); } };
+  assert.equal(await openStaged(failing, execute), "VS Code's git extension couldn't read it: index.lock exists.");
+  assert.deepEqual(opened, []);
 });
