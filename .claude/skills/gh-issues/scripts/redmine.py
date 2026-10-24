@@ -1,4 +1,4 @@
-"""The Redmine API client new_issue.py writes through.
+"""The Redmine API client the gh-issues scripts (new_issue.py, issue_body.py) write through.
 
 The API key comes from the Keychain item redmine-gh-plan (REDMINE_KEYCHAIN picks another), and
 goes only in a request header. REDMINE_URL defaults to http://127.0.0.1:3010.

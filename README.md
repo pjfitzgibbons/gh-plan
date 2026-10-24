@@ -15,7 +15,7 @@ This repo is the setup around Redmine:
 - [`vscode/`](vscode/README.md): the VS Code extension. Its Next up panel starts, ships and
   finishes each issue.
 - [`.claude/`](.claude/): the attribution hook, and the gh-issues skill with its `pr`,
-  `new_issue` and `ghbody.sh` scripts, the last behind the `gh pc` and `gh pb` aliases.
+  `new_issue`, `issue_body` and `ghbody.sh` scripts, the last behind the `gh pc` and `gh pb` aliases.
 
 ## Setup
 
@@ -40,6 +40,7 @@ elsewhere). On a Mac, from the root of that main checkout, never a worktree, whi
    ln -sfn "$PWD/.claude/skills/gh-issues" ~/.claude/skills/gh-issues
    ln -sfn ~/.claude/skills/gh-issues/scripts/pr.sh ~/.local/bin/pr
    ln -sfn ~/.claude/skills/gh-issues/scripts/new_issue.py ~/.local/bin/new_issue
+   ln -sfn ~/.claude/skills/gh-issues/scripts/issue_body.py ~/.local/bin/issue_body
    gh alias set --clobber --shell pc '~/.claude/skills/gh-issues/scripts/ghbody.sh pr-create "$@"'
    gh alias set --clobber --shell pb '~/.claude/skills/gh-issues/scripts/ghbody.sh pr-edit "$@"'
    ```

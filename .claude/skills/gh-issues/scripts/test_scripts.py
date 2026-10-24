@@ -1,13 +1,16 @@
 """Offline tests for the gh-issues scripts. Run from scripts/: python3 -m unittest test_scripts"""
 
+import io
 import os
 import subprocess
 import tempfile
 import unittest
+from unittest import mock
 from pathlib import Path
 
 from outline import check, expected
 from pr_threads import emit as threads_emit, post as threads_post, read_replies, read_reply_dir, write_drafts
+import issue_body
 import new_issue
 from redmine import Refused
 
@@ -28,7 +31,7 @@ Do the thing.
 
 ### Done
 - [ ] The thing is done.
-- [x] Tests prove the thing.
+- [ ] Tests prove the thing.
 - [ ] L1: no secret appears in the diff.
 
 ### Notes
@@ -85,7 +88,7 @@ class Outline(unittest.TestCase):
         self.assertEqual(f, ["L2: has a note but is [ ]; mark it [x] or drop the note"])
 
     def test_one_done_condition_is_too_few(self):
-        f = check(GOOD.replace("- [x] Tests prove the thing.\n", "").replace("- [ ] The thing is done.\n", ""),
+        f = check(GOOD.replace("- [ ] Tests prove the thing.\n", "").replace("- [ ] The thing is done.\n", ""),
                   self.lenses, self.extra)
         self.assertEqual(len(f), 1)
         self.assertTrue(f[0].startswith("Done: 1 pass/fail condition(s); a Task needs at least 2"))
@@ -93,6 +96,10 @@ class Outline(unittest.TestCase):
     def test_done_lines_are_checkboxes(self):
         f = check(GOOD.replace("- [ ] The thing is done.", "- The thing is done."), self.lenses, self.extra)
         self.assertIn("Done: '- The thing is done.' is not a checkbox; write each condition as - [ ] …", f)
+
+    def test_a_ticked_done_line_is_named(self):
+        f = check(GOOD.replace("- [ ] The thing is done.", "- [x] The thing is done."), self.lenses, self.extra)
+        self.assertEqual(f, ["Done: 'The thing is done.' is ticked; an issue's description is never ticked, the PR body is"])
 
     def test_bug_shape(self):
         bug = GOOD.replace("Do the thing.", "**Steps** run it. **Expected** y. **Actual** z.")
@@ -445,6 +452,130 @@ class NewIssue(unittest.TestCase):
     def test_a_status_redmine_dropped_is_named(self):
         with self.assertRaisesRegex(Refused, "#80 is created, but Redmine didn't keep: status_id"):
             self.run_it(FakeTracker(drop_status=True))
+
+
+BODY = GOOD
+
+
+class FakeIssue:
+    """A Redmine holding one issue, #90, for issue_body.py; it stores descriptions with \\r\\n, as Redmine does."""
+
+    url = "http://redmine.test"
+
+    def __init__(self, description="### Task\r\nOld.\r\n", keep=True, touch=None):
+        self.issue = {"id": 90, "subject": "Code search", "status": {"id": 2}, "description": description,
+                      "custom_fields": [{"id": 1, "value": "3"}], "updated_on": "then"}
+        self.puts = []
+        self.keep, self.touch = keep, touch
+
+    def send(self, method, path, body=None):
+        if path != "/issues/90.json":
+            raise Refused(f"Redmine {method} {path}: HTTP 404")
+        if method == "PUT":
+            self.puts.append(body)
+            if self.keep:
+                self.issue["description"] = body["issue"]["description"].replace("\n", "\r\n")
+            if self.touch:
+                self.issue.update(self.touch)
+            self.issue["updated_on"] = "now"
+            return None
+        return {"issue": dict(self.issue)}
+
+
+class IssueBody(unittest.TestCase):
+    """issue_body.py: the outline check and the diff before any write, and a read-back that names what Redmine didn't keep."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.file = Path(self.tmp.name) / "issue-90-body.md"
+        self.file.write_text(BODY)
+        self.lenses, self.extra = expected(GLOBAL, REPO)
+        out = mock.patch("sys.stdout", new_callable=io.StringIO)
+        self.out = out.start()
+        self.addCleanup(out.stop)
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def run_it(self, redmine, n=90, check_only=False, expect=None):
+        if expect is None and not check_only and n == 90:
+            expect = issue_body.digest(issue_body.normal(redmine.issue["description"]))
+        return issue_body.run(n, self.file, redmine, check_only, self.lenses, self.extra, expect)
+
+    def test_replaces_the_description_and_reads_it_back(self):
+        r = FakeIssue()
+        self.assertEqual(self.run_it(r), "#90's description replaced: http://redmine.test/issues/90")
+        self.assertEqual(r.puts, [{"issue": {"description": BODY}}])
+        self.assertEqual(issue_body.normal(r.issue["description"]), BODY)
+
+    def test_check_shows_the_diff_and_writes_nothing(self):
+        r = FakeIssue()
+        said = self.run_it(r, check_only=True)
+        seen = issue_body.digest("### Task\nOld.\n")
+        self.assertEqual(said, f"{self.file} is ready; to write it: issue_body --expect {seen} 90 {self.file}")
+        self.assertIn("--- #90 in Redmine\n", self.out.getvalue())
+        self.assertIn("-Old.\n", self.out.getvalue())
+        self.assertIn("+Do the thing.\n", self.out.getvalue())
+        self.assertEqual(r.puts, [])
+
+    def test_a_description_edited_since_check_is_not_overwritten(self):
+        r = FakeIssue()
+        seen = issue_body.digest(issue_body.normal(r.issue["description"]))
+        r.issue["description"] = "### Task\r\nOld, with a typo fixed.\r\n"
+        for expect in (seen, ""):
+            with self.subTest(expect=expect), self.assertRaisesRegex(Refused, "isn't the one --check showed"):
+                self.run_it(r, expect=expect)
+        self.assertEqual(r.puts, [])
+
+    def test_a_matching_file_writes_nothing(self):
+        r = FakeIssue(description=BODY.replace("\n", "\r\n") + "\r\n")
+        self.assertEqual(self.run_it(r), f"#90's description already matches {self.file}; nothing written")
+        self.assertEqual(r.puts, [])
+
+    def test_a_body_off_the_outline_refuses_before_any_request(self):
+        r = FakeIssue()
+        r.send = mock.Mock()
+        self.file.write_text("### Task\nDo it.\n")
+        with self.assertRaisesRegex(Refused, "missing section: ### Done"):
+            self.run_it(r)
+        r.send.assert_not_called()
+
+    def test_a_ticked_done_line_is_refused(self):
+        r = FakeIssue()
+        self.file.write_text(GOOD.replace("- [ ] Tests prove", "- [x] Tests prove"))
+        with self.assertRaisesRegex(Refused, "'Tests prove the thing.' is ticked"):
+            self.run_it(r)
+        self.assertEqual(r.puts, [])
+
+    def test_front_matter_is_refused_even_after_a_bom(self):
+        for head in ("", "\ufeff"):
+            self.file.write_text(head + "---\nsubject: x\n---\n" + BODY)
+            with self.subTest(bom=bool(head)), self.assertRaisesRegex(Refused, "front matter"):
+                self.run_it(FakeIssue())
+
+    def test_a_file_that_cannot_be_read_is_refused(self):
+        for content in (None, b"\xff\xfe###"):
+            if content is None:
+                self.file.unlink(missing_ok=True)
+            else:
+                self.file.write_bytes(content)
+            with self.subTest(content=content), self.assertRaisesRegex(Refused, "can't read it"):
+                self.run_it(FakeIssue())
+
+    def test_an_unknown_issue_is_named(self):
+        r = FakeIssue()
+        with self.assertRaisesRegex(Refused, "#91 doesn't exist"):
+            self.run_it(r, n=91)
+        self.assertEqual(r.puts, [])
+
+    def test_a_description_redmine_did_not_keep_is_named(self):
+        with self.assertRaisesRegex(Refused, "differs from what was sent in: description;"):
+            self.run_it(FakeIssue(keep=False))
+
+    def test_another_field_that_changed_is_named(self):
+        touch = {"status": {"id": 5}, "custom_fields": [{"id": 1, "value": "5"}]}
+        with self.assertRaisesRegex(Refused, "differs from what was sent in: custom_fields, status;"):
+            self.run_it(FakeIssue(touch=touch))
 
 
 if __name__ == "__main__":
