@@ -128,6 +128,58 @@ function alive(pid) {
 // before this marker or by another tool, so Open leaves it alone.
 const settingUp = (common, id) => path.join(common, `plan-setting-up-${id}`);
 
+// cocoindex-code keeps a project's code index in <root>/.cocoindex_code/, and finds the project by
+// walking up to its settings.yml. A worktree beside the main checkout is its own project: with the
+// main checkout's settings, its first search indexes the branch's own files.
+const INDEX = ".cocoindex_code";
+const INDEX_SETTINGS = path.join(INDEX, "settings.yml");
+const onPath = (command) => (process.env.PATH || "").split(path.delimiter).filter(Boolean).some((dir) => {
+  try {
+    fs.accessSync(path.join(dir, command), fs.constants.X_OK);
+    return true;
+  } catch {
+    return false;
+  }
+});
+
+// Gives dir the checkout's code index settings, never its databases, which the one ccc daemon may be
+// writing. Returns the note saying what it did.
+async function enableIndex(checkout, dir) {
+  if (!fs.existsSync(path.join(checkout, INDEX_SETTINGS))) return `No code index in ${checkout} to set up from.`;
+  if (!onPath("ccc")) return "No code index: ccc isn't on PATH.";
+  // Not ignored, the settings would be an untracked file that Go stages and Ship commits, or a
+  // tracked one the copy overwrites. The file, not the folder: a rule may re-include it.
+  if (!(await git(dir, "check-ignore", "--quiet", INDEX_SETTINGS).then(() => true, () => false))) {
+    return `No code index: ${INDEX_SETTINGS} isn't ignored in ${dir}.`;
+  }
+  try {
+    fs.mkdirSync(path.join(dir, INDEX), { recursive: true });
+    // Never over settings already there: a setup run again would undo their edits.
+    fs.copyFileSync(path.join(checkout, INDEX_SETTINGS), path.join(dir, INDEX_SETTINGS), fs.constants.COPYFILE_EXCL);
+  } catch (error) {
+    if (error.code !== "EEXIST") return `No code index: ${error.message}.`;
+  }
+  return "The worktree's code index builds on its first ccc search, or with ccc index.";
+}
+
+// The daemon keeps a project's databases open once it has indexed it, and goes on writing to them
+// once they're deleted, so a worktree made again at the same path would search a stale index. ccc
+// reset has it let go before Done removes the worktree. Only a worktree that has built its index,
+// either database: on one that hasn't, reset would start a daemon to do nothing. With
+// COCOINDEX_CODE_DB_PATH_MAPPING set the databases may be elsewhere, so reset decides. reset finds
+// its project by walking up to a settings.yml, so without the worktree's own it would reset whichever
+// project holds the worktree. null, or the note saying it didn't.
+async function releaseIndex(dir) {
+  const built = ["target_sqlite.db", "cocoindex.db"].some((db) => fs.existsSync(path.join(dir, INDEX, db)));
+  if (!built && !process.env.COCOINDEX_CODE_DB_PATH_MAPPING) return null;
+  if (!fs.existsSync(path.join(dir, INDEX_SETTINGS))) {
+    return built ? `${dir} has a code index but no ${INDEX_SETTINGS} to reset it by; run ccc daemon restart.` : null;
+  }
+  if (!onPath("ccc")) return `ccc isn't on PATH, so its daemon may still hold ${dir}'s code index; run ccc daemon restart.`;
+  return run("ccc", ["reset", "-f"], dir, 60 * 1000)
+    .then(() => null, (error) => `The ccc daemon may still hold ${dir}'s code index: ${error.message}; run ccc daemon restart.`);
+}
+
 // The issue's project, and the root and git dir of its main checkout, whatever folder of it (or of
 // a worktree) the map names: worktrees go beside it, never in its tree. git names worktrees by
 // their real path, and the new window is matched to its handoff by it.
@@ -225,6 +277,7 @@ async function startIn({ redmine, id, confirm, handOff, issue, checkout, common 
     await run("uv", ["sync", "--quiet"], found.dir);
     notes.push("Synced the uv environment.");
   }
+  if (started) notes.push(await enableIndex(checkout, found.dir));
 
   if (issue.status.name === "New") {
     await redmine.update(id, {
@@ -242,4 +295,4 @@ async function startIn({ redmine, id, confirm, handOff, issue, checkout, common 
   return result;
 }
 
-module.exports = { ACTION, checkId, slug, branchName, worktreeDir, blockerIds, issueBranch, worktrees, existingWorktree, expandHome, run, git, lock, settingUp, mainCheckout, start };
+module.exports = { ACTION, checkId, slug, branchName, worktreeDir, blockerIds, issueBranch, worktrees, existingWorktree, expandHome, run, git, lock, settingUp, enableIndex, releaseIndex, mainCheckout, start };

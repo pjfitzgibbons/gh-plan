@@ -1,7 +1,7 @@
 // node --test vscode/test: the names Start makes and the blockers it warns on, without Redmine or git.
 const test = require("node:test");
 const assert = require("node:assert/strict");
-const { slug, branchName, worktreeDir, blockerIds, existingWorktree, run, start } = require("../start");
+const { slug, branchName, worktreeDir, blockerIds, existingWorktree, run, start, enableIndex } = require("../start");
 const { Redmine } = require("../redmine");
 
 test("the slug is the subject's first five words", () => {
@@ -156,7 +156,7 @@ test("a Start stopped after the worktree finishes on the next Start", async (t) 
   const again = await start({ ...s, id: 80, confirm: () => true });
   assert.equal(again.created, false);
   assert.equal(again.started, true, "the resumed Start hands over to Claude");
-  assert.deepEqual(again.notes, ["#80 is In Progress."]);
+  assert.deepEqual(again.notes, [`No code index in ${s.checkout} to set up from.`, "#80 is In Progress."]);
 });
 
 test("a project with no checkout is refused by name", async (t) => {
@@ -483,4 +483,147 @@ test("a Start with Redmine down says so, naming the URL, and makes no branch or 
   await assert.rejects(start({ ...s, redmine, id: 80, confirm: () => true }), { message: `Redmine can't be reached at ${url}: ECONNREFUSED` });
   assert.equal(s.git(s.checkout, "branch", "--list", "feat/80-*"), "");
   assert.equal(s.git(s.checkout, "worktree", "list", "--porcelain").trim().split("\n\n").length, 1);
+});
+
+// A main checkout with a code index, ignored as gh-plan's .gitignore ignores it, and a ccc that
+// logs every run: Start runs none.
+// ignored: the .gitignore committed on main, or false for none.
+function indexed(t, s, { ignored = "/.cocoindex_code/\n" } = {}) {
+  const { execFileSync } = require("child_process");
+  const fs = require("fs");
+  const path = require("path");
+  if (ignored) {
+    fs.writeFileSync(path.join(s.checkout, ".gitignore"), ignored);
+    s.git(s.checkout, "add", ".gitignore");
+    s.git(s.checkout, "-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "--quiet", "-m", "ignore the index");
+    s.git(s.checkout, "push", "--quiet", "origin", "main");
+  }
+  const index = path.join(s.checkout, ".cocoindex_code");
+  fs.mkdirSync(path.join(index, "cocoindex.db"), { recursive: true });
+  fs.writeFileSync(path.join(index, "settings.yml"), "include_patterns: ['**/*.js']\n");
+  fs.writeFileSync(path.join(index, "target_sqlite.db"), "main's chunks\n");
+  fs.writeFileSync(path.join(index, "cocoindex.db", "data.mdb"), "main's tracking\n");
+  const bin = fs.mkdtempSync(path.join(path.dirname(s.checkout), "bin-"));
+  const log = path.join(bin, "runs");
+  fs.writeFileSync(path.join(bin, "ccc"), `#!/bin/sh\necho "$* $PWD" >> "${log}"\n`, { mode: 0o755 });
+  // Only the stub, git and the system's tools: no ccc installed on this machine.
+  const realGit = execFileSync("sh", ["-c", "command -v git"], { encoding: "utf8" }).trim();
+  const PATH = process.env.PATH;
+  process.env.PATH = [bin, path.dirname(realGit), "/usr/bin", "/bin"].join(path.delimiter);
+  t.after(() => (process.env.PATH = PATH));
+  const files = () => Object.fromEntries(["settings.yml", "target_sqlite.db", "cocoindex.db/data.mdb"].map((f) => [f, fs.readFileSync(path.join(index, f), "utf8")]));
+  return {
+    bin,
+    index,
+    files,
+    runs: () => (fs.existsSync(log) ? fs.readFileSync(log, "utf8").split("\n").filter(Boolean) : []),
+    // The worktree's .cocoindex_code, file by file.
+    copied: (dir) => fs.readdirSync(path.join(dir, ".cocoindex_code"), { recursive: true }).sort(),
+  };
+}
+
+const INDEX_NOTE = "The worktree's code index builds on its first ccc search, or with ccc index.";
+
+test("Start gives the worktree the main checkout's code index settings, never its databases", async (t) => {
+  const s = sandbox(t);
+  const fs = require("fs");
+  const path = require("path");
+  s.issues[50].status = { name: "Closed", is_closed: true };
+  const ccc = indexed(t, s);
+  const before = ccc.files();
+  const result = await start({ ...s, id: 80, confirm: () => true });
+  assert.ok(result.notes.includes(INDEX_NOTE), result.notes.join(" "));
+  assert.deepEqual(ccc.copied(result.dir), ["settings.yml"]);
+  assert.equal(fs.readFileSync(path.join(result.dir, ".cocoindex_code", "settings.yml"), "utf8"), before["settings.yml"]);
+  assert.deepEqual(ccc.files(), before, "the main checkout's index is only read");
+  assert.deepEqual(ccc.runs(), [], "Start runs no ccc: the first search indexes");
+  assert.equal(s.git(result.dir, "status", "--porcelain", "--ignored=no"), "", "the settings leave the worktree clean, .gitignore included");
+
+  const reopened = await start({ ...s, id: 80, confirm: () => true });
+  assert.deepEqual(reopened.notes, []);
+});
+
+test("setup run again keeps the worktree's own code index settings", async (t) => {
+  const s = sandbox(t);
+  const fs = require("fs");
+  const path = require("path");
+  s.issues[50].status = { name: "Closed", is_closed: true };
+  indexed(t, s);
+  const result = await start({ ...s, id: 80, confirm: () => true });
+  const settings = path.join(result.dir, ".cocoindex_code", "settings.yml");
+  fs.writeFileSync(settings, "include_patterns: ['**/*.py']\n");
+  assert.equal(await enableIndex(s.checkout, result.dir), INDEX_NOTE);
+  assert.equal(fs.readFileSync(settings, "utf8"), "include_patterns: ['**/*.py']\n");
+});
+
+test("Start in a repo with no code index makes the worktree without one, and says so", async (t) => {
+  const s = sandbox(t);
+  const fs = require("fs");
+  const path = require("path");
+  s.issues[50].status = { name: "Closed", is_closed: true };
+  const ccc = indexed(t, s);
+  fs.rmSync(ccc.index, { recursive: true });
+  const result = await start({ ...s, id: 80, confirm: () => true });
+  assert.deepEqual(result.notes, [`Made feat/80-start-from-the-panel from origin/main in ${result.dir}.`, `No code index in ${s.checkout} to set up from.`, "#80 is In Progress."]);
+  assert.ok(!fs.existsSync(path.join(result.dir, ".cocoindex_code")));
+});
+
+test("Start without ccc on PATH makes the worktree without an index, and says so", async (t) => {
+  const s = sandbox(t);
+  const fs = require("fs");
+  const path = require("path");
+  s.issues[50].status = { name: "Closed", is_closed: true };
+  const ccc = indexed(t, s);
+  fs.rmSync(path.join(ccc.bin, "ccc"));
+  const result = await start({ ...s, id: 80, confirm: () => true });
+  assert.ok(result.notes.includes("No code index: ccc isn't on PATH."), result.notes.join(" "));
+  assert.equal(result.started, true);
+  assert.ok(!fs.existsSync(path.join(result.dir, ".cocoindex_code")));
+});
+
+test("an index the repo doesn't ignore isn't set up, so Go can't stage it", async (t) => {
+  const s = sandbox(t);
+  const fs = require("fs");
+  const path = require("path");
+  s.issues[50].status = { name: "Closed", is_closed: true };
+  indexed(t, s, { ignored: false });
+  const result = await start({ ...s, id: 80, confirm: () => true });
+  assert.ok(result.notes.includes(`No code index: .cocoindex_code/settings.yml isn't ignored in ${result.dir}.`), result.notes.join(" "));
+  assert.ok(!fs.existsSync(path.join(result.dir, ".cocoindex_code")));
+});
+
+test("settings the repo re-includes aren't copied, though their folder is ignored", async (t) => {
+  const s = sandbox(t);
+  const fs = require("fs");
+  const path = require("path");
+  s.issues[50].status = { name: "Closed", is_closed: true };
+  indexed(t, s, { ignored: ".cocoindex_code/*\n!.cocoindex_code/settings.yml\n" });
+  const result = await start({ ...s, id: 80, confirm: () => true });
+  assert.ok(result.notes.includes(`No code index: .cocoindex_code/settings.yml isn't ignored in ${result.dir}.`), result.notes.join(" "));
+  assert.ok(!fs.existsSync(path.join(result.dir, ".cocoindex_code", "settings.yml")));
+});
+
+test("settings that can't be copied are a note, and Start finishes setup", async (t) => {
+  const s = sandbox(t);
+  const fs = require("fs");
+  const path = require("path");
+  s.issues[50].status = { name: "Closed", is_closed: true };
+  const ccc = indexed(t, s);
+  fs.chmodSync(path.join(ccc.index, "settings.yml"), 0o000);
+  const result = await start({ ...s, id: 80, confirm: () => true }).finally(() => fs.chmodSync(path.join(ccc.index, "settings.yml"), 0o644));
+  assert.ok(result.notes.some((note) => /^No code index: EACCES/.test(note)), result.notes.join(" "));
+  assert.equal(s.issues[80].status.name, "In Progress");
+  assert.equal((await start({ ...s, id: 80, confirm: () => true })).started, false, "setup is finished");
+});
+
+test("two Starts at once in one repo each get the settings", async (t) => {
+  const s = sandbox(t);
+  s.issues[50].status = { name: "Closed", is_closed: true };
+  s.issues[81] = { ...s.issues[80], id: 81, subject: "Another issue", status: { name: "New", is_closed: false } };
+  const ccc = indexed(t, s);
+  const [a, b] = await Promise.all([80, 81].map((id) => start({ ...s, id, confirm: () => true })));
+  for (const result of [a, b]) {
+    assert.ok(result.notes.includes(INDEX_NOTE), result.notes.join(" "));
+    assert.deepEqual(ccc.copied(result.dir), ["settings.yml"]);
+  }
 });

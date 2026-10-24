@@ -149,8 +149,8 @@ network or a repo.
   reads the API key from the Keychain once per client, and the web service's key on each call, so
   no repo holds either ([`G3`](requirements.md)). Next up keeps one client across refreshes until
   the `plan.*` settings change; each command makes its own.
-- `vscode/start.js` runs git, `gh` and `uv` for Start, Go, Ship and Done: it fetches, adds and removes
-  worktrees, syncs them, reads PRs, and pulls and deletes merged branches.
+- `vscode/start.js` runs git, `gh`, `uv` and `ccc` for Start, Go, Ship and Done: it fetches, adds and removes
+  worktrees, syncs them, sets up and releases their code index, reads PRs, and pulls and deletes merged branches.
 
 `gh` is already authenticated, so nothing holds a GitHub token ([`G3`](requirements.md)); a library
 such as Octokit would need one. Outside the repo, `pr` writes to GitHub through `gh` and to Redmine

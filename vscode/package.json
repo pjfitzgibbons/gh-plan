@@ -70,7 +70,7 @@
         "plan.disposable": {
           "type": "array",
           "items": { "type": "string" },
-          "default": [".tmp/", "node_modules/", ".venv/", "__pycache__/", ".pytest_cache/", ".coverage", ".ruby-lsp/", "htmlcov/", "dist/", "build/"],
+          "default": [".tmp/", ".cocoindex_code/", "node_modules/", ".venv/", "__pycache__/", ".pytest_cache/", ".coverage", ".ruby-lsp/", "htmlcov/", "dist/", "build/"],
           "description": "The ignored files Done may delete with an issue's worktree, by name at any depth; name/ is a folder. Done refuses a worktree holding any other ignored file."
         },
         "plan.pr": {

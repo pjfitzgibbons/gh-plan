@@ -4,7 +4,7 @@
 // that stopped part way is finished by the next, and a second Done changes nothing.
 const fs = require("fs");
 const path = require("path");
-const { checkId, issueBranch, worktrees, existingWorktree, worktreeDir, git, lock, settingUp, mainCheckout } = require("./start");
+const { checkId, issueBranch, worktrees, existingWorktree, worktreeDir, git, lock, settingUp, releaseIndex, mainCheckout } = require("./start");
 const { prLink, pullRequest, unsentIn } = require("./ship");
 const { field } = require("./redmine");
 
@@ -109,7 +109,7 @@ async function fetchHead(cwd, pr) {
 
 // The ignored paths a worktree's removal may take without asking, as plan.disposable defaults them:
 // what tools make again. "name/" is a folder of that name at any depth, "name" a file or folder.
-const DISPOSABLE = [".tmp/", "node_modules/", ".venv/", "__pycache__/", ".pytest_cache/", ".coverage", ".ruby-lsp/", "htmlcov/", "dist/", "build/"];
+const DISPOSABLE = [".tmp/", ".cocoindex_code/", "node_modules/", ".venv/", "__pycache__/", ".pytest_cache/", ".coverage", ".ruby-lsp/", "htmlcov/", "dist/", "build/"];
 
 // Is an ignored path, as git lists it ("dir/" for a whole folder), under a disposable name?
 function disposed(entry, disposable) {
@@ -293,6 +293,8 @@ async function finishIn({ redmine, id, project, checkout, common, pr, result, di
     // git removes a worktree whose folder was deleted by hand as well, and refuses one with
     // untracked files; ignored ones, such as .tmp/ and .venv, go with it. Start's setup marker
     // goes too, so a reopened issue's next Start sets its new worktree up.
+    const indexNote = await releaseIndex(found.dir);
+    if (indexNote) notes.push(indexNote);
     await git(checkout, "worktree", "remove", found.dir);
     result.dir = found.dir;
     fs.rmSync(settingUp(common, id), { force: true });
