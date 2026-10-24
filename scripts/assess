@@ -1,0 +1,165 @@
+#!/usr/bin/env python3
+"""Assess a change: run every check, print one line each, and exit 1 if any failed.
+
+The checks are the Python suite and its lint, the extension's lint and tests, then every checker in
+`checks/`. Every check runs even after one fails, so a single run shows them all. A failed check's
+output is printed above its line; `-v` prints every check's output.
+
+A checker is an executable in `checks/` that reads the repo and prints `file:line: message` for
+each violation. It fails when it prints anything or exits non-zero. Its first comment line names
+the rule it covers, `# rule: <name>`; `assess --rules` lists them.
+
+Run it from anywhere: it works from the repo root, `scripts/..`. It needs Python 3.14, the
+`python3` setup puts on PATH.
+"""
+
+import argparse
+import os
+import subprocess
+import sys
+import time
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+PYTHON = (3, 14)
+
+# (name, directory under the root, command)
+SUITES = [
+    ("pytest", ".", ["uv", "run", "pytest"]),
+    ("ruff check", ".", ["uv", "run", "ruff", "check", "."]),
+    ("ruff format", ".", ["uv", "run", "ruff", "format", "--check", "."]),
+    ("npm run lint", "vscode", ["npm", "run", "lint"]),
+    ("npm test", "vscode", ["npm", "test"]),
+]
+
+# Entries in checks/ that aren't checkers: __pycache__ is Python's, made when a checker imports.
+NOT_CHECKERS = {"README.md", "__pycache__"}
+
+
+def checkers(checks: Path) -> list[Path]:
+    """Every entry in `checks/` but the README and dotfiles, so one missing its +x, or a
+    directory, still fails rather than going unrun."""
+    if not checks.is_dir():
+        return []
+    return sorted(
+        f for f in checks.iterdir() if f.name not in NOT_CHECKERS and not f.name.startswith(".")
+    )
+
+
+def rule(checker: Path) -> str | None:
+    """The rule named by the checker's first comment line, `# rule: <name>`, past any shebang."""
+    try:
+        lines = checker.read_text(encoding="utf-8").splitlines()
+    except OSError, UnicodeDecodeError:
+        return None
+    if lines and lines[0].startswith("#!"):
+        lines = lines[1:]
+    for line in lines:
+        if line.startswith("#"):
+            name = line[1:].strip()
+            if name.startswith("rule:"):
+                return name.removeprefix("rule:").strip() or None
+            return None
+    return None
+
+
+def run(cmd: list[str], cwd: Path, stream: bool) -> tuple[bool, str]:
+    """Run one check; (passed, output). With stream, each output line prints as it comes, so a
+    check that hangs until CI's timeout still shows how far it got. A command that can't start
+    fails with the reason."""
+    out = []
+    try:
+        with subprocess.Popen(
+            cmd,
+            cwd=cwd,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            errors="replace",
+        ) as p:
+            for line in p.stdout:
+                out.append(line)
+                if stream:
+                    print(line, end="", flush=True)
+    except OSError as e:
+        return refuse(f"{cmd[0]}: {e.strerror or e}", stream)
+    return p.returncode == 0, "".join(out)
+
+
+def refuse(reason: str, stream: bool) -> tuple[bool, str]:
+    """A check that failed before it ran; with stream, its reason prints like any output."""
+    if stream:
+        print(reason, flush=True)
+    return False, reason + "\n"
+
+
+def run_checker(checker: Path, root: Path, stream: bool) -> tuple[bool, str]:
+    """A checker passes when it exits 0 and prints nothing, to stdout or stderr, not even a
+    blank line."""
+    name = checker.relative_to(root)
+    if not checker.is_file():
+        return refuse(f"{name}: not a file", stream)
+    if not os.access(checker, os.X_OK):
+        return refuse(f"{name}: not executable (chmod +x)", stream)
+    ok, out = run([str(checker)], root, stream)
+    return ok and not out, out
+
+
+def assess(root: Path, suites: list, verbose: bool) -> int:
+    lines, failed = [], 0
+
+    def check(name: str, go) -> None:
+        nonlocal failed
+        began = time.monotonic()
+        if verbose:
+            print(f"── {name} ──", flush=True)
+        ok, out = go()
+        if not ok and not out.strip():
+            said = "printed only blank lines" if out else "exited non-zero with no output"
+            out = f"{name}: {said}\n"
+            if verbose:
+                print(out, end="", flush=True)
+        if not ok and not verbose:
+            print(f"── {name} ──", flush=True)
+            print(out.rstrip("\n"), flush=True)
+        line = f"{'PASS' if ok else 'FAIL'}  {name}  ({time.monotonic() - began:.1f}s)"
+        print(line, flush=True)
+        lines.append(line)
+        failed += not ok
+
+    for name, cwd, cmd in suites:
+        check(name, lambda cmd=cmd, cwd=cwd: run(cmd, root / cwd, verbose))
+    for checker in checkers(root / "checks"):
+        check(str(checker.relative_to(root)), lambda c=checker: run_checker(c, root, verbose))
+
+    print(f"\nassess: {len(lines) - failed} passed, {failed} failed")
+    for line in lines:
+        print(f"  {line}")
+    return 1 if failed else 0
+
+
+def list_rules(root: Path) -> int:
+    """One line per checker: its rule, or `(none)`, then its path."""
+    for checker in checkers(root / "checks"):
+        print(f"{rule(checker) or '(none)'}\t{checker.relative_to(root)}")
+    return 0
+
+
+def main(argv: list[str] | None = None, root: Path = ROOT, suites: list = SUITES) -> int:
+    parser = argparse.ArgumentParser(prog="assess", description=__doc__.splitlines()[0])
+    parser.add_argument("--rules", action="store_true", help="list the rules checks/ covers")
+    parser.add_argument("-v", "--verbose", action="store_true", help="print every check's output")
+    args = parser.parse_args(argv)
+    if sys.version_info < PYTHON:
+        print(
+            f"assess: needs Python {'.'.join(map(str, PYTHON))}; this is {sys.version.split()[0]}"
+        )
+        return 2
+    if args.rules:
+        return list_rules(root)
+    return assess(root, suites, args.verbose)
+
+
+if __name__ == "__main__":
+    sys.exit(main())

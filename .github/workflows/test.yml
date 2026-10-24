@@ -16,31 +16,9 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  ruff:
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-
-      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
-        with:
-          python-version: "3.14"
-          enable-cache: true
-
-      - run: uv sync --locked
-
-      # The github format pins each finding to its line in the PR diff.
-      - name: ruff check
-        run: uv run ruff check --output-format=github .
-
-      # Runs even when the lint fails, so one push shows both.
-      - name: ruff format
-        if: ${{ !cancelled() }}
-        run: uv run ruff format --check .
-
-  pytest:
+  # scripts/assess runs every check: pytest, ruff, the extension's lint and tests, and checks/.
+  # It runs on every PR, Dependabot's npm PRs included.
+  assess:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -49,25 +27,43 @@ jobs:
         with:
           persist-credentials: false
 
+      # activate-environment puts the venv's Python 3.14 first on PATH, so scripts/assess's
+      # python3 is 3.14 and not the runner's own.
       - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
         with:
           python-version: "3.14"
           enable-cache: true
+          activate-environment: true
 
       # --locked fails if uv.lock is stale rather than silently re-resolving.
       - run: uv sync --locked
 
-      # -v names every test in the log; the annotate-failures plugin pins each
-      # failure to its line in the PR diff; md-report writes the job summary.
-      # Options take values with "=": in "--opt VALUE" form pytest reads an
-      # existing path VALUE as a test path, roots itself at the common ancestor
-      # (/home/runner/work) and silently skips pyproject.toml.
-      - name: pytest
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: vscode/package-lock.json
+
+      # npm ci installs package-lock.json exactly and fails if it disagrees with package.json.
+      # --ignore-scripts: a dev tool's install script never runs, and none of them needs one.
+      - run: npm ci --ignore-scripts
+        working-directory: vscode
+
+      # -v prints every check's output, not only a failure's. pytest takes its CI options from
+      # PYTEST_ADDOPTS: -v names every test in the log; the annotate-failures plugin pins each
+      # failure to its line in the PR diff; md-report writes the job summary. Options take values
+      # with "=": in "--opt VALUE" form pytest reads an existing path VALUE as a test path, roots
+      # itself at the common ancestor (/home/runner/work) and silently skips pyproject.toml.
+      # RUFF_OUTPUT_FORMAT=github pins each lint finding to its line in the PR diff too.
+      - name: assess
+        env:
+          RUFF_OUTPUT_FORMAT: github
         run: >
-          uv run pytest -v
+          PYTEST_ADDOPTS="-v
           --md-report --md-report-verbose=0
           --md-report-flavor=github --md-report-color=never --md-report-zeros=empty
-          --md-report-output="$GITHUB_STEP_SUMMARY"
+          --md-report-output=$GITHUB_STEP_SUMMARY"
+          scripts/assess -v
 
       - name: coverage summary
         if: ${{ !cancelled() }}
@@ -79,26 +75,3 @@ jobs:
           echo "::error title=Coverage below threshold::Total coverage ${total}% is under fail_under in pyproject.toml"
           exit 1
 
-  # The extension's suite and lint, so a Dependabot npm PR is tested like any other.
-  vscode:
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    defaults:
-      run:
-        working-directory: vscode
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-
-      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
-        with:
-          node-version: "22"
-          cache: npm
-          cache-dependency-path: vscode/package-lock.json
-
-      # npm ci installs package-lock.json exactly and fails if it disagrees with package.json.
-      # --ignore-scripts: a dev tool's install script never runs, and none of them needs one.
-      - run: npm ci --ignore-scripts
-      - run: npm test
-      - run: npm run lint

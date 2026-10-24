@@ -47,14 +47,17 @@ elsewhere). On a Mac, from the root of that main checkout, never a worktree, whi
 
 ## Tests
 
+`scripts/assess` runs all of these, then each checker in `checks/`
+([`checks/README.md`](checks/README.md)), and exits non-zero if any failed. CI runs it as `main`'s
+one required check.
+
 ```sh
 uv sync
 uv run pytest
 ```
 
 `uv run pytest` runs `tests/`, `.claude/hooks/` and the gh-issues scripts, and fails when coverage
-of `redmine/` and `.claude/hooks/` is under 90%. The Python's lint and format checks, the CI's
-`ruff` job, are:
+of `redmine/` and `.claude/hooks/` is under 90%. The Python's lint and format checks are:
 
 ```sh
 uv run ruff check .

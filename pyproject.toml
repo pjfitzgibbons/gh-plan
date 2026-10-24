@@ -41,11 +41,14 @@ dev = [
 # Set here so no ruff config in a parent directory or the home directory applies.
 line-length = 100
 # Not requires-python: the scripts run under any python3 on PATH, 3.10 or newer (pr.sh checks),
-# and launchd runs backup.py with /usr/bin/python3, 3.9. Fixes and the format keep to those.
+# and launchd runs backup.py with /usr/bin/python3, 3.9. scripts/assess needs 3.14. Fixes and
+# the format keep to those.
 target-version = "py310"
-per-file-target-version = { "redmine/backup.py" = "py39" }
+per-file-target-version = { "redmine/backup.py" = "py39", "scripts/assess" = "py314" }
 # The script folders import each other by bare name: their modules are first-party.
 src = [".", ".claude/hooks", ".claude/skills/gh-issues/scripts", ".claude/skills/plan-report/scripts"]
+# Python scripts without a .py name, which ruff would otherwise skip.
+extend-include = ["scripts/assess"]
 
 [tool.ruff.format]
 # The docs' Python blocks are laid out by hand, aligned comments and all.
