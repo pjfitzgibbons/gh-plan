@@ -18,6 +18,13 @@ Source Control's does on a Git refresh.
   button is **Open**, which reopens the worktree, making it the same way if this machine has none, and
   changes nothing in one already set up. Start refuses an issue whose status has moved on from New or
   In Progress since the panel loaded.
+- **The code index:** when the main checkout has a [cocoindex-code](https://github.com/cocoindex-io/cocoindex-code)
+  index (`.cocoindex_code/settings.yml`), `ccc` is on PATH and the repo ignores `.cocoindex_code/`,
+  Start's setup copies `settings.yml` into the new worktree, and nothing else: the worktree's first
+  `ccc` search, or `ccc index`, builds its own index from the branch's files. Done runs
+  `ccc reset -f` in the worktree before removing it, so the `ccc` daemon lets go of its databases.
+  A missing index or `ccc` is a note, never a failed Start. Run `ccc init` once in the main checkout to turn
+  it on.
 - **A link** opens in an Integrated Browser tab.
 - **Review before `pr`:** once an issue's `.tmp/<n>/pr-body.md` is written with something beside
   it for `pr` to send, they open as tabs in the leftmost editor group (or the only one), with no
@@ -58,7 +65,7 @@ Source Control's does on a Git refresh.
 | `plan.project`, `plan.query` | `plan`, `Next up` | The project and saved query shown. |
 | `plan.projectMarkers` | `Pl`, `tt`, `ms` | The marker per Redmine project identifier. |
 | `plan.checkouts` | gh-plan, tempotag under `~/programming` | The main checkout per Redmine project identifier, for Start. |
-| `plan.disposable` | `.tmp/`, `node_modules/`, `.venv/`, caches, `dist/`, `build/` | The ignored files Done may delete with an issue's worktree, by name at any depth; `name/` is a folder. Done refuses a worktree holding any other. |
+| `plan.disposable` | `.tmp/`, `.cocoindex_code/`, `node_modules/`, `.venv/`, caches, `dist/`, `build/` | The ignored files Done may delete with an issue's worktree, by name at any depth; `name/` is a folder. Done refuses a worktree holding any other. |
 | `plan.pr` | `~/.local/bin/pr` | The `pr` script Ship runs, by path: a login shell finds `/usr/bin/pr` first. |
 | `plan.keychainService` | `redmine-gh-plan` | The Keychain item holding your Redmine API key. |
 | `plan.sysKeychainService` | `redmine-sys-api` | The Keychain item holding the key of Redmine's repository web service, for Done's fetch (`redmine/README.md`, *Running the setup*). |

@@ -24,3 +24,6 @@ CLAUDE.local.md
 
 # Session handoff notes: local context, not project history.
 HANDOFF.md
+
+# The CocoIndex code index (ccc), which Start seeds in each worktree.
+/.cocoindex_code/
