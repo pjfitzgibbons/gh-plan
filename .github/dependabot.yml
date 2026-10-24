@@ -1,0 +1,69 @@
+# Dependabot keeps the repo's pins current: the workflow's action SHAs, uv.lock, the extension's
+# dev tools and Redmine's image tag. An ecosystem's minor and patch updates come as one PR a week,
+# ruff's and eslint's in a PR of their own, majors included; any other major comes as its own PR,
+# so it can't hold the safe ones back. A version update waits until the release is 3 days old,
+# Dependabot's default cooldown; security updates don't wait.
+# https://docs.github.com/en/code-security/reference/supply-chain-security/dependabot-options-reference
+#
+# Its PRs are the exception to CLAUDE.md's branch and title rules: no Redmine issue, no Done.
+# "chore:" starts each subject, so the squash commit still names its type.
+version: 2
+
+updates:
+  # Bumps the SHA and the "# vX.Y.Z" comment on the same line in .github/workflows/.
+  # https://docs.github.com/en/code-security/reference/supply-chain-security/supported-ecosystems-and-repositories#github-actions
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    commit-message:
+      prefix: chore
+    groups:
+      actions:
+        patterns: ["*"]
+        update-types: [minor, patch]
+
+  # pyproject.toml's dev group and uv.lock; CI's `uv sync --locked` checks they agree.
+  - package-ecosystem: uv
+    directory: /
+    schedule:
+      interval: weekly
+    commit-message:
+      prefix: chore
+    groups:
+      # Ruff is 0.x: a minor changes its rules and format, and can fail the ruff job, so it comes
+      # alone rather than holding the test tools back.
+      ruff:
+        patterns: ["ruff"]
+      python:
+        patterns: ["*"]
+        update-types: [minor, patch]
+
+  # The vscode job in test.yml runs the extension's tests and lint on each PR.
+  - package-ecosystem: npm
+    directory: /vscode
+    schedule:
+      interval: weekly
+    commit-message:
+      prefix: chore
+    groups:
+      # @eslint/js N needs eslint N, so the pair moves together, majors included.
+      eslint:
+        patterns: ["eslint", "@eslint/*"]
+      npm:
+        patterns: ["*"]
+        update-types: [minor, patch]
+
+  # FROM redmine is the one dependency Dependabot reads, so there's nothing to group; Opale's ADD
+  # URL is bumped by hand. A minor or major migrates the database one way and can break the lane
+  # board plugin: it's planned as an issue, and only patches come weekly. Merging a PR follows
+  # redmine/README.md's Upgrading.
+  - package-ecosystem: docker
+    directory: /redmine
+    schedule:
+      interval: weekly
+    commit-message:
+      prefix: chore
+    ignore:
+      - dependency-name: redmine
+        update-types: ["version-update:semver-major", "version-update:semver-minor"]

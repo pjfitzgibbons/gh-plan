@@ -87,7 +87,7 @@ volume's `-wal` and `-shm` files first: SQLite would replay a stale WAL into the
 ```
 docker compose -f redmine/compose.yml stop
 docker run --rm -v gh-plan-redmine_db:/db -v gh-plan-redmine_files:/files -v <backup>:/backup:ro \
-  --entrypoint sh gh-plan-redmine:7.0.2-opale-1.7.2 -c 'rm -f /db/redmine.db-wal /db/redmine.db-shm &&
+  --entrypoint sh gh-plan-redmine:local -c 'rm -f /db/redmine.db-wal /db/redmine.db-shm &&
   cp /backup/redmine.db /db/ && tar -xf /backup/files.tar -C /files && chown -R redmine:redmine /db /files'
 docker compose -f redmine/compose.yml up -d
 ```
@@ -99,7 +99,7 @@ mkdir -p /tmp/restore/sqlite /tmp/restore/files
 cp <backup>/redmine.db /tmp/restore/sqlite/ && tar -xf <backup>/files.tar -C /tmp/restore/files
 docker run -d --name redmine-restore -p 127.0.0.1:3011:3000 \
   -v /tmp/restore/sqlite:/usr/src/redmine/sqlite -v /tmp/restore/files:/usr/src/redmine/files \
-  gh-plan-redmine:7.0.2-opale-1.7.2
+  gh-plan-redmine:local
 REDMINE_URL=http://127.0.0.1:3011 redmine-get '/issues.json?status_id=*&limit=1'
 docker rm -f redmine-restore
 ```
@@ -201,14 +201,31 @@ are scanned as usual.
 
 ## Upgrading
 
+Dependabot opens a PR in a week that has a new patch `redmine` tag (`.github/dependabot.yml`),
+which is step 2 done; a minor or major is planned as an issue. Do step 1, merge it, `git pull` the
+gh-plan checkout on `main`, then do steps 3 to 6 from it. Upgrading before the merge would leave
+`main` building an older Redmine than the database has been migrated to. Only step 4 applies the
+new tag: a plain `up -d` keeps running the `gh-plan-redmine:local` already built, so nothing
+migrates the database before the backup.
+
+Build and `up` only from the checkout on `main`. Every checkout shares one compose project and the
+one `:local` tag, so a worktree's `up -d --build` replaces the live Redmine with its branch's
+`Dockerfile`, and a later `up -d` from `main` keeps running that image.
+
 1. Read the Redmine changelog for every release between the two tags.
-2. Change `FROM` in the `Dockerfile` to the new tag, and `image:` in `compose.yml` to match. Pin an
-   exact tag such as `7.0.3`, never `7.0`. A new Opale release changes the `ADD` line's URL and
-   checksum (`shasum -a 256` of the zip).
-3. Back up the `db` volume.
+2. Change `FROM` in the `Dockerfile` to the new tag. Pin an exact tag such as `7.0.3`, never
+   `7.0`. A new Opale release changes the `ADD` line's URL and checksum (`shasum -a 256` of the
+   zip).
+3. Back up the `db` volume, and keep the running image for a rollback:
+   `docker tag gh-plan-redmine:local gh-plan-redmine:previous`.
 4. `docker compose -f redmine/compose.yml up -d --build`. The image migrates the database on start.
 5. Check that *Administration › Plugins* still lists the lane board, and its tab still loads.
 6. Re-run the setup, which should print `nothing to change`.
+
+If step 5 or 6 fails, roll back at once: the restore loses every change made since step 3's
+backup. `docker tag gh-plan-redmine:previous gh-plan-redmine:local`, then restore step 3's backup
+as *Backup and export* says, whose `up -d` starts the previous image. Then a PR reverts the `FROM`
+bump, so `main` names the Redmine that runs.
 
 Anything that recreates the container signs everyone out: an upgrade, `down` then `up`, or a
 change to `compose.yml`. The session secret is generated inside the container, so a new

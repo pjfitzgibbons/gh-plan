@@ -114,7 +114,7 @@ glasswing's design book beside them in the repo.
 - The contract is the plugin's public interface for themes. Renaming or removing a property is a
   breaking change, called out in the plugin's release notes. A new property gets a value in the
   reference `tokens.css`, so an older site theme keeps working.
-- The Dockerfile stops downloading Opale, and the image tag changes from `7.0.2-opale-1.7.2`.
+- The Dockerfile stops downloading Opale.
 - A Redmine theme other than Default, under Ulysses, fights `base.css`; the plugin's README says
   to leave the theme on Default.
 - A Redmine upgrade can rename or drop an `--oc-*` variable. The upgrade steps in

@@ -5,9 +5,10 @@ name: gh-plan-redmine
 
 services:
   redmine:
-    # redmine:7.0.2 with the Opale theme; the Dockerfile pins both (README, Upgrading).
+    # Redmine with the Opale theme. The Dockerfile pins both, and is the one place their versions
+    # live, so Dependabot's bump of FROM is the whole change (README, Upgrading).
     build: .
-    image: gh-plan-redmine:7.0.2-opale-1.7.2
+    image: gh-plan-redmine:local
     restart: unless-stopped
     ports:
       - "127.0.0.1:${REDMINE_PORT:-3010}:3000"
