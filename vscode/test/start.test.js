@@ -1,7 +1,7 @@
 // node --test vscode/test: the names Start makes and the blockers it warns on, without Redmine or git.
 const test = require("node:test");
 const assert = require("node:assert/strict");
-const { slug, branchName, worktreeDir, blockerIds, existingWorktree, run, start } = require("../start");
+const { slug, branchName, worktreeDir, blockerIds, existingWorktree, run, start, enableIndex } = require("../start");
 const { Redmine } = require("../redmine");
 
 test("the slug is the subject's first five words", () => {
@@ -541,6 +541,19 @@ test("Start gives the worktree the main checkout's code index settings, never it
 
   const reopened = await start({ ...s, id: 80, confirm: () => true });
   assert.deepEqual(reopened.notes, []);
+});
+
+test("setup run again keeps the worktree's own code index settings", async (t) => {
+  const s = sandbox(t);
+  const fs = require("fs");
+  const path = require("path");
+  s.issues[50].status = { name: "Closed", is_closed: true };
+  indexed(t, s);
+  const result = await start({ ...s, id: 80, confirm: () => true });
+  const settings = path.join(result.dir, ".cocoindex_code", "settings.yml");
+  fs.writeFileSync(settings, "include_patterns: ['**/*.py']\n");
+  assert.equal(await enableIndex(s.checkout, result.dir), INDEX_NOTE);
+  assert.equal(fs.readFileSync(settings, "utf8"), "include_patterns: ['**/*.py']\n");
 });
 
 test("Start in a repo with no code index makes the worktree without one, and says so", async (t) => {

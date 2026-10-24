@@ -354,12 +354,17 @@ test("an ignored file outside plan.disposable is refused before anything changes
 
 // The worktree holds Start's code index, and PATH has git, the system's tools and, unless told
 // otherwise, a ccc that logs each run and fails when bin/fail exists. built: a search has indexed it.
-function withIndex(t, s, { ccc = true, built = true } = {}) {
+// built: the databases a search has made, target_sqlite.db and cocoindex.db. settings: false when
+// the worktree has lost its settings.yml.
+function withIndex(t, s, { ccc = true, built = ["target_sqlite.db", "cocoindex.db"], settings = true } = {}) {
   fs.appendFileSync(path.join(s.checkout, ".git", "info", "exclude"), "/.cocoindex_code/\n");
-  fs.mkdirSync(path.join(s.dir, ".cocoindex_code", "cocoindex.db", "mdb"), { recursive: true });
-  fs.writeFileSync(path.join(s.dir, ".cocoindex_code", "settings.yml"), "include_patterns: []\n");
-  fs.writeFileSync(path.join(s.dir, ".cocoindex_code", "cocoindex.db", "mdb", "data.mdb"), "\n");
-  if (built) fs.writeFileSync(path.join(s.dir, ".cocoindex_code", "target_sqlite.db"), "\n");
+  fs.mkdirSync(path.join(s.dir, ".cocoindex_code"), { recursive: true });
+  if (settings) fs.writeFileSync(path.join(s.dir, ".cocoindex_code", "settings.yml"), "include_patterns: []\n");
+  if (built.includes("cocoindex.db")) {
+    fs.mkdirSync(path.join(s.dir, ".cocoindex_code", "cocoindex.db", "mdb"), { recursive: true });
+    fs.writeFileSync(path.join(s.dir, ".cocoindex_code", "cocoindex.db", "mdb", "data.mdb"), "\n");
+  }
+  if (built.includes("target_sqlite.db")) fs.writeFileSync(path.join(s.dir, ".cocoindex_code", "target_sqlite.db"), "\n");
   const bin = fs.mkdtempSync(path.join(s.root, "bin-"));
   const log = path.join(bin, "runs");
   if (ccc) fs.writeFileSync(path.join(bin, "ccc"), `#!/bin/sh\n[ -d .cocoindex_code ] && echo "$* $PWD" >> "${log}"\n[ -f "${bin}/fail" ] && { echo "the daemon isn't answering" >&2; exit 1; }\nexit 0\n`, { mode: 0o755 });
@@ -401,16 +406,33 @@ test("a built index with no ccc on PATH to release it is a note, and the worktre
 
 test("an index no search has built isn't reset, so no daemon starts for it", async (t) => {
   const s = sandbox(t);
-  const ccc = withIndex(t, s, { built: false });
+  const ccc = withIndex(t, s, { built: [] });
   const { notes } = await done(s);
   assert.deepEqual(ccc.runs(), []);
   assert.ok(!notes.some((note) => note.includes("code index")), notes.join(" "));
   assertDone(s);
 });
 
+test("an index whose first build stopped before target_sqlite.db is still reset", async (t) => {
+  const s = sandbox(t);
+  const ccc = withIndex(t, s, { built: ["cocoindex.db"] });
+  await done(s);
+  assert.deepEqual(ccc.runs(), [`reset -f ${s.dir}`]);
+  assertDone(s);
+});
+
+test("an index without its settings.yml isn't reset, so no project above it is, and it's a note", async (t) => {
+  const s = sandbox(t);
+  const ccc = withIndex(t, s, { settings: false });
+  const { notes } = await done(s);
+  assert.deepEqual(ccc.runs(), []);
+  assert.ok(notes.includes(`${s.dir} has a code index but no .cocoindex_code/settings.yml to reset it by; run ccc daemon restart.`), notes.join(" "));
+  assertDone(s);
+});
+
 test("with the databases mapped elsewhere, Done resets an index it can't see built", async (t) => {
   const s = sandbox(t);
-  const ccc = withIndex(t, s, { built: false });
+  const ccc = withIndex(t, s, { built: [] });
   const mapping = process.env.COCOINDEX_CODE_DB_PATH_MAPPING;
   process.env.COCOINDEX_CODE_DB_PATH_MAPPING = `${s.root}=${path.join(s.root, "db")}`;
   t.after(() => (mapping === undefined ? delete process.env.COCOINDEX_CODE_DB_PATH_MAPPING : (process.env.COCOINDEX_CODE_DB_PATH_MAPPING = mapping)));

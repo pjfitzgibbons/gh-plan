@@ -154,21 +154,27 @@ async function enableIndex(checkout, dir) {
   }
   try {
     fs.mkdirSync(path.join(dir, INDEX), { recursive: true });
-    fs.copyFileSync(path.join(checkout, INDEX_SETTINGS), path.join(dir, INDEX_SETTINGS));
+    // Never over settings already there: a setup run again would undo their edits.
+    fs.copyFileSync(path.join(checkout, INDEX_SETTINGS), path.join(dir, INDEX_SETTINGS), fs.constants.COPYFILE_EXCL);
   } catch (error) {
-    return `No code index: ${error.message}.`;
+    if (error.code !== "EEXIST") return `No code index: ${error.message}.`;
   }
   return "The worktree's code index builds on its first ccc search, or with ccc index.";
 }
 
 // The daemon keeps a project's databases open once it has indexed it, and goes on writing to them
 // once they're deleted, so a worktree made again at the same path would search a stale index. ccc
-// reset has it let go before Done removes the worktree. Only a worktree that has built its index:
-// on one that hasn't, reset would start a daemon to do nothing. With COCOINDEX_CODE_DB_PATH_MAPPING
-// set the databases may be elsewhere, so reset decides. null, or the note saying it didn't.
+// reset has it let go before Done removes the worktree. Only a worktree that has built its index,
+// either database: on one that hasn't, reset would start a daemon to do nothing. With
+// COCOINDEX_CODE_DB_PATH_MAPPING set the databases may be elsewhere, so reset decides. reset finds
+// its project by walking up to a settings.yml, so without the worktree's own it would reset whichever
+// project holds the worktree. null, or the note saying it didn't.
 async function releaseIndex(dir) {
-  const mapped = Boolean(process.env.COCOINDEX_CODE_DB_PATH_MAPPING) && fs.existsSync(path.join(dir, INDEX_SETTINGS));
-  if (!mapped && !fs.existsSync(path.join(dir, INDEX, "target_sqlite.db"))) return null;
+  const built = ["target_sqlite.db", "cocoindex.db"].some((db) => fs.existsSync(path.join(dir, INDEX, db)));
+  if (!built && !process.env.COCOINDEX_CODE_DB_PATH_MAPPING) return null;
+  if (!fs.existsSync(path.join(dir, INDEX_SETTINGS))) {
+    return built ? `${dir} has a code index but no ${INDEX_SETTINGS} to reset it by; run ccc daemon restart.` : null;
+  }
   if (!onPath("ccc")) return `ccc isn't on PATH, so its daemon may still hold ${dir}'s code index; run ccc daemon restart.`;
   return run("ccc", ["reset", "-f"], dir, 60 * 1000)
     .then(() => null, (error) => `The ccc daemon may still hold ${dir}'s code index: ${error.message}; run ccc daemon restart.`);

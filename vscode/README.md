@@ -22,7 +22,8 @@ Source Control's does on a Git refresh.
   index (`.cocoindex_code/settings.yml`), `ccc` is on PATH and the repo ignores `.cocoindex_code/`,
   Start's setup copies `settings.yml` into the new worktree, and nothing else: the worktree's first
   `ccc` search, or `ccc index`, builds its own index from the branch's files. Done runs
-  `ccc reset -f` in the worktree before removing it, so the `ccc` daemon lets go of its databases.
+  `ccc reset -f` in the worktree before removing it, once a search has built its index, so the `ccc`
+  daemon lets go of its databases.
   A missing index or `ccc` is a note, never a failed Start. Run `ccc init` once in the main checkout to turn
   it on.
 - **A link** opens in an Integrated Browser tab.
