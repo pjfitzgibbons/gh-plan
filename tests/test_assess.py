@@ -7,7 +7,6 @@ itself; the checkers are stub executables in a temporary `checks/`.
 import importlib.machinery
 import importlib.util
 import os
-import shutil
 import subprocess
 import sys
 import threading
@@ -105,7 +104,7 @@ def test_checker_that_exits_nonzero_silently_fails(tmp_path, capsys, flags):
     assert assess.main(flags, root=tmp_path, suites=[]) == 1
     out = capsys.readouterr().out
     assert lines(out)[0].startswith("FAIL  checks/crashes")
-    assert "checks/crashes: failed, with no output but blank lines" in out
+    assert "checks/crashes: exited non-zero with no output" in out
 
 
 def test_checker_without_exec_bit_fails(tmp_path, capsys):
@@ -119,7 +118,7 @@ def test_checker_printing_only_a_blank_line_fails(tmp_path, capsys):
     assert assess.main([], root=tmp_path, suites=[]) == 1
     out = capsys.readouterr().out
     assert lines(out)[0].startswith("FAIL  checks/blank")
-    assert "checks/blank: failed, with no output but blank lines" in out
+    assert "checks/blank: printed only blank lines" in out
 
 
 def test_directory_in_checks_fails(tmp_path, capsys):
@@ -150,6 +149,7 @@ def test_readme_and_dotfiles_are_not_checkers(tmp_path):
     (tmp_path / "checks").mkdir()
     (tmp_path / "checks" / "README.md").write_text("# Checkers\n")
     (tmp_path / "checks" / ".DS_Store").write_bytes(b"\0")
+    (tmp_path / "checks" / "__pycache__").mkdir()
     assert assess.checkers(tmp_path / "checks") == []
     assert assess.checkers(tmp_path / "absent") == []
 
@@ -188,31 +188,12 @@ def test_rule_of_unreadable_file(tmp_path):
     assert assess.rule(path) is None
 
 
-def older_than_3_10(python: str | None) -> bool:
-    if not python or not os.access(python, os.X_OK):
-        return False
-    v = subprocess.run(
-        [python, "-c", "import sys; print(sys.version_info < (3, 10))"],
-        capture_output=True,
-        text=True,
-    )
-    return v.stdout.strip() == "True"
-
-
-OLD_PYTHON = next(
-    (p for p in (shutil.which("python3.9"), "/usr/bin/python3") if older_than_3_10(p)), None
-)
-
-
-def test_script_runs_on_python_3_9():
-    """Annotations stay unevaluated, so an older python3 on PATH doesn't crash at import."""
-    assert "from __future__ import annotations" in SCRIPT.read_text()
-
-
-@pytest.mark.skipif(OLD_PYTHON is None, reason="no Python older than 3.10 here")
-def test_script_runs_under_an_old_python():
-    p = subprocess.run([OLD_PYTHON, str(SCRIPT), "--rules"], capture_output=True, text=True)
-    assert p.returncode == 0, p.stderr
+def test_refuses_a_python_older_than_3_14(tmp_path, capsys, monkeypatch):
+    monkeypatch.setattr(assess.sys, "version_info", (3, 13, 9))
+    assert assess.main([], root=tmp_path, suites=[PASSES]) == 2
+    out = capsys.readouterr().out
+    assert out.startswith("assess: needs Python 3.14; this is ")
+    assert "PASS" not in out
 
 
 def test_script_is_executable_and_lists_repo_rules():

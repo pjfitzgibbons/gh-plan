@@ -39,7 +39,7 @@ updates:
         patterns: ["*"]
         update-types: [minor, patch]
 
-  # The vscode job in test.yml runs the extension's tests and lint on each PR.
+  # The assess job in test.yml runs the extension's tests and lint on each PR.
   - package-ecosystem: npm
     directory: /vscode
     schedule:

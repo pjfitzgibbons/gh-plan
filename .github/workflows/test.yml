@@ -27,10 +27,13 @@ jobs:
         with:
           persist-credentials: false
 
+      # activate-environment puts the venv's Python 3.14 first on PATH, so scripts/assess's
+      # python3 is 3.14 and not the runner's own.
       - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
         with:
           python-version: "3.14"
           enable-cache: true
+          activate-environment: true
 
       # --locked fails if uv.lock is stale rather than silently re-resolving.
       - run: uv sync --locked

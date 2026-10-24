@@ -9,11 +9,9 @@ A checker is an executable in `checks/` that reads the repo and prints `file:lin
 each violation. It fails when it prints anything or exits non-zero. Its first comment line names
 the rule it covers, `# rule: <name>`; `assess --rules` lists them.
 
-Run it from anywhere: it works from the repo root, `scripts/..`.
+Run it from anywhere: it works from the repo root, `scripts/..`. It needs Python 3.14, the
+`python3` setup puts on PATH.
 """
-
-# Annotations unevaluated, so a python3 older than 3.10 still runs it.
-from __future__ import annotations
 
 import argparse
 import os
@@ -23,6 +21,7 @@ import time
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
+PYTHON = (3, 14)
 
 # (name, directory under the root, command)
 SUITES = [
@@ -33,8 +32,8 @@ SUITES = [
     ("npm test", "vscode", ["npm", "test"]),
 ]
 
-# Files in checks/ that aren't checkers.
-NOT_CHECKERS = {"README.md"}
+# Entries in checks/ that aren't checkers: __pycache__ is Python's, made when a checker imports.
+NOT_CHECKERS = {"README.md", "__pycache__"}
 
 
 def checkers(checks: Path) -> list[Path]:
@@ -51,7 +50,7 @@ def rule(checker: Path) -> str | None:
     """The rule named by the checker's first comment line, `# rule: <name>`, past any shebang."""
     try:
         lines = checker.read_text(encoding="utf-8").splitlines()
-    except (OSError, UnicodeDecodeError):
+    except OSError, UnicodeDecodeError:
         return None
     if lines and lines[0].startswith("#!"):
         lines = lines[1:]
@@ -117,7 +116,8 @@ def assess(root: Path, suites: list, verbose: bool) -> int:
             print(f"── {name} ──", flush=True)
         ok, out = go()
         if not ok and not out.strip():
-            out = f"{name}: failed, with no output but blank lines\n"
+            said = "printed only blank lines" if out else "exited non-zero with no output"
+            out = f"{name}: {said}\n"
             if verbose:
                 print(out, end="", flush=True)
         if not ok and not verbose:
@@ -151,6 +151,11 @@ def main(argv: list[str] | None = None, root: Path = ROOT, suites: list = SUITES
     parser.add_argument("--rules", action="store_true", help="list the rules checks/ covers")
     parser.add_argument("-v", "--verbose", action="store_true", help="print every check's output")
     args = parser.parse_args(argv)
+    if sys.version_info < PYTHON:
+        print(
+            f"assess: needs Python {'.'.join(map(str, PYTHON))}; this is {sys.version.split()[0]}"
+        )
+        return 2
     if args.rules:
         return list_rules(root)
     return assess(root, suites, args.verbose)
