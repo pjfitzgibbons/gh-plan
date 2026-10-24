@@ -36,6 +36,15 @@ def repo_writer() -> Path | None:
     return path if path.is_file() else None
 
 
+def load_expected() -> tuple[list[str], list[str]]:
+    """Lens ids and extra sections from the global writer file and this repo's, read from disk."""
+    rw = repo_writer()
+    return expected(
+        GLOBAL_WRITER.read_text(encoding="utf-8") if GLOBAL_WRITER.is_file() else "",
+        rw.read_text(encoding="utf-8") if rw else "",
+    )
+
+
 def expected(global_text: str, repo_text: str) -> tuple[list[str], list[str]]:
     """Lens ids, and the extra sections the repo names."""
     lenses = [m[0] for m in LENS_ROW.findall(global_text + "\n" + repo_text)]
@@ -138,11 +147,7 @@ def main(argv=None) -> int:
     a = p.parse_args(argv)
     body = a.item.read_text(encoding="utf-8")
 
-    rw = repo_writer()
-    lenses, extra = expected(
-        GLOBAL_WRITER.read_text(encoding="utf-8") if GLOBAL_WRITER.is_file() else "",
-        rw.read_text(encoding="utf-8") if rw else "",
-    )
+    lenses, extra = load_expected()
     findings = check(body, lenses, extra)
     if not findings:
         print("conforms to the outline")

@@ -32,7 +32,7 @@ import sys
 from pathlib import Path
 
 import outline
-from redmine import Redmine, Refused
+from redmine import Redmine, Refused, by_name, field_id, issue_fields, unkept
 
 FIELDS = [
     "project",
@@ -85,13 +85,6 @@ def numbers(key: str, value: str) -> list[int]:
     return out
 
 
-def by_name(items: list[dict], name: str, what: str) -> dict:
-    found = [i for i in items if i["name"] == name]
-    if not found:
-        raise Refused(f"no {what} {name!r}; {what}s: {', '.join(i['name'] for i in items)}")
-    return found[0]
-
-
 def resolve(redmine, fields: dict[str, str]) -> tuple[dict, dict[str, list[int]]]:
     """The issue as Redmine's POST takes it, and the relations to add; Refused naming the first bad field."""
     project = redmine.send("GET", f"/projects/{fields['project']}.json?include=trackers")["project"]
@@ -106,22 +99,15 @@ def resolve(redmine, fields: dict[str, str]) -> tuple[dict, dict[str, list[int]]
     statuses = redmine.send("GET", "/issue_statuses.json")["issue_statuses"]
     issue["status_id"] = by_name(statuses, fields.get("status", "New"), "status")["id"]
 
-    custom = [
-        f
-        for f in redmine.send("GET", "/custom_fields.json")["custom_fields"]
-        if f["customized_type"] == "issue"
-    ]
+    custom = issue_fields(redmine)
     values = []
     for key, name in CUSTOM.items():
         if key not in fields:
             continue
-        field = by_name(custom, name, "issue custom field")
-        allowed = [v["value"] for v in field.get("possible_values", [])]
-        if allowed and fields[key] not in allowed:
-            raise Refused(f"{key}: {fields[key]!r} isn't one of {', '.join(allowed)}")
+        found = field_id(custom, name, key, fields[key])
         if key == "ordinal" and not fields[key].isdigit():
             raise Refused(f"ordinal: {fields[key]!r} isn't a number")
-        values.append({"id": field["id"], "value": fields[key]})
+        values.append({"id": found, "value": fields[key]})
     if values:
         issue["custom_fields"] = values
 
@@ -175,26 +161,6 @@ def linked(relations: list[dict], n: int, other: int, key: str) -> bool:
     return False
 
 
-def kept(issue: dict, wanted: dict) -> list[str]:
-    """Each field of wanted that the issue as read back doesn't hold."""
-    have = {
-        "project_id": issue["project"]["id"],
-        "tracker_id": issue["tracker"]["id"],
-        "status_id": issue["status"]["id"],
-        "subject": issue["subject"],
-        "fixed_version_id": (issue.get("fixed_version") or {}).get("id"),
-        "parent_issue_id": (issue.get("parent") or {}).get("id"),
-    }
-    lost = [key for key, value in wanted.items() if key in have and have[key] != value]
-    custom = {f["id"]: f.get("value") for f in issue.get("custom_fields", [])}
-    lost += [
-        f"custom field {f['id']}"
-        for f in wanted.get("custom_fields", [])
-        if custom.get(f["id"]) != f["value"]
-    ]
-    return lost
-
-
 def run(file: Path, redmine, check_only: bool, lenses: list[str], extra: list[str]) -> str:
     fields, body = parse(file.read_text(encoding="utf-8"))
     findings = outline.check(body, lenses, extra)
@@ -234,7 +200,7 @@ def run(file: Path, redmine, check_only: bool, lenses: list[str], extra: list[st
         for o in others
         if not linked(back.get("relations", []), n, o, key)
     ]
-    lost = kept(back, issue) + missing
+    lost = unkept(back, issue) + missing
     if lost and made == "created":
         raise Refused(f"#{n} is created, but Redmine didn't keep: {', '.join(lost)}")
     if lost:
@@ -254,13 +220,7 @@ def main(argv=None) -> int:
     )
     p.add_argument("file", type=Path, help="a filled-in copy of references/redmine-issue.md")
     a = p.parse_args(argv)
-    rw = outline.repo_writer()
-    lenses, extra = outline.expected(
-        outline.GLOBAL_WRITER.read_text(encoding="utf-8")
-        if outline.GLOBAL_WRITER.is_file()
-        else "",
-        rw.read_text(encoding="utf-8") if rw else "",
-    )
+    lenses, extra = outline.load_expected()
     try:
         print(f"new_issue: {run(a.file, Redmine(), a.check, lenses, extra)}")
     except Refused as e:
