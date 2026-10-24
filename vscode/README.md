@@ -57,6 +57,16 @@ Source Control's does on a Git refresh.
   refreshes. Edits made to a reply while `pr` ran, which it
   never saw, are kept beside it as `<file>.unsent` before its tab closes. Go and Ship
   again run `pr` again, which updates the PR body, and leave Redmine as it is once the PR is linked.
+- **The Review tab:** when an issue's `.tmp/<n>/report.html` is saved, it opens as a
+  `Review #<n>` tab in the leftmost group, or refreshes the one already open, so every round of an
+  issue shows in the same tab. **Plan: Show report**, in the file's title bar or the command
+  palette, opens it again after a window reload. The bar above the report names the round and
+  when the report was written. Its one button is Go, which runs Go on the issue's round files, and
+  then Ship, which runs Ship. A click on a report that was rewritten after it was shown runs
+  nothing and shows the new report. A new report after Go puts the button back to Go. Claude
+  writes the report's HTML, so it shows in a frame that runs no script and loads nothing. A link
+  in it opens an http(s) URL in a browser tab or a file in `.tmp/<n>/` in an editor, and nothing
+  else.
 - **Done** shows beside Open on an In Progress row that links a PR. Once that PR has merged, it
   removes the issue's worktree, brings the main checkout's base up to the merge, deletes the
   branch, has Redmine fetch the commits, and closes the issue with a note naming the PR that holds

@@ -234,9 +234,10 @@ then runs `pr <n>` in a terminal in the worktree. Under Ship, `pr` commits the i
 refuses a change made since, rather than staging again. Go and Ship refuse a worktree file with
 unsaved edits, which neither the stage nor the commit would hold.
 
-Before the commit message is written, `scripts/assess` runs every check, and the agent review runs
-only once it passes. The PR's `assess` check runs it again; `main` requires that check and every
-review thread resolved before a merge.
+Before the commit message is written, `scripts/assess` runs every check. The PR's `assess` check
+runs it again; `main` requires that check and every review thread resolved before a merge. Each
+commit Ship pushes gets a review round once its `assess` check passes, and Claude answers the
+round in the Review tab ([`vscode/README.md`](../vscode/README.md)).
 
 `pr` commits with `commit.txt`, pushes, and opens the PR or replaces its body. It then posts each
 reply to its thread and resolves the thread. Each reply is deleted once sent, so a second `pr`

@@ -21,17 +21,20 @@
     "commands": [
       { "command": "plan.refresh", "title": "Refresh", "category": "Plan", "icon": "$(refresh)" },
       { "command": "plan.openChanges", "title": "Go", "category": "Plan", "icon": "$(diff-multiple)" },
-      { "command": "plan.runPr", "title": "Ship", "category": "Plan", "icon": "$(rocket)" }
+      { "command": "plan.runPr", "title": "Ship", "category": "Plan", "icon": "$(rocket)" },
+      { "command": "plan.showReport", "title": "Show report", "category": "Plan", "icon": "$(preview)" }
     ],
     "menus": {
       "view/title": [{ "command": "plan.refresh", "when": "view == plan.nextUp", "group": "navigation" }],
       "editor/title": [
+        { "command": "plan.showReport", "when": "resourcePath =~ /\\/\\.tmp\\/[1-9][0-9]*\\/report\\.html$/", "group": "navigation" },
         { "command": "plan.openChanges", "when": "resourcePath =~ /\\/\\.tmp\\/[1-9][0-9]*\\/(commit\\.txt|pr-body\\.md|replies\\/[0-9]+\\.md)$/", "group": "navigation" },
         { "command": "plan.runPr", "when": "plan.shipReady && (activeEditor == multiDiffEditor || resourcePath =~ /\\/\\.tmp\\/[1-9][0-9]*\\/(commit\\.txt|pr-body\\.md|replies\\/[0-9]+\\.md)$/)", "group": "navigation" }
       ],
       "commandPalette": [
         { "command": "plan.openChanges", "when": "resourcePath =~ /\\/\\.tmp\\/[1-9][0-9]*\\/(commit\\.txt|pr-body\\.md|replies\\/[0-9]+\\.md)$/" },
-        { "command": "plan.runPr", "when": "plan.shipReady" }
+        { "command": "plan.runPr", "when": "plan.shipReady" },
+        { "command": "plan.showReport", "when": "resourcePath =~ /\\/\\.tmp\\/[1-9][0-9]*\\/report\\.html$/" }
       ]
     },
     "taskDefinitions": [

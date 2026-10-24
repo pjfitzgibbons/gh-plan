@@ -10,6 +10,7 @@ const { ACTION, checkId, start, expandHome } = require("./start");
 const { reviewFile, roundFiles, shipTab, stage, openStaged, check, shipped, keepEdits } = require("./ship");
 const { finish } = require("./done");
 const { handoffFile, issueUrl, writeHandoff, takeHandoffFor } = require("./handoff");
+const { reportFile, reportRound, reportPage, Reports } = require("./review");
 
 // How soon after a refresh starts a window's focus may refresh Next up again, and how long one still
 // waiting holds focus refreshes off: past that, a refresh stuck on the Keychain or a slow Redmine's
@@ -294,7 +295,92 @@ let armed = null;
 
 function arm(review) {
   armed = review;
+  reports?.armedChanged();
   return vscode.commands.executeCommand("setContext", "plan.shipReady", Boolean(review));
+}
+
+// The Review tabs (review.js): each issue's .tmp/<n>/report.html, opened or refreshed whenever it's
+// saved in this window's worktree, with Go and Ship on it.
+let reports = null;
+
+function reviewHost(media) {
+  const stamp = (file) => {
+    const stat = fs.statSync(file, { throwIfNoEntry: false });
+    return stat?.isFile() ? `${stat.mtimeMs}:${stat.size}` : null;
+  };
+  const say = { info: vscode.window.showInformationMessage, warning: vscode.window.showWarningMessage, error: vscode.window.showErrorMessage };
+  return {
+    stamp,
+    read: (file) => fs.readFileSync(file, "utf8"),
+    exists: (file) => Boolean(fs.statSync(file, { throwIfNoEntry: false })?.isFile()),
+    armed: (review) => Boolean(armed && armed.root === review.root && armed.id === review.id),
+    disarm: () => arm(null),
+    say: (level, text) => say[level](text),
+    // A URL for the browser tab; any other argument is a file's path.
+    execute: (command, arg) =>
+      arg === undefined ? vscode.commands.executeCommand(command)
+        : vscode.commands.executeCommand(command, command === "workbench.action.browser.open" ? arg : vscode.Uri.file(arg)),
+    open(review) {
+      // In the leftmost group, with the round's files, without taking the focus from the editor.
+      const panel = vscode.window.createWebviewPanel(
+        "plan.review", `Review #${review.id}`, { viewColumn: vscode.ViewColumn.One, preserveFocus: true },
+        // Scripts are for the page's own, by nonce; the report's frame is sandboxed without them.
+        { enableScripts: true, localResourceRoots: [media], retainContextWhenHidden: true }
+      );
+      panel.webview.onDidReceiveMessage((message) =>
+        reports.receive(review, message).catch((error) => vscode.window.showErrorMessage(`Plan: #${review.id}'s report: ${error.message}`))
+      );
+      return {
+        webview: panel.webview,
+        reveal: () => panel.reveal(undefined, true),
+        setHtml: (html) => (panel.webview.html = html),
+        post: (message) => panel.webview.postMessage(message),
+        onDispose: (callback) => panel.onDidDispose(callback),
+      };
+    },
+    render(review, html) {
+      const { webview } = review.panel;
+      const written = new Date(Number(review.shown.split(":")[0]));
+      return reportPage({
+        id: review.id,
+        html,
+        round: reportRound(html),
+        written: written.toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" }),
+        shown: review.shown,
+        ship: review.ship,
+        busy: review.busy,
+        nonce: crypto.randomBytes(16).toString("base64"),
+        cspSource: webview.cspSource,
+        css: webview.asWebviewUri(vscode.Uri.joinPath(media, "review.css")),
+        js: webview.asWebviewUri(vscode.Uri.joinPath(media, "review.js")),
+      });
+    },
+  };
+}
+
+// Show report, for a report's path, or the report in the active editor.
+function showReport(uri) {
+  const file = (uri || vscode.window.activeTextEditor?.document.uri)?.fsPath || "";
+  if (!reportFile(file)) {
+    vscode.window.showErrorMessage("Plan: Show report works on an issue's .tmp/<n>/report.html");
+    return;
+  }
+  if (!reports.show(file)) vscode.window.showErrorMessage(`Plan: ${file} isn't there to show`);
+}
+
+// A file watcher covers only this window's folders, so a report opens in its own worktree's window.
+function watchReports(context) {
+  const watcher = vscode.workspace.createFileSystemWatcher("**/.tmp/*/report.html");
+  const timers = new Map();
+  // A save can land as several writes; show the report once they settle.
+  const changed = (uri) => {
+    if (!reportFile(uri.fsPath)) return;
+    clearTimeout(timers.get(uri.fsPath));
+    timers.set(uri.fsPath, setTimeout(() => (timers.delete(uri.fsPath), showReport(uri)), 300));
+  };
+  watcher.onDidCreate(changed);
+  watcher.onDidChange(changed);
+  context.subscriptions.push(watcher);
 }
 
 // Saves the issue's review files, unsaved edits included, and checks what pr will find; null, with
@@ -443,6 +529,8 @@ function activate(context) {
   watchHandoff(context, view.storage);
   takeHandoff(view.storage);
   watchHandover(context);
+  reports = new Reports(reviewHost(view.media));
+  watchReports(context);
   let focused = vscode.window.state.focused;
   context.subscriptions.push(
     vscode.window.registerWebviewViewProvider("plan.nextUp", view),
@@ -472,7 +560,8 @@ function activate(context) {
     // Ship's window keeps its focus while pr runs, so Ship refreshes its own Next up once it links.
     vscode.commands.registerCommand("plan.runPr", () =>
       ship(() => view.refresh()).catch((error) => vscode.window.showErrorMessage(`Plan: Ship failed. ${error.message}`))
-    )
+    ),
+    vscode.commands.registerCommand("plan.showReport", (uri) => showReport(uri))
   );
 }
 
