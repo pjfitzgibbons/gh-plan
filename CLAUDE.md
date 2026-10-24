@@ -23,6 +23,8 @@ settings: what this repo needs is here or in `.claude/`.
 
 - **Tests:** `uv run pytest` runs `tests/` (the backup and contents-list suites), `.claude/hooks/`
   and the gh-issues scripts, and fails under 90% coverage of `redmine/` and `.claude/hooks/`.
+- **Python lint:** `uv run ruff check .` and `uv run ruff format --check .`, the CI's `ruff` job;
+  `uv run ruff format .` fixes the format.
 - **The VS Code extension:** `npm test` and `npm run lint`, in `vscode/`, after `npm install`.
 - **Review findings:** weigh severity, visibility and frequency. Fix silent failures that lose
   work, files, commits or the tracker's state, and hard crashes, even rare ones. A rare warning or

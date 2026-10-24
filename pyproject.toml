@@ -34,4 +34,27 @@ dev = [
     "pytest-cov>=7.1.0",
     "pytest-github-actions-annotate-failures>=0.4.2",
     "pytest-md-report>=0.8.0",
+    "ruff>=0.17.2",
 ]
+
+[tool.ruff]
+# Set here so no ruff config in a parent directory or the home directory applies.
+line-length = 100
+# Not requires-python: the scripts run under any python3 on PATH, 3.10 or newer (pr.sh checks),
+# and launchd runs backup.py with /usr/bin/python3, 3.9. Fixes and the format keep to those.
+target-version = "py310"
+per-file-target-version = { "redmine/backup.py" = "py39" }
+# The script folders import each other by bare name: their modules are first-party.
+src = [".", ".claude/hooks", ".claude/skills/gh-issues/scripts", ".claude/skills/plan-report/scripts"]
+
+[tool.ruff.format]
+# The docs' Python blocks are laid out by hand, aligned comments and all.
+exclude = ["*.md"]
+
+[tool.ruff.lint]
+# Ruff's defaults, plus import order (I), pyupgrade (UP) and bugbear (B).
+select = ["E4", "E7", "E9", "F", "I", "UP", "B"]
+
+[tool.ruff.lint.isort]
+# One line per module, "as" names included.
+combine-as-imports = true

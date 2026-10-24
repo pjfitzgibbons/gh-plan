@@ -7,6 +7,7 @@
 One server per directory, remembered in ~/.cache/local-page/. --open hands the
 page to VS Code's Integrated Browser through the worktask extension's link.
 """
+
 import argparse
 import hashlib
 import json
@@ -45,14 +46,17 @@ def alive(pid):
 
 def command(pid):
     """The process's command line, or "" when it has gone."""
-    return subprocess.run(["ps", "-p", str(pid), "-o", "command="], capture_output=True, text=True).stdout.strip()
+    return subprocess.run(
+        ["ps", "-p", str(pid), "-o", "command="], capture_output=True, text=True
+    ).stdout.strip()
 
 
 def ours(state):
     """Is the recorded pid still the http.server start() spawned for this port and directory? A
     pid reused after the server exited, by a reboot or a crash, is someone else's process."""
     return command(state["pid"]).endswith(
-        f"-m http.server {state['port']} --bind {HOST} --directory {state['root']}")
+        f"-m http.server {state['port']} --bind {HOST} --directory {state['root']}"
+    )
 
 
 def running(root):
@@ -61,7 +65,12 @@ def running(root):
         state = json.loads(state_file(root).read_text())
     except (OSError, ValueError):
         return None
-    if state.get("root") == str(root) and alive(state["pid"]) and ours(state) and answers(state["port"]):
+    if (
+        state.get("root") == str(root)
+        and alive(state["pid"])
+        and ours(state)
+        and answers(state["port"])
+    ):
         return state
     return None
 
@@ -78,7 +87,11 @@ def start(root):
     log = open(STATE_DIR / (state_file(root).stem + ".log"), "a")
     proc = subprocess.Popen(
         [sys.executable, "-m", "http.server", str(port), "--bind", HOST, "--directory", str(root)],
-        stdin=subprocess.DEVNULL, stdout=log, stderr=log, start_new_session=True)
+        stdin=subprocess.DEVNULL,
+        stdout=log,
+        stderr=log,
+        start_new_session=True,
+    )
     for _ in range(50):
         if answers(port):
             break
@@ -95,8 +108,12 @@ def start(root):
 def main():
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("file")
-    parser.add_argument("--open", action="store_true", help="open it in VS Code's Integrated Browser")
-    parser.add_argument("--stop", action="store_true", help="stop the server for the file's directory")
+    parser.add_argument(
+        "--open", action="store_true", help="open it in VS Code's Integrated Browser"
+    )
+    parser.add_argument(
+        "--stop", action="store_true", help="stop the server for the file's directory"
+    )
     args = parser.parse_args()
 
     page = Path(args.file).expanduser().resolve()

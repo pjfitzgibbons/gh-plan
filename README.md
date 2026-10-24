@@ -53,7 +53,15 @@ uv run pytest
 ```
 
 `uv run pytest` runs `tests/`, `.claude/hooks/` and the gh-issues scripts, and fails when coverage
-of `redmine/` and `.claude/hooks/` is under 90%. The extension's tests and lint run in `vscode/`:
+of `redmine/` and `.claude/hooks/` is under 90%. The Python's lint and format checks, the CI's
+`ruff` job, are:
+
+```sh
+uv run ruff check .
+uv run ruff format --check .
+```
+
+The extension's tests and lint run in `vscode/`:
 
 ```sh
 cd vscode && npm install && npm test && npm run lint

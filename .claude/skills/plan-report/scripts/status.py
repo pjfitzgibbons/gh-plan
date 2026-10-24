@@ -45,9 +45,14 @@ def parse(issue: dict) -> Task:
     body = issue.get("body") or ""
     m, b, e = MILESTONE.search(body), BACKLOG.search(body), TITLE_ESTIMATE.match(issue["title"])
     blockers = (issue.get("blockedBy") or {}).get("nodes", [])
-    return Task(issue["number"], TITLE_ESTIMATE.sub("", issue["title"]).strip(), int(e[1]) if e else None,
-                m[1] if m and m[1] not in ("—", "-") else None, b[1] if b else None,
-                [n["number"] for n in blockers if n.get("state") == "OPEN"])
+    return Task(
+        issue["number"],
+        TITLE_ESTIMATE.sub("", issue["title"]).strip(),
+        int(e[1]) if e else None,
+        m[1] if m and m[1] not in ("—", "-") else None,
+        b[1] if b else None,
+        [n["number"] for n in blockers if n.get("state") == "OPEN"],
+    )
 
 
 def backlog_key(backlog: str | None) -> tuple:
@@ -64,8 +69,15 @@ def milestone_key(milestone: str | None) -> tuple:
     return (0, int(m[1]) if m else 10**6, milestone)
 
 
-def mark_wip(tasks: dict[int, Task], branches: list[str], current: str, running_tags: set[str], slug: str,
-             assigned: dict[int, list[str]] | None = None, me: str | None = None):
+def mark_wip(
+    tasks: dict[int, Task],
+    branches: list[str],
+    current: str,
+    running_tags: set[str],
+    slug: str,
+    assigned: dict[int, list[str]] | None = None,
+    me: str | None = None,
+):
     for n, logins in (assigned or {}).items():
         if me in logins and n in tasks:
             tasks[n].wip.append(f"assigned to {me}")
@@ -80,13 +92,18 @@ def mark_wip(tasks: dict[int, Task], branches: list[str], current: str, running_
 def next_tasks(tasks: dict[int, Task], count: int) -> list[Task]:
     wip = [t for t in tasks.values() if t.wip]
     ready = [t for t in tasks.values() if not t.wip and t.milestone and not t.blocked_by]
-    wip.sort(key=lambda t: (not any(w.startswith("current") for w in t.wip), backlog_key(t.backlog)))
+    wip.sort(
+        key=lambda t: (not any(w.startswith("current") for w in t.wip), backlog_key(t.backlog))
+    )
     ready.sort(key=lambda t: (milestone_key(t.milestone), backlog_key(t.backlog), t.number))
     return wip + ready[: max(0, count - len(wip))]
 
 
 def active_days(closed: list[dict], intervals, slug: str, today: date, days: int) -> list[date]:
-    seen = {datetime.fromisoformat(i["closedAt"].replace("Z", "+00:00")).astimezone().date() for i in closed}
+    seen = {
+        datetime.fromisoformat(i["closedAt"].replace("Z", "+00:00")).astimezone().date()
+        for i in closed
+    }
     for i in intervals:
         if f"repo:{slug}" in i.tags or any(t.startswith(f"{slug}#") for t in i.tags):
             seen.add(i.start.astimezone().date())
@@ -101,18 +118,24 @@ def tracked_by_day(intervals, slug: str, now: datetime) -> dict[date, float]:
     return hours
 
 
-def render(days: list[date], closed: list[dict], hours: dict[date, float], upcoming: list[Task]) -> str:
+def render(
+    days: list[date], closed: list[dict], hours: dict[date, float], upcoming: list[Task]
+) -> str:
     out = []
     by_day = defaultdict(list)
     for i in closed:
         if i.get("stateReason") == "NOT_PLANNED":
             continue
-        by_day[datetime.fromisoformat(i["closedAt"].replace("Z", "+00:00")).astimezone().date()].append(i)
+        by_day[
+            datetime.fromisoformat(i["closedAt"].replace("Z", "+00:00")).astimezone().date()
+        ].append(i)
     out.append(f"Done, last {len(days)} active days")
     for d in days:
         items = sorted(by_day.get(d, []), key=lambda i: i["closedAt"])
         pts = sum(int(m[1]) for i in items if (m := TITLE_ESTIMATE.match(i["title"])))
-        out.append(f"  {d:%a %b %d}   {len(items)} closed · {pts} pts · {hours.get(d, 0):.1f} h tracked")
+        out.append(
+            f"  {d:%a %b %d}   {len(items)} closed · {pts} pts · {hours.get(d, 0):.1f} h tracked"
+        )
         for i in items:
             out.append(f"    #{i['number']:<4} {i['title']}")
     out.append("")
@@ -121,7 +144,11 @@ def render(days: list[date], closed: list[dict], hours: dict[date, float], upcom
         est = f"[{t.estimate}]" if t.estimate else "[?]"
         where = f"{t.milestone or 'icebox'} {t.backlog or ''}".strip()
         flag = f"   WIP: {', '.join(t.wip)}" if t.wip else ""
-        blocked = f"   blocked by {', '.join(f'#{n}' for n in t.blocked_by)}" if t.wip and t.blocked_by else ""
+        blocked = (
+            f"   blocked by {', '.join(f'#{n}' for n in t.blocked_by)}"
+            if t.wip and t.blocked_by
+            else ""
+        )
         out.append(f"  #{t.number:<4} {est:<4} {where:<14} {t.title}{flag}{blocked}")
     return "\n".join(out)
 
@@ -132,18 +159,54 @@ def sh(cmd: list[str], default: str = "") -> str:
 
 
 def main(argv=None) -> int:
-    p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    p = argparse.ArgumentParser(
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
     p.add_argument("--days", type=int, default=3)
     p.add_argument("--next", type=int, default=5, dest="count")
     p.add_argument("--repo")
     p.add_argument("--json", action="store_true")
     a = p.parse_args(argv)
 
-    slug = a.repo or json.loads(sh(["gh", "repo", "view", "--json", "nameWithOwner"]))["nameWithOwner"]
-    open_issues = json.loads(sh(["gh", "issue", "list", "--repo", slug, "--state", "open", "--limit", "1000",
-                                 "--json", "number,title,body,blockedBy,assignees"], "[]"))
-    closed = json.loads(sh(["gh", "issue", "list", "--repo", slug, "--state", "closed", "--limit", "200",
-                            "--json", "number,title,closedAt,stateReason"], "[]"))
+    slug = (
+        a.repo or json.loads(sh(["gh", "repo", "view", "--json", "nameWithOwner"]))["nameWithOwner"]
+    )
+    open_issues = json.loads(
+        sh(
+            [
+                "gh",
+                "issue",
+                "list",
+                "--repo",
+                slug,
+                "--state",
+                "open",
+                "--limit",
+                "1000",
+                "--json",
+                "number,title,body,blockedBy,assignees",
+            ],
+            "[]",
+        )
+    )
+    closed = json.loads(
+        sh(
+            [
+                "gh",
+                "issue",
+                "list",
+                "--repo",
+                slug,
+                "--state",
+                "closed",
+                "--limit",
+                "200",
+                "--json",
+                "number,title,closedAt,stateReason",
+            ],
+            "[]",
+        )
+    )
     intervals = parse_intervals(json.loads(sh(["timew", "export"], "[]") or "[]"))
     now = datetime.now(timezone.utc)
 
@@ -156,12 +219,25 @@ def main(argv=None) -> int:
     mark_wip(tasks, branches, current, running, slug, assigned, me)
 
     days = active_days(closed, intervals, slug, date.today(), a.days)
-    closed_in = [i for i in closed if datetime.fromisoformat(i["closedAt"].replace("Z", "+00:00")).astimezone().date() in days]
+    closed_in = [
+        i
+        for i in closed
+        if datetime.fromisoformat(i["closedAt"].replace("Z", "+00:00")).astimezone().date() in days
+    ]
     upcoming = next_tasks(tasks, a.count)
 
     if a.json:
-        print(json.dumps({"repo": slug, "days": [d.isoformat() for d in days], "closed": closed_in,
-                          "next": [t.__dict__ for t in upcoming]}, indent=2))
+        print(
+            json.dumps(
+                {
+                    "repo": slug,
+                    "days": [d.isoformat() for d in days],
+                    "closed": closed_in,
+                    "next": [t.__dict__ for t in upcoming],
+                },
+                indent=2,
+            )
+        )
         return 0
     print(f"{slug} · status {date.today():%a %b %d}\n")
     print(render(days, closed_in, tracked_by_day(intervals, slug, now), upcoming))

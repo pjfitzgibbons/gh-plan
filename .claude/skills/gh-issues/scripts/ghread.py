@@ -13,4 +13,3 @@ def gh_json(args: list[str], repo: str | None = None):
     if result.returncode != 0:
         sys.exit(f"gh failed: {' '.join(cmd)}\n{result.stderr.strip()}")
     return json.loads(result.stdout)
-

@@ -121,14 +121,14 @@ def commit_invocations(command: str):
     the command line can't stand in for one in the commit's own message.
     """
     for match in COMMIT.finditer(command):
-        rest = command[match.start():].lstrip(SEPARATORS + "$ \t")
+        rest = command[match.start() :].lstrip(SEPARATORS + "$ \t")
         words = []
         for word in shell_words(rest):
             if word and all(c in SEPARATORS for c in word):
                 break
             words.append(word)
         if "commit" in words:
-            yield words[words.index("commit") + 1:], rest
+            yield words[words.index("commit") + 1 :], rest
 
 
 def reuses_message(args: list[str]) -> bool:
@@ -142,7 +142,7 @@ def commit_message(args: list[str], rest: str, cwd: str) -> str:
         if arg in ("-F", "--file") and i + 1 < len(args):
             name = args[i + 1]
         elif arg.startswith("--file="):
-            name = arg[len("--file="):]
+            name = arg[len("--file=") :]
         elif arg.startswith("-F") and len(arg) > 2:
             name = arg[2:]
         else:
