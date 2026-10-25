@@ -19,9 +19,13 @@ test("the round comes from the report's plan-round meta", () => {
   assert.equal(reportRound("<meta content='2' name='plan-round'>"), 2);
   assert.equal(reportRound("<p>round 3</p>"), null);
   assert.equal(reportRound('<meta name="plan-round" content="x">'), null);
+  assert.equal(reportRound('<meta name=plan-round content=4 />'), 4);
+  for (const html of ['<meta name="plan-rounds" content="3">', '<meta name="plan-round" data-content="3">', '<meta data-name="plan-round" content="3">', '<meta name="plan-round" content="3x">']) {
+    assert.equal(reportRound(html), null, html);
+  }
 });
 
-const PAGE = { id: 110, round: 2, written: "24 Oct 2026, 14:32", shown: "1:2", ship: false, nonce: "N0nce", cspSource: "vscode-webview:", css: "review.css", js: "review.js" };
+const PAGE = { id: 110, file: "/work/repo/.tmp/110/report.html", round: 2, written: "24 Oct 2026, 14:32", shown: "1:2", ship: false, nonce: "N0nce", cspSource: "vscode-webview:", css: "review.css", js: "review.js" };
 
 // The page's own markup, the report's frame cut out: what runs outside the sandbox.
 const outside = (page) => page.replace(/<iframe\b[^>]*>/, "<iframe>");
@@ -55,6 +59,7 @@ test("L5: the bar names the issue, the round and when the report was written", (
   assert.match(reportPage({ ...PAGE, round: null, html: "" }), /<span id="label">Review #110 · written /);
   assert.match(page, /data-shown="1:2" data-ship="" data-busy=""/);
   assert.match(reportPage({ ...PAGE, ship: true, busy: true, html: "" }), /data-ship="1" data-busy="1"/);
+  assert.match(reportPage({ ...PAGE, file: '/w/"x"/.tmp/110/report.html', html: "" }), /data-file="\/w\/&quot;x&quot;\/.tmp\/110\/report.html"/);
 });
 
 test("L7: the button is a real button, and the page's colours are VS Code's theme's", () => {
@@ -88,11 +93,11 @@ function fixture() {
   const panels = [];
   const ran = [];
   const said = [];
-  let armed = false;
+  let armed = null;
   let mtime = 1000;
   const host = {
-    open(review) {
-      const panel = { review, html: null, revealed: 0, posts: [], disposers: [] };
+    open(review, from) {
+      const panel = { review, from, html: null, revealed: 0, posts: [], disposers: [] };
       panel.reveal = () => panel.revealed++;
       panel.setHtml = (html) => (panel.html = html);
       panel.post = (message) => panel.posts.push(message);
@@ -106,7 +111,7 @@ function fixture() {
     read: (at) => fs.readFileSync(at, "utf8"),
     exists: (at) => fs.existsSync(at),
     armed: () => armed,
-    disarm: () => (armed = false),
+    disarm: () => (armed = null),
     execute: async (...args) => ran.push(args),
     say: (level, text) => said.push([level, text]),
   };
@@ -116,7 +121,7 @@ function fixture() {
     mtime += 1000;
     fs.utimesSync(file, mtime / 1000, mtime / 1000);
   };
-  return { root, dir, file, panels, ran, said, host, write, arm: (on) => (armed = on), reports: new Reports(host) };
+  return { root, dir, file, panels, ran, said, host, write, arm: (report) => (armed = { report }), reports: new Reports(host) };
 }
 
 test("L3, L8: a report saved twice leaves one tab, showing the second file", () => {
@@ -165,7 +170,7 @@ test("L8: Go runs Next up's Go on the issue's PR body; once armed, the button is
   assert.deepEqual(ran, [["plan.openChanges", path.join(root, ".tmp", "110", "pr-body.md")]]);
   // Busy while it runs, then free again.
   assert.deepEqual(panels[0].posts.map((m) => m.busy), [true, false]);
-  arm(true);
+  arm(review.shown);
   reports.armedChanged();
   assert.deepEqual(panels[0].posts.at(-1), { type: "state", ship: true, busy: false, doing: "go" });
   await reports.receive(review, { type: "ship", shown: review.shown });
@@ -202,8 +207,7 @@ test("L3: a click on a report since rewritten runs nothing and shows the new one
 test("L3: a new report after Go disarms Ship, so Ship never ships a round not shown", () => {
   const { file, said, reports, write, arm } = fixture();
   write("<p>round 1</p>");
-  reports.show(file);
-  arm(true);
+  arm(reports.show(file).shown);
   // Shown again unchanged, as after a duplicate watcher event: Ship stays armed.
   const review = reports.show(file);
   assert.equal(review.ship, true);
@@ -243,13 +247,13 @@ test("L1: a link from the report opens only what linkTarget allows; any other me
 
 test("L3: a report Go never saw disarms Ship, even in a new tab; the same report reopened doesn't", () => {
   const { file, panels, said, reports, write, arm } = fixture();
-  write("<p>round 1</p>");
-  arm(true);
   // Go pressed from the title bar, then the report written: its first tab shows Go.
+  arm(null);
+  write("<p>round 1</p>");
   const review = reports.show(file);
   assert.equal(review.ship, false);
   assert.match(said.at(-1)[1], /changed since Go/);
-  arm(true);
+  arm(review.shown);
   panels[0].dispose();
   const again = reports.show(file);
   assert.equal(again.ship, true, "a closed tab reopened on the report Go saw keeps Ship");
@@ -259,7 +263,7 @@ test("L3: a stale Ship click says once to press Go", async () => {
   const { file, ran, said, reports, write, arm } = fixture();
   write("<p>round 1</p>");
   const review = reports.show(file);
-  arm(true);
+  arm(review.shown);
   const shown = review.shown;
   write("<p>round 2</p>");
   await reports.receive(review, { type: "ship", shown });
@@ -273,7 +277,7 @@ test("while Go or Ship runs, the tab is told which one", async () => {
   const { file, panels, reports, write, arm } = fixture();
   write("<p>round 1</p>");
   const review = reports.show(file);
-  arm(true);
+  arm(review.shown);
   reports.armedChanged();
   await reports.receive(review, { type: "ship", shown: review.shown });
   assert.deepEqual(panels[0].posts.at(-2), { type: "state", ship: true, busy: true, doing: "ship" });
@@ -303,4 +307,51 @@ test("the round's other files opening bring an open report back in front", () =>
   reports.show(file);
   reports.reveal(file);
   assert.equal(panels[0].revealed, 1);
+});
+
+test("after a window reload, the report Go saw opens with Ship still armed", () => {
+  const { file, said, host, write, arm } = fixture();
+  write("<p>round 1</p>");
+  arm(host.stamp(file));
+  // A new Reports, as after a reload: it has shown nothing yet.
+  const review = new Reports(host).show(file);
+  assert.equal(review.ship, true);
+  assert.deepEqual(said, []);
+});
+
+test("Ship's last check finds a report written after Go, or one written where Go found none", () => {
+  const { root, file, reports, host, write } = fixture();
+  assert.equal(reports.changedSinceGo({ root, id: 110, report: null }), false);
+  write("<p>round 1</p>");
+  assert.equal(reports.changedSinceGo({ root, id: 110, report: null }), true);
+  const report = host.stamp(file);
+  assert.equal(reports.changedSinceGo({ root, id: 110, report }), false);
+  write("<p>round 2</p>");
+  assert.equal(reports.changedSinceGo({ root, id: 110, report }), true);
+});
+
+test("a tab closed while its Go runs is told nothing once Go ends", async () => {
+  const { file, panels, reports, write, host } = fixture();
+  write("<p>round 1</p>");
+  const review = reports.show(file);
+  host.execute = async () => panels[0].dispose();
+  panels[0].post = (message) => {
+    if (!reports.panels.has(file)) throw new Error("Webview is disposed");
+    panels[0].posts.push(message);
+  };
+  await reports.receive(review, { type: "go", shown: review.shown });
+  assert.deepEqual(panels[0].posts.map((m) => m.busy), [true]);
+  reports.armedChanged();
+});
+
+test("a tab VS Code restores after a reload becomes the report's tab; a second for the same report doesn't", () => {
+  const { file, panels, reports, write } = fixture();
+  write("<p>round 1</p>");
+  const restored = { restored: true };
+  const review = reports.show(file, restored);
+  assert.equal(panels[0].from, restored);
+  assert.match(panels[0].html, /round 1/);
+  assert.equal(reports.show(file, { restored: true }), null);
+  assert.equal(panels.length, 1);
+  assert.equal(reports.show(file), review);
 });

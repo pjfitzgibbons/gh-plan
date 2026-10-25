@@ -274,7 +274,10 @@ async function openHandover(dir) {
     await vscode.window.showTextDocument(vscode.Uri.file(file), { viewColumn: 1, preview: false });
   }
   // The round's report, when its tab opened first, goes back in front: it's read before the files.
-  reports?.reveal(path.join(dir, "report.html"));
+  // A report older than the files is the last round's, which mustn't cover this one's.
+  const report = path.join(dir, "report.html");
+  const mtime = (file) => fs.statSync(file, { throwIfNoEntry: false })?.mtimeMs ?? 0;
+  if (mtime(report) >= Math.max(...files.map(mtime))) reports?.reveal(report);
 }
 
 // openFolder only focuses a window already open on the worktree, so that window watches for its
@@ -293,6 +296,8 @@ function watchHandoff(context, storage) {
 // tree's changes, as pr's commit will, and open them, whose title bar then holds Ship. With nothing to commit, Ship sits on the
 // review files instead. Only Ship runs pr; once pr succeeds, the review files and diffs close and the
 // issue's Pull requests field links its PR.
+// armed is the issue Go armed Ship for, { root, id, report }, report being its round report's stamp
+// when Go began, so Ship ships only the report Go saw.
 let armed = null;
 
 function arm(review) {
@@ -305,38 +310,45 @@ function arm(review) {
 // saved in this window's worktree, with Go and Ship on it.
 let reports = null;
 
+// A file's modified time and size, which change with each write; null once it's gone.
+function stamp(file) {
+  const stat = fs.statSync(file, { throwIfNoEntry: false });
+  return stat?.isFile() ? `${stat.mtimeMs}:${stat.size}` : null;
+}
+
 function reviewHost(media) {
-  const stamp = (file) => {
-    const stat = fs.statSync(file, { throwIfNoEntry: false });
-    return stat?.isFile() ? `${stat.mtimeMs}:${stat.size}` : null;
-  };
   const say = { info: vscode.window.showInformationMessage, warning: vscode.window.showWarningMessage, error: vscode.window.showErrorMessage };
   return {
     stamp,
     read: (file) => fs.readFileSync(file, "utf8"),
     exists: (file) => stamp(file) !== null,
-    armed: (review) => Boolean(armed && armed.root === review.root && armed.id === review.id),
+    armed: (review) => (armed && armed.root === review.root && armed.id === review.id ? armed : null),
     disarm: () => arm(null),
     say: (level, text) => say[level](text),
     // A URL for the browser tab; any other argument is a file's path.
     execute: (command, arg) =>
       arg === undefined ? vscode.commands.executeCommand(command)
         : vscode.commands.executeCommand(command, command === "workbench.action.browser.open" ? arg : vscode.Uri.file(arg)),
-    open(review) {
-      // In the leftmost group, with the round's files, without taking the focus from the editor.
-      const panel = vscode.window.createWebviewPanel(
+    open(review, from) {
+      // Scripts are for the page's own, by nonce; the report's frame is sandboxed without them.
+      const options = { enableScripts: true, localResourceRoots: [media] };
+      // In the leftmost group, with the round's files, without taking the focus from the editor; or
+      // the panel VS Code restored after a reload, where it was.
+      const panel = from ?? vscode.window.createWebviewPanel(
         "plan.review", `Review #${review.id}`, { viewColumn: vscode.ViewColumn.One, preserveFocus: true },
-        // Scripts are for the page's own, by nonce; the report's frame is sandboxed without them.
-        { enableScripts: true, localResourceRoots: [media], retainContextWhenHidden: true }
+        { ...options, retainContextWhenHidden: true }
       );
-      panel.webview.onDidReceiveMessage((message) =>
+      if (from) panel.webview.options = options;
+      // Taken once: a disposed panel's webview property throws.
+      const { webview } = panel;
+      webview.onDidReceiveMessage((message) =>
         reports.receive(review, message).catch((error) => vscode.window.showErrorMessage(`Plan: #${review.id}'s report: ${error.message}`))
       );
       return {
-        webview: panel.webview,
+        webview,
         reveal: () => panel.reveal(undefined, true),
-        setHtml: (html) => (panel.webview.html = html),
-        post: (message) => panel.webview.postMessage(message),
+        setHtml: (html) => (webview.html = html),
+        post: (message) => webview.postMessage(message),
         onDispose: (callback) => panel.onDidDispose(callback),
       };
     },
@@ -345,6 +357,7 @@ function reviewHost(media) {
       const written = new Date(Number(review.shown.split(":")[0]));
       return reportPage({
         id: review.id,
+        file: review.file,
         html,
         round: reportRound(html),
         written: written.toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" }),
@@ -438,8 +451,11 @@ async function gitRepository(root) {
 }
 
 async function go(uri) {
+  // The report as Go finds it, before its checks run, so one written while they run waits for Go.
+  const issue = reviewFile((uri || vscode.window.activeTextEditor?.document.uri)?.fsPath || "");
+  const report = issue && stamp(path.join(issue.root, ".tmp", String(issue.id), "report.html"));
   const ready = await prepare(uri);
-  await arm(ready && { root: ready.root, id: ready.id });
+  await arm(ready && { root: ready.root, id: ready.id, report });
   if (!ready) return;
   if (ready.dirty) {
     try {
@@ -465,10 +481,17 @@ async function ship(refresh) {
     vscode.window.showErrorMessage("Plan: press Go on an issue's review files first.");
     return;
   }
-  const { root, id } = armed;
+  const taken = armed;
+  const { root, id } = taken;
   const found = await prepare(vscode.Uri.file(`${root}/.tmp/${id}/pr-body.md`), true);
+  // A report shown while the checks ran has disarmed Ship already, and said so.
+  const warned = armed !== taken;
   await arm(null);
   if (!found) return;
+  if (reports.changedSinceGo(taken)) {
+    if (!warned) vscode.window.showErrorMessage(`Plan: #${id}'s report changed since Go; pr didn't run. Read it, then press Go again.`);
+    return;
+  }
 
   const exitCode = await runPr(root, id);
   if (exitCode !== 0) {
@@ -535,6 +558,14 @@ function activate(context) {
   watchHandover(context);
   reports = new Reports(reviewHost(view.media));
   watchReports(context);
+  // A Review tab open before a window reload comes back, showing its report as it is now and Go.
+  context.subscriptions.push(
+    vscode.window.registerWebviewPanelSerializer("plan.review", {
+      async deserializeWebviewPanel(panel, state) {
+        if (!reportFile(state?.file || "") || !reports.show(state.file, panel)) panel.dispose();
+      },
+    })
+  );
   let focused = vscode.window.state.focused;
   context.subscriptions.push(
     vscode.window.registerWebviewViewProvider("plan.nextUp", view),

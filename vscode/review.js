@@ -15,9 +15,9 @@ function reportFile(file) {
 
 // The round the report says it is, from <meta name="plan-round" content="<k>">; null without one.
 function reportRound(html) {
-  const meta = /<meta\b[^>]*\bname=["']?plan-round["']?[^>]*>/i.exec(html);
-  const round = meta && /\bcontent=["']?([1-9][0-9]*)\b/i.exec(meta[0]);
-  return round ? Number(round[1]) : null;
+  const meta = /<meta\s(?:[^>]*\s)?name=(["']?)plan-round\1(?=[\s/>])[^>]*>/i.exec(html);
+  const round = meta && /\scontent=(["']?)([1-9][0-9]*)\1(?=[\s/>])/i.exec(meta[0]);
+  return round ? Number(round[2]) : null;
 }
 
 const escape = (text) =>
@@ -29,8 +29,9 @@ const escape = (text) =>
 // nothing in the report runs. allow-same-origin, without scripts, only lets the page's script lend
 // the frame VS Code's theme and catch its link clicks. shown is the render's stamp, which a click
 // sends back so it never acts on a report other than the one on screen; busy, while its Go or Ship
-// runs, keeps the button off across a refresh, and doing names which one.
-function reportPage({ id, html, round, written, shown, ship, busy, doing, nonce, cspSource, css, js }) {
+// runs, keeps the button off across a refresh, and doing names which one. file is the report's
+// path, which the page keeps so the tab comes back after a window reload.
+function reportPage({ id, file, html, round, written, shown, ship, busy, doing, nonce, cspSource, css, js }) {
   const label = `Review #${id}${round ? ` · round ${round}` : ""} · written ${written}`;
   return `<!doctype html>
 <html lang="en">
@@ -40,7 +41,7 @@ function reportPage({ id, html, round, written, shown, ship, busy, doing, nonce,
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <link rel="stylesheet" href="${css}">
 </head>
-<body data-shown="${escape(shown)}" data-ship="${ship ? "1" : ""}" data-busy="${busy ? "1" : ""}" data-doing="${doing === "ship" ? "ship" : "go"}" data-id="${id}">
+<body data-shown="${escape(shown)}" data-ship="${ship ? "1" : ""}" data-busy="${busy ? "1" : ""}" data-doing="${doing === "ship" ? "ship" : "go"}" data-id="${id}" data-file="${escape(file)}">
 <header role="toolbar" aria-label="Review #${id}">
 <span id="label">${escape(label)}</span>
 <span id="hint"></span>
@@ -69,23 +70,23 @@ function linkTarget(dir, href, exists) {
 }
 
 // Every open Review tab in this window, one per report, by its path. host gives the VS Code side:
-//   open(review)         a new panel, { reveal(), setHtml(html), post(message), onDispose(callback) }
+//   open(review, from)   a panel, { reveal(), setHtml(html), post(message), onDispose(callback) }:
+//                        a new one, or VS Code's panel from, restored after a window reload
 //   render(review, html) the page for the report's text, with review.shown and review.ship set
 //   stamp(file)          the report's modified time, or null once it's gone; read(file) its text
-//   armed(review)        whether Go has armed Ship for review's issue; disarm() undoes it
+//   armed(review)        what Go armed Ship with for review's issue, { report }, the report's stamp
+//                        when Go ran (null with no report), or null; disarm() undoes it
 //   execute(command, …)  runs a VS Code command; exists(file); say(level, text) shows a message
 class Reports {
   constructor(host) {
     this.host = host;
     this.panels = new Map();
-    // Each report's stamp when last shown, kept after its tab closes, so a report Go never saw
-    // disarms Ship even when it opens a new tab.
-    this.seen = new Map();
   }
 
   // Shows the report at file in its issue's tab: brings the tab to the front with the report as it
-  // is on disk, or opens one when the issue has none here. Returns the tab's review, or null.
-  show(file) {
+  // is on disk, or opens one when the issue has none here; from is a panel VS Code restored, which
+  // becomes the tab. Returns the tab's review, or null, when from is then for the caller to close.
+  show(file, from) {
     const issue = reportFile(file);
     if (!issue) return null;
     // Stamped before it's read: a write in between leaves a stamp older than what's shown, so a
@@ -99,26 +100,30 @@ class Reports {
       return null;
     }
     let review = this.panels.get(file);
+    if (review && from) return null;
     if (review) {
       review.panel.reveal();
     } else {
       review = { ...issue, file, busy: false, doing: null };
-      review.panel = this.host.open(review);
+      review.panel = this.host.open(review, from);
       this.panels.set(file, review);
       review.panel.onDispose(() => this.panels.get(file) === review && this.panels.delete(file));
     }
-    // A new report is a new round to review: a Ship that Go armed for the last one waits for Go.
-    const disarms = this.host.armed(review) && this.seen.get(file) !== shown;
-    if (disarms) {
+    // A report other than the one Go saw is a new round to review: Ship waits for Go again.
+    if (this.host.armed(review) && this.host.armed(review).report !== shown) {
       this.host.disarm();
       this.host.say("warning", `Plan: #${review.id}'s report changed since Go; press Go again to ship it.`);
     }
-    this.seen.set(file, shown);
-    review.disarmed = disarms;
     review.shown = shown;
-    review.ship = this.host.armed(review);
+    review.ship = Boolean(this.host.armed(review));
     review.panel.setHtml(this.host.render(review, html));
     return review;
+  }
+
+  // Whether the issue's report isn't the one Go saw when it armed Ship, armed: Ship checks it once
+  // its own checks have run, just before pr, so a report written while they ran is never shipped.
+  changedSinceGo({ root, id, report }) {
+    return this.host.stamp(path.join(root, ".tmp", String(id), "report.html")) !== report;
   }
 
   // Brings file's tab, if it has one, back in front of the round's other files.
@@ -131,8 +136,10 @@ class Reports {
     for (const review of this.panels.values()) this.state(review);
   }
 
+  // A closed tab is told nothing: its webview is gone.
   state(review) {
-    review.ship = this.host.armed(review);
+    if (this.panels.get(review.file) !== review) return;
+    review.ship = Boolean(this.host.armed(review));
     review.panel.post({ type: "state", ship: review.ship, busy: review.busy, doing: review.doing });
   }
 
@@ -155,8 +162,9 @@ class Reports {
     }
     if (message.shown !== review.shown || now !== review.shown) {
       // show() says so itself when the change disarms Ship.
+      const armed = Boolean(this.host.armed(review));
       if (!this.show(review.file)) this.state(review);
-      else if (!review.disarmed) {
+      else if (armed === review.ship) {
         this.host.say("warning", `Plan: #${review.id}'s report changed; it's shown again. Press ${review.ship ? "Ship" : "Go"} once you've read it.`);
       }
       return;

@@ -9,6 +9,8 @@
   const frame = document.getElementById("report");
   const id = body.dataset.id;
   const state = { ship: body.dataset.ship === "1", busy: body.dataset.busy === "1", doing: body.dataset.doing };
+  // What VS Code hands back after a window reload, so the extension shows the report again.
+  vscode.setState({ file: body.dataset.file });
 
   // While Go or Ship runs, the button names the one running: Ship disarms before pr starts, and Go
   // arms before it stages.

@@ -8,7 +8,7 @@
   "private": true,
   "engines": { "vscode": "^1.90.0" },
   "main": "./extension.js",
-  "activationEvents": ["onStartupFinished"],
+  "activationEvents": ["onStartupFinished", "onWebviewPanel:plan.review"],
   "scripts": { "test": "node --test", "lint": "eslint ." },
   "devDependencies": { "@eslint/js": "9.39.5", "eslint": "9.39.5", "globals": "16.5.0" },
   "contributes": {
@@ -34,7 +34,7 @@
       "commandPalette": [
         { "command": "plan.openChanges", "when": "resourcePath =~ /\\/\\.tmp\\/[1-9][0-9]*\\/(commit\\.txt|pr-body\\.md|replies\\/[0-9]+\\.md)$/" },
         { "command": "plan.runPr", "when": "plan.shipReady" },
-        { "command": "plan.showReport", "when": "resourcePath =~ /\\/\\.tmp\\/[1-9][0-9]*\\/report\\.html$/" }
+        { "command": "plan.showReport", "when": "false" }
       ]
     },
     "taskDefinitions": [
