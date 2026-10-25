@@ -1934,16 +1934,39 @@ class IssueRelations(unittest.TestCase):
         ):
             issue_relations.run("104 relates 124".split(), r, False, False)
 
-    def test_removing_a_relation_not_there_names_the_one_that_is(self):
+    def test_removing_a_relation_not_there_from_a_pair_holding_another_is_refused(self):
         r = FakeRelations([{"issue_id": 104, "issue_to_id": 124, "relation_type": "precedes"}])
-        said = issue_relations.run("104 blocks 124".split(), r, False, True)
-        self.assertEqual(said, "0 relations removed")
-        self.assertIn(
-            "#104 blocks #124 is not there; they hold #104 precedes #124", self.out.getvalue()
-        )
+        with self.assertRaisesRegex(
+            Refused,
+            "hold #104 precedes #124, not #104 blocks #124; "
+            "to remove that: issue_relations --remove 104 precedes 124",
+        ):
+            issue_relations.run("115 relates 104 104 blocks 124".split(), r, False, True)
+        self.assertEqual(r.writes, [])
+
+    def test_removing_both_relations_of_a_pair_after_one_went_finishes(self):
+        r = FakeRelations([{"issue_id": 104, "issue_to_id": 124, "relation_type": "precedes"}])
+        said = issue_relations.run("104 blocks 124 104 precedes 124".split(), r, False, True)
+        self.assertEqual(said, "1 relation removed")
+        self.assertEqual(r.rels, {})
+
+    def test_a_refused_write_reads_back_the_writes_before_it(self):
+        r = FakeRelations(keep=False, refuse=107)
+        with self.assertRaisesRegex(
+            Refused, "circular dependency; and Redmine didn't add #104 blocks #124"
+        ):
+            issue_relations.run("104 blocks 124 124 blocks 107".split(), r, False, False)
 
     def test_parse_refuses_an_issue_number_below_one(self):
-        for words in ("104 blocks -1", "0 blocks 124"):
+        for words in (
+            "104 blocks -1",
+            "0 blocks 124",
+            "1_04 blocks 124",
+            "+104 blocks 124",
+            "104 blocks ##124",
+            "104 blocks 0124",
+            "104 blocks \u0661\u0662",
+        ):
             with self.subTest(words), self.assertRaisesRegex(Refused, "two issue numbers"):
                 issue_relations.parse(words.split())
 
