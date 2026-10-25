@@ -145,6 +145,9 @@ What it sets up:
 
 - A public parent project `plan`, with sub-projects `gh-plan`, `tempotag`, `ulysses` and
   `glasswing`, each with the lane board, review findings, Gantt and repository modules.
+- Each sub-project's homepage is its repository's `origin` URL, read from the mount, so `new_issue`
+  knows the project from the checkout it runs in. A mount with no `origin` leaves the homepage as
+  it is, with a warning.
 - The default trackers, statuses, roles and workflows, on an empty database.
 - An `Icebox` status, open, with the transitions of New in each workflow, so it opens no route a
   role lacks. The lane board leaves it out.

@@ -62,12 +62,13 @@ A revert is an issue of its own, started and shipped like any other. On its bran
 
 ## Drafting a new issue
 
-1. Copy `references/redmine-issue.md` to `.tmp/<n>/<slug>.md`, `<n>` being the issue whose work found it. Fill in the front matter by the names Redmine shows: `project`, `tracker` and `subject` are required. `project` is a repo's project, such as `gh-plan`; `new_issue` refuses a parent project, such as `plan`, which has no repository, and names its children. A blank field is left out. With no version, set `status: Icebox`. Name issues as numbers, `#79` or `79`, with commas between them in `blocked_by` and `relates`. Then write the body in the outline.
-2. Check it, from inside the repo so the repo's lenses count. This only reads: it runs the outline check, looks up every name in Redmine and checks every value.
+1. Copy `references/redmine-issue.md` to `.tmp/<n>/<slug>.md`, `<n>` being the issue whose work found it. Fill in the front matter by the names Redmine shows: `tracker` and `subject` are required. There is no `project` field: `new_issue` files in the project whose homepage is the origin of the checkout it runs in, and refuses outside a checkout, for an origin no project has, and for a `project:` line. A blank field is left out. With no version, set `status: Icebox`. Name issues as numbers, `#79` or `79`, with commas between them in `blocked_by` and `relates`. Then write the body in the outline.
+2. Check it from the checkout of the repo the issue is for, so its lenses count and its project is found, giving the draft's full path when it is in another repo's worktree. This only reads: it runs the outline check, looks up every name in Redmine and checks every value.
    ```
-   new_issue --check .tmp/<n>/<slug>.md
+   cd <checkout> && new_issue --check <draft>
    ```
-3. Give Peter the same command without `--check`, as `! new_issue .tmp/<n>/<slug>.md`. It creates the issue, adds its relations and reads it back. A second run finds the issue by its subject and adds only the relations still missing.
+   The result names the project the issue goes to.
+3. Give Peter the same command without `--check`, as `! cd <checkout> && new_issue <draft>`. It creates the issue in that project, adds its relations and reads it back. A second run finds the issue by its subject and adds only the relations still missing.
 
 ## Answering a PR review
 

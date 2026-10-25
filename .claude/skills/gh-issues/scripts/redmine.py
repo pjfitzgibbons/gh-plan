@@ -66,14 +66,14 @@ def by_name(items: list[dict], name: str, what: str) -> dict:
 
 
 def every(redmine, path: str, key: str) -> list[dict]:
-    """Every item a Redmine listing holds under key, each page of it."""
+    """Every item a Redmine listing holds under key, each page of it; one page without total_count."""
     found, offset = [], 0
     sep = "&" if "?" in path else "?"
     while True:
         page = redmine.send("GET", f"{path}{sep}limit=100&offset={offset}")
         found += page[key]
         offset += len(page[key])
-        if not page[key] or offset >= page["total_count"]:
+        if not page[key] or offset >= page.get("total_count", 0):
             return found
 
 

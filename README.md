@@ -26,7 +26,8 @@ checkout's `.git` and Start looks for it there (`GH_PLAN_GIT` and `plan.checkout
 elsewhere). Redmine also mounts the `.git` of each other tracked repo, `~/programming/tempotag`,
 `~/programming/redmine_ulysses` and `~/programming/glasswing`: clone each there before starting
 Redmine, or point `TEMPOTAG_GIT`, `ULYSSES_GIT` and `GLASSWING_GIT` elsewhere. Docker makes a
-missing one an empty directory, and a later clone into it fails. On a Mac, from the root of that main checkout, never a worktree, which Done deletes:
+missing one an empty directory, and a later clone into it fails. On a Mac, from the root of the
+gh-plan main checkout, never a worktree, which Done deletes:
 
 1. **Redmine:** start it, sign in and run the setup, as
    [`redmine/README.md`](redmine/README.md) says in *Starting and stopping* and *Running the

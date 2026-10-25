@@ -11,8 +11,11 @@
 #     redmine bin/rails runner /setup/setup.rb
 # Without it, the service is left as it is.
 
+require 'open3'
+
 PARENT = { identifier: 'plan', name: 'Plan' }.freeze
-# identifier => name. Each repo's .git is mounted at /repos/<identifier>.git (compose.yml).
+# identifier => name. Each repo's .git is mounted at /repos/<identifier>.git (compose.yml), and its
+# project's homepage is its origin's GitHub URL, which new_issue matches to the repo it runs in.
 REPOS = { 'gh-plan' => 'GH Plan', 'tempotag' => 'tempotag', 'ulysses' => 'Ulysses', 'glasswing' => 'Glasswing' }.freeze
 # The milestones of each repo's .tracker/milestones/, as versions in the parent project:
 # name => description. Every one still has open items, so each is made open.
@@ -203,6 +206,14 @@ ActiveRecord::Base.transaction do
     repository = child.repository || Repository::Git.new(project: child, is_default: true)
     repository.url = "/repos/#{identifier}.git"
     save(repository, "repository of #{identifier}")
+    origin, status = Open3.capture2('git', "--git-dir=#{repository.url}", 'config', '--get', 'remote.origin.url')
+    if status.success?
+      # SSH forms and any user or token before the host become a plain https://github.com/ link.
+      child.homepage = origin.strip.sub(/\.git\z/, '').sub(%r{\A(\w+://)?([^@/]+@)?github\.com[:/]}, 'https://github.com/')
+      save(child, "homepage of #{identifier}")
+    else
+      warn "setup: #{repository.url} has no origin; #{identifier}'s homepage is left as it is"
+    end
   end
 
   VERSIONS.each do |name, description|
