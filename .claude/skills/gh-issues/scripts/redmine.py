@@ -1,5 +1,5 @@
-"""The Redmine API client the gh-issues scripts (new_issue.py, issue_body.py, redmine_set.py) write
-through.
+"""The Redmine API client the gh-issues scripts (new_issue.py, issue_body.py, redmine_set.py,
+issue_relations.py) write through.
 
 The API key comes from the Keychain item redmine-gh-plan (REDMINE_KEYCHAIN picks another), and
 goes only in a request header. REDMINE_URL defaults to http://127.0.0.1:3010.
@@ -11,6 +11,24 @@ import os
 import subprocess
 import urllib.error
 import urllib.request
+
+FORWARD = ["relates", "blocks", "precedes", "duplicates", "copied_to"]
+REVERSE = {
+    "blocked": "blocks",
+    "blocked_by": "blocks",
+    "follows": "precedes",
+    "duplicated": "duplicates",
+    "copied_from": "copied_to",
+}
+
+
+def canonical(a: int, kind: str, b: int) -> tuple[int, str, int]:
+    """The relation as Redmine keeps it: a forward type, and relates with the lower issue first."""
+    if kind in REVERSE:
+        return b, REVERSE[kind], a
+    if kind == "relates":
+        return min(a, b), kind, max(a, b)
+    return a, kind, b
 
 
 class Refused(Exception):

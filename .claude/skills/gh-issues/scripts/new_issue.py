@@ -32,7 +32,7 @@ import sys
 from pathlib import Path
 
 import outline
-from redmine import Redmine, Refused, by_name, field_id, issue_fields, unkept
+from redmine import Redmine, Refused, by_name, canonical, field_id, issue_fields, unkept
 
 FIELDS = [
     "project",
@@ -146,19 +146,13 @@ def existing(redmine, project_id: int, subject: str) -> int | None:
     return found[0] if found else None
 
 
-def linked(relations: list[dict], n: int, other: int, key: str) -> bool:
-    for r in relations:
-        pair = {r["issue_id"], r["issue_to_id"]}
-        if pair != {n, other}:
-            continue
-        if key == "relates" and r["relation_type"] == "relates":
-            return True
-        if key == "blocked_by" and (r["relation_type"], r["issue_id"]) in {
-            ("blocks", other),
-            ("blocked", n),
-        }:
-            return True
-    return False
+def held(relations: list[dict]) -> set:
+    """The relations as Redmine keeps them, so 124 blocked 104 matches 104 blocks 124."""
+    return {canonical(r["issue_id"], r["relation_type"], r["issue_to_id"]) for r in relations}
+
+
+def kind(key: str) -> str:
+    return "blocked" if key == "blocked_by" else "relates"
 
 
 def run(file: Path, redmine, check_only: bool, lenses: list[str], extra: list[str]) -> str:
@@ -180,25 +174,27 @@ def run(file: Path, redmine, check_only: bool, lenses: list[str], extra: list[st
         made = "created"
     else:
         made = "already there"
-    have = redmine.send("GET", f"/issues/{n}.json?include=relations")["issue"].get("relations", [])
+    have = held(
+        redmine.send("GET", f"/issues/{n}.json?include=relations")["issue"].get("relations", [])
+    )
     added = 0
     for key, others in relations.items():
         for other in others:
-            if not linked(have, n, other, key):
-                kind = "blocked" if key == "blocked_by" else "relates"
+            if canonical(n, kind(key), other) not in have:
                 redmine.send(
                     "POST",
                     f"/issues/{n}/relations.json",
-                    {"relation": {"issue_to_id": other, "relation_type": kind}},
+                    {"relation": {"issue_to_id": other, "relation_type": kind(key)}},
                 )
                 added += 1
 
     back = redmine.send("GET", f"/issues/{n}.json?include=relations")["issue"]
+    kept_rels = held(back.get("relations", []))
     missing = [
         f"{key} #{o}"
         for key, others in relations.items()
         for o in others
-        if not linked(back.get("relations", []), n, o, key)
+        if canonical(n, kind(key), o) not in kept_rels
     ]
     lost = unkept(back, issue) + missing
     if lost and made == "created":
