@@ -11,6 +11,7 @@ from pathlib import Path
 from unittest import mock
 
 import issue_body
+import issue_relations
 import new_issue
 import redmine_set
 from outline import check, expected
@@ -971,6 +972,19 @@ class NewIssue(unittest.TestCase):
             r.posts[1][1], {"relation": {"issue_to_id": 79, "relation_type": "blocked"}}
         )
 
+    def test_blocked_by_finds_the_blocks_relation_redmine_keeps(self):
+        r = FakeTracker()
+        head = self.HEAD.replace("relates: #79", "blocked_by: 79")
+        self.run_it(r)
+        r.issues[80]["relations"] = [
+            {"issue_id": 79, "issue_to_id": 80, "relation_type": "blocks"},
+            {"issue_id": 80, "issue_to_id": 79, "relation_type": "relates"},
+        ]
+        self.assertEqual(
+            self.run_it(r, head),
+            "#80 already there, 0 relations added: http://redmine.test/issues/80",
+        )
+
     def test_bad_fields_refuse_before_any_write(self):
         for old, new, says in [
             ("points: 3", "points: 4", "isn't one of 1, 2, 3"),
@@ -1671,6 +1685,320 @@ class ReadBack(unittest.TestCase):
                 "note",
             ],
         )
+
+
+class FakeRelations:
+    """A Redmine holding issues 104, 107, 115 and 124 and their relations, for issue_relations.py."""
+
+    def __init__(self, relations=(), keep=True, refuse=None, refuse_delete=None):
+        self.rels = {i + 1: dict(r, id=i + 1) for i, r in enumerate(relations)}
+        self.writes = []
+        self.keep, self.refuse, self.refuse_delete = keep, refuse, refuse_delete
+
+    def send(self, method, path, body=None):
+        self.writes += [(method, path, body)] if method != "GET" else []
+        if method == "POST":
+            n = int(path.split("/")[2])
+            r = body["relation"]
+            if r["issue_to_id"] == self.refuse:
+                raise Refused(f"Redmine POST {path}: HTTP 422: circular dependency", 422)
+            if self.keep:
+                rid = max(self.rels, default=0) + 1
+                self.rels[rid] = {
+                    "id": rid,
+                    "issue_id": n,
+                    "issue_to_id": r["issue_to_id"],
+                    "relation_type": r["relation_type"],
+                }
+            return None
+        if method == "DELETE":
+            rid = int(path.split("/")[2].split(".")[0])
+            if rid == self.refuse_delete:
+                raise Refused(f"Redmine DELETE {path}: HTTP 403", 403)
+            if self.keep:
+                del self.rels[rid]
+            return None
+        n = int(path.split("/")[2].split(".")[0])
+        if n not in {104, 107, 115, 124}:
+            raise Refused(f"Redmine GET {path}: HTTP 404", 404)
+        mine = [r for r in self.rels.values() if n in (r["issue_id"], r["issue_to_id"])]
+        return {"issue": {"id": n, "relations": [dict(r) for r in mine]}}
+
+
+class IssueRelations(unittest.TestCase):
+    """issue_relations.py: adds only what's missing, matches reverse spellings, refuses a clash, reads back."""
+
+    def setUp(self):
+        out = mock.patch("sys.stdout", new_callable=io.StringIO)
+        self.out = out.start()
+        self.addCleanup(out.stop)
+
+    def test_adds_each_missing_relation_and_reads_it_back(self):
+        r = FakeRelations()
+        said = issue_relations.run("104 blocks 124 115 relates 104".split(), r, False, False)
+        self.assertEqual(said, "2 relations added")
+        self.assertEqual(
+            r.writes,
+            [
+                (
+                    "POST",
+                    "/issues/104/relations.json",
+                    {"relation": {"issue_to_id": 124, "relation_type": "blocks"}},
+                ),
+                (
+                    "POST",
+                    "/issues/104/relations.json",
+                    {"relation": {"issue_to_id": 115, "relation_type": "relates"}},
+                ),
+            ],
+        )
+
+    def test_a_reverse_spelling_finds_the_relation_already_there(self):
+        r = FakeRelations([{"issue_id": 104, "issue_to_id": 124, "relation_type": "blocks"}])
+        said = issue_relations.run("124 blocked_by 104".split(), r, False, False)
+        self.assertEqual(said, "0 relations added")
+        self.assertIn("#104 blocks #124 is already there", self.out.getvalue())
+        self.assertEqual(r.writes, [])
+
+    def test_check_writes_nothing_and_prints_the_command(self):
+        r = FakeRelations()
+        said = issue_relations.run("124 blocks 107".split(), r, True, False)
+        self.assertEqual(said, "1 to add; to write: issue_relations 124 blocks 107")
+        self.assertIn("would add #124 blocks #107", self.out.getvalue())
+        self.assertEqual(r.writes, [])
+
+    def test_another_relation_between_the_pair_is_refused_before_any_write(self):
+        r = FakeRelations([{"issue_id": 104, "issue_to_id": 124, "relation_type": "relates"}])
+        with self.assertRaisesRegex(Refused, "already hold #104 relates #124; remove it first"):
+            issue_relations.run("115 relates 104 104 blocks 124".split(), r, False, False)
+        self.assertEqual(r.writes, [])
+
+    def test_removes_a_relation_by_its_id(self):
+        r = FakeRelations([{"issue_id": 104, "issue_to_id": 124, "relation_type": "blocks"}])
+        said = issue_relations.run("124 blocked 104".split(), r, False, True)
+        self.assertEqual(said, "1 relation removed")
+        self.assertEqual(r.writes, [("DELETE", "/relations/1.json", None)])
+
+    def test_a_relation_redmine_did_not_keep_is_named(self):
+        with self.assertRaisesRegex(Refused, "didn't add #104 blocks #124"):
+            issue_relations.run("104 blocks 124".split(), FakeRelations(keep=False), False, False)
+
+    def test_a_relation_named_twice_is_written_once(self):
+        r = FakeRelations()
+        said = issue_relations.run("104 blocks 124 124 blocked_by 104".split(), r, False, False)
+        self.assertEqual(said, "1 relation added")
+        self.assertEqual(len(r.writes), 1)
+
+    def test_two_arguments_joining_one_pair_differently_are_refused(self):
+        r = FakeRelations()
+        with self.assertRaisesRegex(Refused, "join the same two issues; give one"):
+            issue_relations.run("104 blocks 124 124 precedes 104".split(), r, False, False)
+        self.assertEqual(r.writes, [])
+
+    def test_removes_one_of_two_relations_redmine_holds_between_a_pair(self):
+        r = FakeRelations(
+            [
+                {"issue_id": 104, "issue_to_id": 124, "relation_type": "blocks"},
+                {"issue_id": 124, "issue_to_id": 104, "relation_type": "precedes"},
+            ]
+        )
+        said = issue_relations.run("104 blocks 124".split(), r, False, True)
+        self.assertEqual(said, "1 relation removed")
+        self.assertEqual(r.writes, [("DELETE", "/relations/1.json", None)])
+
+    def test_a_run_refused_part_way_names_what_it_wrote_and_a_rerun_finishes(self):
+        r = FakeRelations(refuse=107)
+        words = "104 blocks 124 124 blocks 107 115 relates 104".split()
+        with self.assertRaisesRegex(Refused, "HTTP 422: circular dependency"):
+            issue_relations.run(words, r, False, False)
+        self.assertIn("added #104 blocks #124", self.out.getvalue())
+        self.assertNotIn("added #104 relates #115", self.out.getvalue())
+        r.refuse = None
+        self.assertEqual(issue_relations.run(words, r, False, False), "2 relations added")
+        clean = FakeRelations()
+        issue_relations.run(words, clean, False, False)
+
+        def held(f):
+            return {(x["issue_id"], x["relation_type"], x["issue_to_id"]) for x in f.rels.values()}
+
+        self.assertEqual(held(r), held(clean))
+
+    def test_check_names_only_what_is_left_without_hash_signs(self):
+        r = FakeRelations([{"issue_id": 104, "issue_to_id": 124, "relation_type": "blocks"}])
+        said = issue_relations.run(
+            ["#104", "blocks", "#124", "#124", "blocks", "#107"], r, True, False
+        )
+        self.assertEqual(said, "1 to add; to write: issue_relations 124 blocks 107")
+        said = issue_relations.run(["#104", "blocks", "#124"], r, True, False)
+        self.assertEqual(said, "0 to add")
+
+    def test_a_relation_already_there_beside_another_is_skipped(self):
+        r = FakeRelations(
+            [
+                {"issue_id": 104, "issue_to_id": 124, "relation_type": "blocks"},
+                {"issue_id": 124, "issue_to_id": 104, "relation_type": "precedes"},
+            ]
+        )
+        self.assertEqual(
+            issue_relations.run("104 blocks 124".split(), r, False, False), "0 relations added"
+        )
+        self.assertEqual(r.writes, [])
+
+    def test_removes_relates_kept_as_two_rows(self):
+        r = FakeRelations(
+            [
+                {"issue_id": 104, "issue_to_id": 124, "relation_type": "relates"},
+                {"issue_id": 124, "issue_to_id": 104, "relation_type": "relates"},
+            ]
+        )
+        said = issue_relations.run("124 relates 104".split(), r, False, True)
+        self.assertEqual(said, "1 relation removed")
+        self.assertEqual(r.rels, {})
+
+    def test_removes_two_relations_between_a_pair_in_one_run(self):
+        r = FakeRelations(
+            [
+                {"issue_id": 104, "issue_to_id": 124, "relation_type": "blocks"},
+                {"issue_id": 124, "issue_to_id": 104, "relation_type": "precedes"},
+            ]
+        )
+        said = issue_relations.run("104 blocks 124 124 precedes 104".split(), r, False, True)
+        self.assertEqual(said, "2 relations removed")
+        self.assertEqual(r.rels, {})
+
+    def test_adding_precedes_says_redmine_may_move_dates(self):
+        issue_relations.run("104 precedes 124".split(), FakeRelations(), False, False)
+        self.assertIn("may have moved #124's dates", self.out.getvalue())
+
+    def test_check_says_precedes_may_move_dates(self):
+        issue_relations.run("104 precedes 124".split(), FakeRelations(), True, False)
+        self.assertIn("may move #124's dates", self.out.getvalue())
+
+    def test_a_remove_refused_part_way_names_the_rows_it_removed_and_a_rerun_finishes(self):
+        rows = [
+            {"issue_id": 104, "issue_to_id": 124, "relation_type": "relates"},
+            {"issue_id": 124, "issue_to_id": 104, "relation_type": "relates"},
+        ]
+        r = FakeRelations(rows, refuse_delete=2)
+        with self.assertRaisesRegex(Refused, "HTTP 403"):
+            issue_relations.run("104 relates 124".split(), r, False, True)
+        self.assertIn("removed 1 of 2 rows of #104 relates #124", self.out.getvalue())
+        r.refuse_delete = None
+        self.assertEqual(
+            issue_relations.run("104 relates 124".split(), r, False, True), "1 relation removed"
+        )
+        self.assertEqual(r.rels, {})
+
+    def test_an_issue_that_does_not_exist_is_named(self):
+        with self.assertRaisesRegex(Refused, "#999 doesn't exist"):
+            issue_relations.run("104 blocks 999".split(), FakeRelations(), False, False)
+
+    def test_parse_refuses_each_bad_relation(self):
+        for words, why in [
+            ("104 blocks", "three words"),
+            ("104 blocks x", "two issue numbers"),
+            ("104 block 124", "'block' isn't a type"),
+            ("104 blocks 104", "related to itself"),
+        ]:
+            with self.subTest(words), self.assertRaisesRegex(Refused, why):
+                issue_relations.parse(words.split())
+
+    def test_main_exits_non_zero_when_redmine_did_not_keep_a_relation(self):
+        with mock.patch.object(issue_relations, "Redmine", return_value=FakeRelations(keep=False)):
+            with self.assertRaises(SystemExit) as e:
+                issue_relations.main("104 blocks 124".split())
+        self.assertIn("didn't add #104 blocks #124", str(e.exception.code))
+
+    def test_main_names_a_typo_before_reading_the_keychain(self):
+        with mock.patch.object(issue_relations, "Redmine", side_effect=AssertionError):
+            with self.assertRaises(SystemExit) as e:
+                issue_relations.main("104 block 124".split())
+        self.assertIn("'block' isn't a type", str(e.exception.code))
+
+    def test_main_prints_what_it_did(self):
+        with mock.patch.object(issue_relations, "Redmine", return_value=FakeRelations()):
+            self.assertEqual(issue_relations.main("104 blocks 124".split()), 0)
+        self.assertIn("issue_relations: 1 relation added", self.out.getvalue())
+
+    def test_a_refusal_names_every_other_relation_between_the_pair(self):
+        r = FakeRelations(
+            [
+                {"issue_id": 104, "issue_to_id": 124, "relation_type": "blocks"},
+                {"issue_id": 124, "issue_to_id": 104, "relation_type": "precedes"},
+            ]
+        )
+        with self.assertRaisesRegex(
+            Refused,
+            "hold #104 blocks #124, #124 precedes #104; remove them first: "
+            "issue_relations --remove 104 blocks 124 124 precedes 104",
+        ):
+            issue_relations.run("104 relates 124".split(), r, False, False)
+
+    def test_removing_a_relation_not_there_from_a_pair_holding_another_is_refused(self):
+        r = FakeRelations([{"issue_id": 104, "issue_to_id": 124, "relation_type": "precedes"}])
+        with self.assertRaisesRegex(
+            Refused,
+            "hold #104 precedes #124, not #104 blocks #124; "
+            "to remove that: issue_relations --remove 104 precedes 124",
+        ):
+            issue_relations.run("115 relates 104 104 blocks 124".split(), r, False, True)
+        self.assertEqual(r.writes, [])
+
+    def test_removing_both_relations_of_a_pair_after_one_went_finishes(self):
+        r = FakeRelations([{"issue_id": 104, "issue_to_id": 124, "relation_type": "precedes"}])
+        said = issue_relations.run("104 blocks 124 104 precedes 124".split(), r, False, True)
+        self.assertEqual(said, "1 relation removed")
+        self.assertEqual(r.rels, {})
+
+    def test_a_refused_write_reads_back_the_writes_before_it(self):
+        r = FakeRelations(keep=False, refuse=107)
+        with self.assertRaisesRegex(
+            Refused, "circular dependency; and Redmine didn't add #104 blocks #124"
+        ):
+            issue_relations.run("104 blocks 124 124 blocks 107".split(), r, False, False)
+
+    def test_a_remove_refusal_names_only_what_the_run_does_not_remove(self):
+        r = FakeRelations(
+            [
+                {"issue_id": 104, "issue_to_id": 124, "relation_type": "blocks"},
+                {"issue_id": 104, "issue_to_id": 124, "relation_type": "relates"},
+            ]
+        )
+        with self.assertRaisesRegex(
+            Refused,
+            "hold #104 relates #124, not #124 precedes #104; "
+            "to remove that: issue_relations --remove 104 relates 124$",
+        ):
+            issue_relations.run("104 blocks 124 124 precedes 104".split(), r, False, True)
+        self.assertEqual(r.writes, [])
+
+    def test_a_read_back_that_fails_after_a_refusal_keeps_redmine_s_reason(self):
+        r = FakeRelations(refuse=107)
+        send = r.send
+
+        def failing(method, path, body=None):
+            if method == "GET" and r.writes and r.writes[-1][2]["relation"]["issue_to_id"] == 107:
+                raise Refused(f"Redmine GET {path}: HTTP 500", 500)
+            return send(method, path, body)
+
+        r.send = failing
+        with self.assertRaisesRegex(
+            Refused, "circular dependency; and reading back what was written failed: .*HTTP 500"
+        ):
+            issue_relations.run("104 blocks 124 124 blocks 107".split(), r, False, False)
+
+    def test_parse_refuses_an_issue_number_below_one(self):
+        for words in (
+            "104 blocks -1",
+            "0 blocks 124",
+            "1_04 blocks 124",
+            "+104 blocks 124",
+            "104 blocks ##124",
+            "104 blocks 0124",
+            "104 blocks \u0661\u0662",
+        ):
+            with self.subTest(words), self.assertRaisesRegex(Refused, "two issue numbers"):
+                issue_relations.parse(words.split())
 
 
 if __name__ == "__main__":

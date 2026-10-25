@@ -7,7 +7,7 @@ description: Work Redmine issues and their PRs the way Peter's repos expect. Iss
 
 Adapted from GitHub's `github-issues` skill ([github/awesome-copilot](https://github.com/github/awesome-copilot/tree/main/skills/github-issues), MIT), rewritten around Redmine issues and the outlines in `~/.claude/agents/technical-writer.md`.
 
-An issue is a Redmine issue, `#<n>`, its description in the issue outline. GitHub Issues are not used. The skill lives in gh-plan at `.claude/skills/gh-issues/`, and `~/.claude/skills/gh-issues` links to the main checkout's copy, so every repo uses the one skill. The scripts are stdlib Python and shell. Claude runs only the ones that read; every commit, push, `gh` write and Redmine write happens on a button in the GH Plan extension's Next up panel, or a `pr`, `new_issue`, `issue_body` or `redmine-set` a person runs.
+An issue is a Redmine issue, `#<n>`, its description in the issue outline. GitHub Issues are not used. The skill lives in gh-plan at `.claude/skills/gh-issues/`, and `~/.claude/skills/gh-issues` links to the main checkout's copy, so every repo uses the one skill. The scripts are stdlib Python and shell. Claude runs only the ones that read; every commit, push, `gh` write and Redmine write happens on a button in the GH Plan extension's Next up panel, or a `pr`, `new_issue`, `issue_body`, `redmine-set` or `issue_relations` a person runs.
 
 ## Rules
 
@@ -19,11 +19,11 @@ An issue is a Redmine issue, `#<n>`, its description in the issue outline. GitHu
 6. **PRs get a body file, never `--fill`.** `gh pr create --fill` copies the commit message into the PR, including the `Assisted-by:` trailer, and PR descriptions carry no attribution. Start from [references/pr-body.md](references/pr-body.md).
 7. **Look it up, don't guess.** If a gh flag isn't familiar, run `gh <cmd> --help` before saying it doesn't exist or flagging it unverified.
 8. **Quote `[]` in zsh.** `-f 'labels[]=bug'`, never bare: zsh treats `[]` as a glob and fails with "no matches found".
-9. **Every Redmine write is a committed command.** `new_issue` creates an issue and its relations, `issue_body` replaces a description once its diff is reviewed, and `redmine-set` makes every other change: an issue's status, version, subject, points or journal note, and a version's status or description, or a new version. Never generate Python for a Redmine write, neither `python3 -c` nor a `.tmp/*/update.py`; a change none of them makes is an issue for `redmine-set`. Run `redmine-set --check …`, which only reads, then hand over the same command without `--check`, adding the `--expect` it prints for a description. A change over many issues, such as a milestone move, is a shell script of `redmine-set` lines, reviewed before it runs.
+9. **Every Redmine write is a committed command.** `new_issue` creates an issue and its relations, `issue_relations` adds or removes relations between issues that exist, `issue_body` replaces a description once its diff is reviewed, and `redmine-set` makes every other change: an issue's status, version, subject, points or journal note, and a version's status or description, or a new version. Never generate Python for a Redmine write, neither `python3 -c` nor a `.tmp/*/update.py`; a change none of them makes is an issue for `redmine-set`. Run `redmine-set --check …` or `issue_relations --check …`, which only read, then hand over the same command without `--check`, adding the `--expect` it prints for a description. A change over many issues, such as a milestone move, is a shell script of `redmine-set` lines, reviewed before it runs.
 
 ## Aliases and commands
 
-`gh pc` and `gh pb` are gh aliases over `scripts/ghbody.sh`. Each takes an optional issue number and otherwise reads it from the branch name (`fix/88-go-requests-copilot-s-review` → `88`). `pr`, `new_issue`, `issue_body`, `redmine-set` and `redmine-get` are in `~/.local/bin/`.
+`gh pc` and `gh pb` are gh aliases over `scripts/ghbody.sh`. Each takes an optional issue number and otherwise reads it from the branch name (`fix/88-go-requests-copilot-s-review` → `88`). `pr`, `new_issue`, `issue_body`, `redmine-set`, `issue_relations` and `redmine-get` are in `~/.local/bin/`.
 
 | Command | Does |
 |---|---|
@@ -36,6 +36,7 @@ An issue is a Redmine issue, `#<n>`, its description in the issue outline. GitHu
 | `redmine-set issue N …` | Changes issue `N`: `--status NAME`, `--version NAME` or `--no-version`, `--subject`, `--points`, `--description FILE` with the `--expect` that `--check` prints, and `--note TEXT` for the journal. Checks every name against Redmine first, and refuses to reopen an issue in a closed version, naming `--no-version` and the version's reopen command |
 | `redmine-set version NAME …` | Changes a version in `plan` (`--project` picks another): `--status open\|locked\|closed`, `--description`; `--create` makes it, shared with the tree |
 | `redmine-set --check …` | Prints each change either command would make. Only reads |
+| `issue_relations [--check] [--remove] A TYPE B …` | Adds each relation that's missing, or with `--remove` removes each, and reads them back. `124 blocked_by 104` finds `104 blocks 124`; another relation between the same two issues is refused. `--check` only reads |
 
 `gh pc` and `gh pb` refuse a body containing `Assisted-by` or `Co-authored-by`. `GHBODY_DRY=1` prints the command instead.
 
