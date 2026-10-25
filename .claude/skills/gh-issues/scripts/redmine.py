@@ -148,6 +148,11 @@ def reasons(e: urllib.error.HTTPError) -> str:
     return ": " + "; ".join(str(m) for m in errors) if errors else ""
 
 
+# Seconds a Redmine call may wait for an answer: a container that takes the connection and never
+# answers fails the call, not the command that made it.
+TIMEOUT = 30
+
+
 class Redmine:
     def __init__(self):
         self.url = os.environ.get("REDMINE_URL", "http://127.0.0.1:3010").rstrip("/")
@@ -170,8 +175,10 @@ class Redmine:
             headers={"X-Redmine-API-Key": self.key, "Content-Type": "application/json"},
         )
         try:
-            with urllib.request.urlopen(req) as r:
+            with urllib.request.urlopen(req, timeout=TIMEOUT) as r:
                 raw = r.read()
+        except TimeoutError:
+            raise Refused(f"Redmine {method} {path}: no answer in {TIMEOUT}s") from None
         except urllib.error.HTTPError as e:
             raise Refused(f"Redmine {method} {path}: HTTP {e.code}{reasons(e)}", e.code) from None
         except urllib.error.URLError as e:

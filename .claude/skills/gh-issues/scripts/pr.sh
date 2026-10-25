@@ -18,6 +18,9 @@
 #           .tmp/N/pr-body.md, then opens the PR in the GitHub Pull Requests extension
 #   replies when .tmp/N/replies/ holds <comment id>.md files: posts each to its review thread,
 #           resolves the thread and deletes the file (pr_threads.py --post)
+#   review  when the push moved the branch and the repo has REVIEW.md: Claude reviews the branch's
+#           whole diff and writes .tmp/N/review/<commit>.json (review.py). One that fails is named,
+#           and pr still succeeds
 #
 # The issue's Done list is ticked in the PR body's ## Done section, never in Redmine: a
 # .tmp/N/issue.md left from before is named as no longer sent, and left where it is.
@@ -212,3 +215,16 @@ echo "$url"
 pr_path=${url#https://github.com/}
 git config "branch.$branch.github-pr-owner-number" "$(echo "$pr_path" | sed 's|/pull/|#|; s|/|#|')"
 open "vscode://github.vscode-pull-request-github/open-pull-request-webview?uri=$(python3 -c 'import sys, urllib.parse; print(urllib.parse.quote(sys.argv[1], safe=""))' "$url")"
+
+# The review of what this push brought (review.py), last, so a review that fails or runs long holds
+# up neither the PR nor the replies. Only a push that moved the branch, opening the PR included, has
+# a commit to review; it writes .tmp/N/review/<commit>.json and posts nothing.
+if [ "$(git rev-parse HEAD)" != "$pushed" ]; then
+  if [ ! -f REVIEW.md ]; then
+    echo "pr: no REVIEW.md, so no review"
+  elif ! python3 -c 'import sys; sys.exit(sys.version_info < (3, 10))'; then
+    echo "pr: python3 is older than 3.10, so no review" >&2
+  elif ! python3 "$scripts/review.py" "$n" --base "origin/$base"; then
+    echo "pr: the review didn't finish, so .tmp/$n/review/ has nothing for this commit; retry with: python3 $scripts/review.py $n --base origin/$base" >&2
+  fi
+fi

@@ -11,7 +11,6 @@ Fixes #<n>.
 
 - <Each command run, and its result: `npm test` in `vscode/`, `uv run pytest`, a manual run.>
 - <What has no test, and why.>
-- `/code-review high` ran on the branch's whole diff, review fixes included.
 
 ## Risk
 
