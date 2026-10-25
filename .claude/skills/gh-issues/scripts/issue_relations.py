@@ -96,10 +96,11 @@ def run(words: list[str], redmine, check_only: bool, remove: bool) -> str:
     for rel in wanted:
         others = sorted(h for h in have if pair(h) == pair(rel) and h != rel)
         held = ", ".join(show(h) for h in others)
-        if remove and rel not in have and not set(others) <= set(wanted):
+        unnamed = [h for h in others if h not in wanted]
+        if remove and rel not in have and unnamed:
             raise Refused(
-                f"#{rel[0]} and #{rel[2]} hold {held}, not {show(rel)}; to remove that: "
-                f"{command(True, others)}"
+                f"#{rel[0]} and #{rel[2]} hold {', '.join(show(h) for h in unnamed)}, "
+                f"not {show(rel)}; to remove that: {command(True, unnamed)}"
             )
         if others and not remove and rel not in have:
             raise Refused(
@@ -132,7 +133,10 @@ def run(words: list[str], redmine, check_only: bool, remove: bool) -> str:
             write(redmine, rel, have, remove)
             done.append(rel)
     except Refused as e:
-        wrong = unkept(done) if done else []
+        try:
+            wrong = unkept(done) if done else []
+        except Refused as read:
+            raise Refused(f"{e}; and reading back what was written failed: {read}") from None
         if wrong:
             raise Refused(
                 f"{e}; and Redmine didn't {verb} {', '.join(show(r) for r in wrong)}"

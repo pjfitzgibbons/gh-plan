@@ -19,7 +19,8 @@ closed version is refused before any write, as Redmine would refuse it.
 Each run prints the fields it changes, then reads the issue or version back and names any field
 Redmine didn't keep. A field already as asked is left alone, and a note that is already the issue's
 latest isn't added again, so a second run with the same arguments writes nothing and says so.
-Relations are new_issue's, and a change over many issues is a list of these lines in a script.
+Relations are new_issue's for an issue it creates and issue_relations' between issues that
+exist, and a change over many issues is a list of these lines in a script.
 
 Versions are looked up in --project, plan by default, whose versions are shared with its
 subprojects; --create makes one there with sharing: tree.

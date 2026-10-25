@@ -1957,6 +1957,36 @@ class IssueRelations(unittest.TestCase):
         ):
             issue_relations.run("104 blocks 124 124 blocks 107".split(), r, False, False)
 
+    def test_a_remove_refusal_names_only_what_the_run_does_not_remove(self):
+        r = FakeRelations(
+            [
+                {"issue_id": 104, "issue_to_id": 124, "relation_type": "blocks"},
+                {"issue_id": 104, "issue_to_id": 124, "relation_type": "relates"},
+            ]
+        )
+        with self.assertRaisesRegex(
+            Refused,
+            "hold #104 relates #124, not #124 precedes #104; "
+            "to remove that: issue_relations --remove 104 relates 124$",
+        ):
+            issue_relations.run("104 blocks 124 124 precedes 104".split(), r, False, True)
+        self.assertEqual(r.writes, [])
+
+    def test_a_read_back_that_fails_after_a_refusal_keeps_redmine_s_reason(self):
+        r = FakeRelations(refuse=107)
+        send = r.send
+
+        def failing(method, path, body=None):
+            if method == "GET" and r.writes and r.writes[-1][2]["relation"]["issue_to_id"] == 107:
+                raise Refused(f"Redmine GET {path}: HTTP 500", 500)
+            return send(method, path, body)
+
+        r.send = failing
+        with self.assertRaisesRegex(
+            Refused, "circular dependency; and reading back what was written failed: .*HTTP 500"
+        ):
+            issue_relations.run("104 blocks 124 124 blocks 107".split(), r, False, False)
+
     def test_parse_refuses_an_issue_number_below_one(self):
         for words in (
             "104 blocks -1",
