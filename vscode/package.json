@@ -58,13 +58,13 @@
         "plan.projectMarkers": {
           "type": "object",
           "additionalProperties": { "type": "string" },
-          "default": { "gh-plan": "Pl", "tempotag": "tt", "ms-security-docs": "ms" },
-          "description": "The short marker each row shows for its repo, by Redmine project identifier. A project not listed shows the first two letters of its identifier."
+          "default": { "plan": "Pl", "gh-plan": "Gh", "tempotag": "tt", "ms-security-docs": "ms" },
+          "description": "The short marker each row shows for its repo, by Redmine project identifier. A project not listed shows the first two letters of its identifier; plan and gh-plan are listed, as Pl and Gh, so the two read apart."
         },
         "plan.checkouts": {
           "type": "object",
           "additionalProperties": { "type": "string" },
-          "default": { "gh-plan": "~/programming/gh-plan", "tempotag": "~/programming/tempotag" },
+          "default": { "gh-plan": "~/programming/gh-plan", "tempotag": "~/programming/tempotag", "ulysses": "~/programming/redmine_ulysses", "glasswing": "~/programming/glasswing" },
           "description": "The main checkout of each repo, by Redmine project identifier. Start makes an issue's worktree beside it, in <repo>.worktrees/<n>."
         },
         "plan.disposable": {

@@ -858,6 +858,16 @@ class FakeTracker:
                     "trackers": [{"id": 1, "name": "Bug"}, {"id": 2, "name": "Feature"}],
                 }
             }
+        if path == "/projects/plan.json":
+            return {"project": {"id": 1}}
+        if path == "/projects.json":
+            listed = [
+                {"id": 1, "identifier": "plan"},
+                {"id": 2, "identifier": "gh-plan", "parent": {"id": 1}},
+                {"id": 3, "identifier": "tempotag", "parent": {"id": 1}},
+            ]
+            offset = int(dict(q.split("=") for q in query.split("&")).get("offset", 0))
+            return {"projects": listed[offset : offset + 2], "total_count": len(listed)}
         if path == "/projects/gh-plan/versions.json":
             return {"versions": [{"id": 2, "name": "Redmine migration"}]}
         if path == "/issue_statuses.json":
@@ -1002,6 +1012,19 @@ class NewIssue(unittest.TestCase):
             r = FakeTracker()
             with self.subTest(new), self.assertRaisesRegex(Refused, says):
                 self.run_it(r, self.HEAD.replace(old, new))
+            self.assertEqual(r.posts, [])
+
+    def test_a_parent_project_refuses_naming_its_children(self):
+        head = self.HEAD.replace("project: gh-plan", "project: plan")
+        for check_only in (True, False):
+            r = FakeTracker()
+            with (
+                self.subTest(check_only=check_only),
+                self.assertRaisesRegex(
+                    Refused, "^plan has no repository; file in one of gh-plan, tempotag$"
+                ),
+            ):
+                self.run_it(r, head, check_only)
             self.assertEqual(r.posts, [])
 
     def test_a_body_off_the_outline_refuses_before_any_write(self):

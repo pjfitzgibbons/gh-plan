@@ -6,7 +6,8 @@
 
 The front matter holds the fields, by the names Redmine shows:
 
-    project     the project's identifier, as gh-plan or tempotag
+    project     the project's identifier, as gh-plan or tempotag; never a parent, such as plan,
+                which has no repository
     tracker     Bug, Feature or Support, as the project has them
     subject     the title
     version     a version the project can use, by name; blank for none
@@ -85,9 +86,30 @@ def numbers(key: str, value: str) -> list[int]:
     return out
 
 
+def every(redmine, path: str, key: str) -> list[dict]:
+    """Every item a Redmine listing holds under key, each page of it."""
+    found, offset = [], 0
+    sep = "&" if "?" in path else "?"
+    while True:
+        page = redmine.send("GET", f"{path}{sep}limit=100&offset={offset}")
+        found += page[key]
+        offset += len(page[key])
+        if not page[key] or offset >= page["total_count"]:
+            return found
+
+
 def resolve(redmine, fields: dict[str, str]) -> tuple[dict, dict[str, list[int]]]:
     """The issue as Redmine's POST takes it, and the relations to add; Refused naming the first bad field."""
     project = redmine.send("GET", f"/projects/{fields['project']}.json?include=trackers")["project"]
+    children = [
+        p["identifier"]
+        for p in every(redmine, "/projects.json", "projects")
+        if p.get("parent", {}).get("id") == project["id"]
+    ]
+    if children:
+        raise Refused(
+            f"{fields['project']} has no repository; file in one of {', '.join(children)}"
+        )
     issue = {
         "project_id": project["id"],
         "subject": fields["subject"],
@@ -129,16 +151,10 @@ def resolve(redmine, fields: dict[str, str]) -> tuple[dict, dict[str, list[int]]
 
 def existing(redmine, project_id: int, subject: str) -> int | None:
     """The number of the project's one issue with this subject, open or closed; None if it has none."""
-    found, offset = [], 0
-    while True:
-        page = redmine.send(
-            "GET",
-            f"/issues.json?project_id={project_id}&status_id=*&subproject_id=!*&limit=100&offset={offset}",
-        )
-        found += [i["id"] for i in page["issues"] if i["subject"] == subject]
-        offset += len(page["issues"])
-        if not page["issues"] or offset >= page["total_count"]:
-            break
+    listed = every(
+        redmine, f"/issues.json?project_id={project_id}&status_id=*&subproject_id=!*", "issues"
+    )
+    found = [i["id"] for i in listed if i["subject"] == subject]
     if len(found) > 1:
         raise Refused(
             f"{', '.join(f'#{n}' for n in found)} all have this subject; give it a distinct one"

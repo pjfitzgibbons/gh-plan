@@ -13,7 +13,7 @@
 
 PARENT = { identifier: 'plan', name: 'Plan' }.freeze
 # identifier => name. Each repo's .git is mounted at /repos/<identifier>.git (compose.yml).
-REPOS = { 'gh-plan' => 'GH Plan', 'tempotag' => 'tempotag' }.freeze
+REPOS = { 'gh-plan' => 'GH Plan', 'tempotag' => 'tempotag', 'ulysses' => 'Ulysses', 'glasswing' => 'Glasswing' }.freeze
 # The milestones of each repo's .tracker/milestones/, as versions in the parent project:
 # name => description. Every one still has open items, so each is made open.
 VERSIONS = {
@@ -89,7 +89,7 @@ def project(identifier, name, parent)
   project = Project.find_or_initialize_by(identifier: identifier)
   project.name = name if project.new_record?
   project.parent_id = parent&.id
-  project.is_public = false
+  project.is_public = true
   save(project, "project #{identifier}")
   missing = MODULES - project.enabled_module_names
   unless missing.empty?
@@ -230,7 +230,7 @@ ActiveRecord::Base.transaction do
   setting :welcome_text, <<~MARKDOWN
     ## Plan
 
-    - [Plan project](/projects/#{parent.identifier}): #{REPOS.keys.join(' and ')}
+    - [Plan project](/projects/#{parent.identifier}): #{REPOS.keys.to_sentence}
     - [#{NEXT_UP}](/projects/#{parent.identifier}/issues?query_id=#{query.id}): open issues, Icebox left out, in Ordinal order
   MARKDOWN
 end

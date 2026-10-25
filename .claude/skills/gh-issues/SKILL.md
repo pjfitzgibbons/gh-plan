@@ -62,7 +62,7 @@ A revert is an issue of its own, started and shipped like any other. On its bran
 
 ## Drafting a new issue
 
-1. Copy `references/redmine-issue.md` to `.tmp/<n>/<slug>.md`, `<n>` being the issue whose work found it. Fill in the front matter by the names Redmine shows: `project`, `tracker` and `subject` are required. A blank field is left out. With no version, set `status: Icebox`. Name issues as numbers, `#79` or `79`, with commas between them in `blocked_by` and `relates`. Then write the body in the outline.
+1. Copy `references/redmine-issue.md` to `.tmp/<n>/<slug>.md`, `<n>` being the issue whose work found it. Fill in the front matter by the names Redmine shows: `project`, `tracker` and `subject` are required. `project` is a repo's project, such as `gh-plan`; `new_issue` refuses a parent project, such as `plan`, which has no repository, and names its children. A blank field is left out. With no version, set `status: Icebox`. Name issues as numbers, `#79` or `79`, with commas between them in `blocked_by` and `relates`. Then write the body in the outline.
 2. Check it, from inside the repo so the repo's lenses count. This only reads: it runs the outline check, looks up every name in Redmine and checks every value.
    ```
    new_issue --check .tmp/<n>/<slug>.md

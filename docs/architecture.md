@@ -83,9 +83,10 @@ USB drive ([`G2`](requirements.md); [`redmine/README.md`](../redmine/README.md),
 <a id="members"></a>
 ### 4.1 Projects and versions
 
-One Redmine holds the plan. The private parent project `plan` has one sub-project per repo,
-`gh-plan` and `tempotag`, each with the issue tracking, repository, Gantt, calendar, lane board and
-review findings modules, and each repo is registered as its project's Git repository. Milestones are versions in
+One Redmine holds the plan. The parent project `plan` has one sub-project per repo, `gh-plan`,
+`tempotag`, `ulysses` and `glasswing`, each with the issue tracking, repository, Gantt, calendar,
+lane board and review findings modules, and each repo is registered as its project's Git
+repository. Milestones are versions in
 `plan`, shared with its tree, so one version spans every repo ([`A1`, `A2`](requirements.md)).
 `redmine/setup.rb` makes all of this, and running it again changes nothing that already matches.
 
