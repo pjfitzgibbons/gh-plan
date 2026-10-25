@@ -23,7 +23,10 @@ It needs Docker, [uv](https://docs.astral.sh/uv/), Python 3.14 as `python3` on P
 scripts run on it, and `/usr/bin/python3` is too old), Node, the [`gh`](https://cli.github.com/)
 CLI signed in, and VS Code with Claude Code. Clone to `~/programming/gh-plan`: Redmine mounts that
 checkout's `.git` and Start looks for it there (`GH_PLAN_GIT` and `plan.checkouts` point
-elsewhere). On a Mac, from the root of that main checkout, never a worktree, which Done deletes:
+elsewhere). Redmine also mounts the `.git` of each other tracked repo, `~/programming/tempotag`,
+`~/programming/redmine_ulysses` and `~/programming/glasswing`: clone each there before starting
+Redmine, or point `TEMPOTAG_GIT`, `ULYSSES_GIT` and `GLASSWING_GIT` elsewhere. Docker makes a
+missing one an empty directory, and a later clone into it fails. On a Mac, from the root of that main checkout, never a worktree, which Done deletes:
 
 1. **Redmine:** start it, sign in and run the setup, as
    [`redmine/README.md`](redmine/README.md) says in *Starting and stopping* and *Running the

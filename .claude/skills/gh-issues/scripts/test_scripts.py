@@ -7,6 +7,7 @@ import subprocess
 import tempfile
 import unittest
 import urllib.error
+import urllib.parse
 from pathlib import Path
 from unittest import mock
 
@@ -866,7 +867,7 @@ class FakeTracker:
                 {"id": 2, "identifier": "gh-plan", "parent": {"id": 1}},
                 {"id": 3, "identifier": "tempotag", "parent": {"id": 1}},
             ]
-            offset = int(dict(q.split("=") for q in query.split("&")).get("offset", 0))
+            offset = int(urllib.parse.parse_qs(query).get("offset", ["0"])[0])
             return {"projects": listed[offset : offset + 2], "total_count": len(listed)}
         if path == "/projects/gh-plan/versions.json":
             return {"versions": [{"id": 2, "name": "Redmine migration"}]}

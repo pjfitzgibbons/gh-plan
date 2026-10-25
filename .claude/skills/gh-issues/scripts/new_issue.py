@@ -33,7 +33,7 @@ import sys
 from pathlib import Path
 
 import outline
-from redmine import Redmine, Refused, by_name, canonical, field_id, issue_fields, unkept
+from redmine import Redmine, Refused, by_name, canonical, every, field_id, issue_fields, unkept
 
 FIELDS = [
     "project",
@@ -84,18 +84,6 @@ def numbers(key: str, value: str) -> list[int]:
             raise Refused(f"{key}: {part!r} isn't an issue number")
         out.append(int(part))
     return out
-
-
-def every(redmine, path: str, key: str) -> list[dict]:
-    """Every item a Redmine listing holds under key, each page of it."""
-    found, offset = [], 0
-    sep = "&" if "?" in path else "?"
-    while True:
-        page = redmine.send("GET", f"{path}{sep}limit=100&offset={offset}")
-        found += page[key]
-        offset += len(page[key])
-        if not page[key] or offset >= page["total_count"]:
-            return found
 
 
 def resolve(redmine, fields: dict[str, str]) -> tuple[dict, dict[str, list[int]]]:
