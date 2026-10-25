@@ -3,7 +3,7 @@
 # checksum, and its assets are compiled here, so a recreated container keeps it.
 # An exact tag, the one place Redmine's version lives. Dependabot bumps patches; README, Upgrading,
 # has the checks a new tag needs, the lane board's among them.
-FROM redmine:7.0.2
+FROM redmine:7.0.2 AS live
 
 ADD --checksum=sha256:5e43d5cdd30cabe790e7702c9add093c8448bfe87862dc32490daf3dd76552c9 \
     https://github.com/gagnieray/opale/releases/download/1.7.2/opale-1.7.2.zip /tmp/opale.zip
@@ -19,3 +19,20 @@ RUN printf 'production:\n  adapter: sqlite3\n  database: /tmp/assets.db\n' > con
  && SECRET_KEY_BASE_DUMMY=1 RAILS_ENV=production bin/rails assets:precompile \
  && rm -f config/database.yml /tmp/assets.db \
  && chown -R redmine:redmine themes/opale public/assets
+
+# The plugins' tests (redmine/test_plugin), on a test database of their own. compose.yml builds
+# `target: live`, so the live image stops above and never has this stage's gems or compiler.
+# Redmine's image installs no test gems, and its Gemfile picks the database gems from
+# database.yml, so the file comes first.
+FROM live AS test
+ENV RAILS_ENV=test
+RUN printf 'test:\n  adapter: sqlite3\n  database: db/test.sqlite3\n' > config/database.yml \
+ && apt-get update \
+ && apt-get install -y --no-install-recommends build-essential \
+ && bundle config set --local without development \
+ && bundle install \
+ && rm -rf /var/lib/apt/lists/* \
+ && bin/rails db:migrate
+COPY test-plugin.sh /usr/local/bin/test-plugin
+RUN chmod 755 /usr/local/bin/test-plugin
+ENTRYPOINT ["test-plugin"]

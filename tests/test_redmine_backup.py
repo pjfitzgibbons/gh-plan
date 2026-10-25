@@ -21,6 +21,7 @@ _spec.loader.exec_module(backup)
 NOW = datetime.datetime(2026, 10, 20, 14, 30, 5)
 TODAY = NOW.date()
 ISSUES = {1: "first", 2: "second", 3: "third"}
+FINDINGS = {2: [{"fingerprint": "finding/v1:0000000000000001", "round": 1, "outcome": "fixed"}]}
 
 
 def _db(path: Path, issues: int) -> None:
@@ -67,6 +68,9 @@ class Fake:
             offset = int(path.rsplit("offset=", 1)[1])
             page = [{"id": n} for n in sorted(ISSUES)][offset : offset + 2]
             return {"issues": page, "total_count": len(ISSUES)}
+        if path.endswith("/review_findings.json"):
+            self.step("findings")
+            return {"review_findings": FINDINGS.get(int(path.split("/")[2]), [])}
         self.step("issue")
         n = int(path.split("/")[2].split(".")[0])
         return {"issue": {"id": n, "subject": ISSUES[n], "journals": []}}
@@ -100,6 +104,7 @@ def test_a_run_leaves_a_dated_backup_and_export(fake, volume, monkeypatch):
         assert db.execute("SELECT count(*) FROM issues").fetchone() == (3,)
     assert sorted(p.name for p in (day / "export" / "issues").iterdir()) == [
         "1.json",
+        "2-findings.json",
         "2.json",
         "3.json",
     ]
@@ -107,6 +112,9 @@ def test_a_run_leaves_a_dated_backup_and_export(fake, volume, monkeypatch):
         json.loads((day / "export" / "issues" / "2.json").read_text())["issue"]["subject"]
         == "second"
     )
+    assert json.loads((day / "export" / "issues" / "2-findings.json").read_text()) == {
+        "review_findings": FINDINGS[2]
+    }
     assert not list((volume / "redmine_backups").glob(".*.partial"))
     assert fake.alerts == []
 
@@ -177,7 +185,7 @@ def test_a_failed_again_leaves_no_timed_folder(fake, volume, monkeypatch):
     assert not list(root.glob(".*.partial"))
 
 
-@pytest.mark.parametrize("step", ["db", "tar", "list", "issue"])
+@pytest.mark.parametrize("step", ["db", "tar", "list", "issue", "findings"])
 def test_a_failed_step_leaves_no_dated_folder_and_the_next_run_finishes(
     fake, volume, monkeypatch, step
 ):

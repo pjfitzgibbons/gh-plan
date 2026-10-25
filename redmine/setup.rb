@@ -34,7 +34,9 @@ ICEBOX = 'Icebox'.freeze
 # read-only for each of them. This role has no members and no read-only rule, so the baselines
 # stay editable by the administrator alone.
 BASELINE_EDITOR = 'Baseline editor'.freeze
-MODULES = %w[issue_tracking repository gantt calendar lane_board].freeze
+MODULES = %w[issue_tracking repository gantt calendar lane_board review_findings].freeze
+# The roles that may record review findings; every role may view them.
+FINDINGS_MANAGERS = %w[Manager Developer].freeze
 # The theme the Dockerfile installs.
 THEME = 'opale'.freeze
 NEXT_UP = 'Next up'.freeze
@@ -102,8 +104,10 @@ def project(identifier, name, parent)
   project
 end
 
-abort 'setup: the lane_board plugin is not loaded; check the mount in compose.yml' unless
-  Redmine::Plugin.installed?(:lane_board)
+%i[lane_board review_findings].each do |plugin|
+  abort "setup: the #{plugin} plugin is not loaded; check the mount in compose.yml" unless
+    Redmine::Plugin.installed?(plugin)
+end
 
 ActiveRecord::Base.transaction do
   if Redmine::DefaultData::Loader.no_data?
@@ -180,11 +184,17 @@ ActiveRecord::Base.transaction do
   end
   note "made #{made} read-only rules for the baselines" if made.positive?
 
-  Role.givable.where.not(id: editor.id).each do |role|
-    next if role.has_permission?(:view_lane_board)
+  missing_managers = FINDINGS_MANAGERS - Role.givable.pluck(:name)
+  abort "setup: no role named #{missing_managers.join(', ')} to manage review findings" if missing_managers.any?
 
-    role.add_permission!(:view_lane_board)
-    note "gave #{role.name} view_lane_board"
+  Role.givable.where.not(id: editor.id).each do |role|
+    wanted = %i[view_lane_board view_review_findings]
+    wanted << :manage_review_findings if FINDINGS_MANAGERS.include?(role.name)
+    missing = wanted.reject { |permission| role.has_permission?(permission) }
+    next if missing.empty?
+
+    role.add_permission!(*missing)
+    note "gave #{role.name} #{missing.join(', ')}"
   end
 
   parent = project(PARENT[:identifier], PARENT[:name], nil)

@@ -7,7 +7,9 @@ services:
   redmine:
     # Redmine with the Opale theme. The Dockerfile pins both, and is the one place their versions
     # live, so Dependabot's bump of FROM is the whole change (README, Upgrading).
-    build: .
+    build:
+      context: .
+      target: live
     image: gh-plan-redmine:local
     restart: unless-stopped
     ports:
@@ -17,11 +19,15 @@ services:
       GIT_CONFIG_COUNT: "1"
       GIT_CONFIG_KEY_0: safe.directory
       GIT_CONFIG_VALUE_0: "*"
+      # The entrypoint runs the plugins' migrations on start only with this set, so a new
+      # container, an upgrade's among them, migrates review_findings with Redmine's own tables.
+      REDMINE_PLUGINS_MIGRATE: "1"
     volumes:
       # No REDMINE_DB_* variables, so the image falls back to SQLite at sqlite/redmine.db.
       - db:/usr/src/redmine/sqlite
       - files:/usr/src/redmine/files
       - ./plugins/lane_board:/usr/src/redmine/plugins/lane_board:ro
+      - ./plugins/review_findings:/usr/src/redmine/plugins/review_findings:ro
       - ./setup.rb:/setup/setup.rb:ro
       - ./import.rb:/setup/import.rb:ro
       - ./backfill.rb:/setup/backfill.rb:ro
