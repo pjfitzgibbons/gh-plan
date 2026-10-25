@@ -32,8 +32,8 @@
 
 GH Plan plans work across several repos in Redmine, which runs outside them
 ([ADR 0011](adr/0011-redmine-is-the-tracker.md)). The gh-plan repo is the setup around it:
-Redmine 7.0 in Docker with its projects, fields and workflow (`redmine/`), the lane board plugin,
-and a VS Code extension (`vscode/`) that starts, ships and finishes an issue from a panel. `pr`,
+Redmine 7.0 in Docker with its projects, fields and workflow (`redmine/`), the lane board and
+review findings plugins, and a VS Code extension (`vscode/`) that starts, ships and finishes an issue from a panel. `pr`,
 the gh-issues skill's script, commits, pushes and opens or updates the pull request. GitHub Issues
 is not used, and pull requests are the one GitHub integration.
 
@@ -84,8 +84,8 @@ USB drive ([`G2`](requirements.md); [`redmine/README.md`](../redmine/README.md),
 ### 4.1 Projects and versions
 
 One Redmine holds the plan. The private parent project `plan` has one sub-project per repo,
-`gh-plan` and `tempotag`, each with the issue tracking, repository, Gantt, calendar and lane board
-modules, and each repo is registered as its project's Git repository. Milestones are versions in
+`gh-plan` and `tempotag`, each with the issue tracking, repository, Gantt, calendar, lane board and
+review findings modules, and each repo is registered as its project's Git repository. Milestones are versions in
 `plan`, shared with its tree, so one version spans every repo ([`A1`, `A2`](requirements.md)).
 `redmine/setup.rb` makes all of this, and running it again changes nothing that already matches.
 
@@ -132,6 +132,11 @@ client of one of them:
 - **The setup scripts**, `setup.rb`, `import.rb` and `backfill.rb`, run inside the container with
   `rails runner`, on the database directly, so they need no API key.
 - **The lane board plugin** adds the Lanes tab. It only reads.
+- **The review findings plugin** stores each review round's findings and their outcomes in a
+  `review_findings` table, and serves them, with per-rule counts of real findings and noise, as
+  JSON ([design 0005 §3.1](design/0005-review-findings.md#schema)). It is the one plugin that
+  writes: an upsert per `PUT`, in one transaction, and a journal note for each change to a
+  confirmed row.
 - **`redmine-get`**, in `~/.local/bin/`, sends one GET with the Keychain key, so an agent can read
   issues without seeing the key.
 

@@ -1,18 +1,21 @@
 # Redmine
 
 The tracker of [ADR 0011](../docs/adr/0011-redmine-is-the-tracker.md): Redmine 7.0 in Docker on
-localhost, on SQLite, with the [lane board](plugins/lane_board/README.md) loaded. Run every
+localhost, on SQLite, with the [lane board](plugins/lane_board/README.md) and
+[review findings](plugins/review_findings/README.md) plugins loaded. Run every
 command here from the root of the gh-plan checkout.
 
 | File | Holds |
 |---|---|
 | `compose.yml` | The service: the built image, the port, the volumes and the mounts |
-| `Dockerfile` | The image: the pinned Redmine with the pinned Opale theme, its assets compiled |
+| `Dockerfile` | The image: the pinned Redmine with the pinned Opale theme, its assets compiled; and a `test` stage for the plugins' tests |
 | `backup.py` | The nightly backup and export to the USB drive (*Backup and export*) |
 | `setup.rb` | The projects, fields, status, workflow, settings, repositories and versions |
 | `import.rb` | The one-time import of each repo's `.tracker/` items |
 | `backfill.rb` | The one-time backfill of each imported issue's commits, pull requests and status history |
 | `plugins/lane_board/` | The lane board plugin, mounted read-only |
+| `plugins/review_findings/` | The review findings plugin, mounted read-only; the container migrates it on start |
+| `test_plugin`, `test-plugin.sh` | A plugin's tests, in the `test` stage (*Testing a plugin*) |
 
 ## Starting and stopping
 
@@ -54,6 +57,7 @@ the USB drive (*Backup and export*).
 | `redmine.db` | The database, copied through SQLite's online backup API while Redmine runs, and integrity-checked |
 | `files.tar` | The attachments volume |
 | `export/issues/<n>.json` | Each issue as the REST API gives it, with its journal, relations, children, attachments, commits and custom fields |
+| `export/issues/<n>-findings.json` | Each issue's review findings, as the review findings plugin's API gives them, for an issue that has any |
 
 The drive holds every issue body, unencrypted. The job only reads Redmine: the database through
 `docker compose exec`, the issues by GET with the key in `redmine-gh-plan`. It writes only to the
@@ -138,7 +142,7 @@ A run without `SYS_API_KEY` leaves the web service as it is.
 What it sets up:
 
 - A private parent project `plan`, with sub-projects `gh-plan` and `tempotag`, each with the
-  lane board, Gantt and repository modules.
+  lane board, review findings, Gantt and repository modules.
 - The default trackers, statuses, roles and workflows, on an empty database.
 - An `Icebox` status, open, with the transitions of New in each workflow, so it opens no route a
   role lacks. The lane board leaves it out.
@@ -149,6 +153,8 @@ What it sets up:
 - The baselines read-only, by workflow, for every role. A `Baseline editor` role, with no members,
   keeps them editable by the administrator, who holds every role in workflow checks.
 - **View lane board** for every role.
+- The review findings module in each project, **View review findings** for every role, and
+  **Manage review findings** for Manager and Developer.
 - The REST API, cross-project relations and cross-project commit references switched on.
 - `refs` as the commit keyword that links an issue, and `fixes` as the one that closes it.
 - With `SYS_API_KEY`, the repository web service, switched on with that key.
@@ -218,7 +224,9 @@ Build and `up` only from the checkout on `main`. Every checkout shares one compo
 one `:local` tag, so a worktree's `up -d --build` replaces the live Redmine with its branch's
 `Dockerfile`, and a later `up -d` from `main` keeps running that image.
 
-1. Read the Redmine changelog for every release between the two tags.
+1. Read the Redmine changelog for every release between the two tags, and run
+   `redmine/test_plugin review_findings` on the PR's branch. It builds only the `test` stage's
+   tag, so it leaves the live image alone.
 2. Change `FROM` in the `Dockerfile` to the new tag. Pin an exact tag such as `7.0.3`, never
    `7.0`. A new Opale release changes the `ADD` line's URL and checksum (`shasum -a 256` of the
    zip).
@@ -231,7 +239,9 @@ one `:local` tag, so a worktree's `up -d --build` replaces the live Redmine with
      python3 redmine/backup.py --again
    ```
 4. `docker compose -f redmine/compose.yml up -d --build`. The image migrates the database on start.
-5. Check that *Administration › Plugins* still lists the lane board, and its tab still loads.
+5. Check that *Administration › Plugins* still lists the lane board and review findings, that the
+   lane board's tab still loads, and that
+   `redmine-get /projects/plan/review_findings/rules.json` answers.
 6. Re-run the setup, which should print `nothing to change`.
 
 If step 5 or 6 fails, roll back at once: the restore loses every change made since step 3's
@@ -244,6 +254,18 @@ that runs, and adds `versions: ["<the failed tag>"]` to the `redmine` entry in
 Anything that recreates the container signs everyone out: an upgrade, `down` then `up`, or a
 change to `compose.yml`. The session secret is generated inside the container, so a new
 container makes a new one.
+
+## Testing a plugin
+
+```
+redmine/test_plugin review_findings
+```
+
+It builds the `Dockerfile`'s last stage, `test`, as `gh-plan-redmine:test`: the `live` stage
+with Redmine's test gems and a migrated test database. Then it runs the plugin's migration up,
+down to `VERSION=0` and up again, and its tests, in a container of its own with the plugin mounted
+read-only. `compose.yml` builds `target: live`, so the live image never has the test stage's
+gems or compiler. It is safe to run from a worktree.
 
 ## Commits and closing
 

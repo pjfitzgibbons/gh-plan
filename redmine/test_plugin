@@ -1,0 +1,12 @@
+#!/bin/sh
+# Runs a plugin's tests in Redmine's test stage, from the root of the gh-plan checkout:
+#   redmine/test_plugin review_findings
+# Builds the Dockerfile's test stage as gh-plan-redmine:test and runs it with the plugin mounted
+# read-only, in a container of its own: the live Redmine and its image are left as they are.
+set -eu
+name="${1:?usage: redmine/test_plugin <plugin>}"
+dir="$(cd "$(dirname "$0")" && pwd)"
+[ -d "$dir/plugins/$name" ] || { echo "test_plugin: no plugin $name in $dir/plugins" >&2; exit 1; }
+# Runs the image by the ID this build printed, not the tag, which another checkout's build may move.
+image="$(docker build -q --target test -t gh-plan-redmine:test "$dir")"
+docker run --rm -v "$dir/plugins/$name:/usr/src/redmine/plugins/$name:ro" "$image" "$name"

@@ -11,6 +11,8 @@ Each run writes one dated folder, <drive>/redmine_backups/<YYYY-MM-DD>/:
     files.tar       the attachments volume
     export/issues/<id>.json
                     every issue with its journal, relations and custom fields, from the REST API
+    export/issues/<id>-findings.json
+                    each issue's review findings, from the review_findings plugin, when it has any
 
 It builds the folder as .<date>.partial and renames it when complete, so a failed run leaves no
 dated folder and the next run starts again. --again writes a folder of its own beside today's,
@@ -168,7 +170,8 @@ def get(path: str, key: str) -> dict:
 
 
 def export(dest: Path, key: str) -> set[int]:
-    """Write each issue to dest/<id>.json, and return their IDs."""
+    """Write each issue to dest/<id>.json, and its review findings, if any, to
+    dest/<id>-findings.json. Returns the issues' IDs."""
     ids: list[int] = []
     while True:
         page = get(f"/issues.json?status_id=*&sort=id&limit=100&offset={len(ids)}", key)
@@ -178,10 +181,15 @@ def export(dest: Path, key: str) -> set[int]:
     dest.mkdir(parents=True)
     for n in ids:
         issue = get(f"/issues/{n}.json?include={INCLUDE}", key)
-        (dest / f"{n}.json").write_text(
-            json.dumps(issue, indent=2, ensure_ascii=False) + "\n", encoding="utf-8"
-        )
+        write(dest / f"{n}.json", issue)
+        findings = get(f"/issues/{n}/review_findings.json", key)
+        if findings["review_findings"]:
+            write(dest / f"{n}-findings.json", findings)
     return set(ids)
+
+
+def write(path: Path, data: dict) -> None:
+    path.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
 
 
 def prune(root: Path, keep: int, made: str) -> list[str]:
