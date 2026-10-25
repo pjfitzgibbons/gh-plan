@@ -167,7 +167,7 @@ test("L8: Go runs Next up's Go on the issue's PR body; once armed, the button is
   assert.deepEqual(panels[0].posts.map((m) => m.busy), [true, false]);
   arm(true);
   reports.armedChanged();
-  assert.deepEqual(panels[0].posts.at(-1), { type: "state", ship: true, busy: false });
+  assert.deepEqual(panels[0].posts.at(-1), { type: "state", ship: true, busy: false, doing: "go" });
   await reports.receive(review, { type: "ship", shown: review.shown });
   assert.deepEqual(ran.at(-1), ["plan.runPr"]);
 });
@@ -239,4 +239,68 @@ test("L1: a link from the report opens only what linkTarget allows; any other me
   await reports.receive(review, { type: "link", href: "commit.txt" });
   await reports.receive(review, { type: "link", href: "https://github.com/o/r/pull/1" });
   assert.deepEqual(ran, [["vscode.open", path.join(dir, "commit.txt")], ["workbench.action.browser.open", "https://github.com/o/r/pull/1"]]);
+});
+
+test("L3: a report Go never saw disarms Ship, even in a new tab; the same report reopened doesn't", () => {
+  const { file, panels, said, reports, write, arm } = fixture();
+  write("<p>round 1</p>");
+  arm(true);
+  // Go pressed from the title bar, then the report written: its first tab shows Go.
+  const review = reports.show(file);
+  assert.equal(review.ship, false);
+  assert.match(said.at(-1)[1], /changed since Go/);
+  arm(true);
+  panels[0].dispose();
+  const again = reports.show(file);
+  assert.equal(again.ship, true, "a closed tab reopened on the report Go saw keeps Ship");
+});
+
+test("L3: a stale Ship click says once to press Go", async () => {
+  const { file, ran, said, reports, write, arm } = fixture();
+  write("<p>round 1</p>");
+  const review = reports.show(file);
+  arm(true);
+  const shown = review.shown;
+  write("<p>round 2</p>");
+  await reports.receive(review, { type: "ship", shown });
+  assert.deepEqual(ran, []);
+  assert.equal(said.length, 1);
+  assert.match(said[0][1], /press Go again/);
+  assert.equal(review.ship, false);
+});
+
+test("while Go or Ship runs, the tab is told which one", async () => {
+  const { file, panels, reports, write, arm } = fixture();
+  write("<p>round 1</p>");
+  const review = reports.show(file);
+  arm(true);
+  reports.armedChanged();
+  await reports.receive(review, { type: "ship", shown: review.shown });
+  assert.deepEqual(panels[0].posts.at(-2), { type: "state", ship: true, busy: true, doing: "ship" });
+  assert.match(reportPage({ ...PAGE, busy: true, doing: "ship", html: "" }), /data-doing="ship"/);
+  assert.match(reportPage({ ...PAGE, html: "" }), /data-doing="go"/);
+});
+
+test("a click on a report since deleted runs nothing and says it's gone; a report gone mid-read shows nothing", async () => {
+  const { file, ran, said, reports, write, host } = fixture();
+  write("<p>round 1</p>");
+  const review = reports.show(file);
+  fs.unlinkSync(file);
+  await reports.receive(review, { type: "go", shown: review.shown });
+  assert.deepEqual(ran, []);
+  assert.deepEqual(said, [["error", "Plan: #110's report is gone; nothing ran."]]);
+  write("<p>round 2</p>");
+  host.read = () => {
+    throw new Error("ENOENT");
+  };
+  assert.equal(reports.show(file), null);
+});
+
+test("the round's other files opening bring an open report back in front", () => {
+  const { file, panels, reports, write } = fixture();
+  reports.reveal(file);
+  write("<p>round 1</p>");
+  reports.show(file);
+  reports.reveal(file);
+  assert.equal(panels[0].revealed, 1);
 });

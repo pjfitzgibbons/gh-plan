@@ -29,8 +29,8 @@ const escape = (text) =>
 // nothing in the report runs. allow-same-origin, without scripts, only lets the page's script lend
 // the frame VS Code's theme and catch its link clicks. shown is the render's stamp, which a click
 // sends back so it never acts on a report other than the one on screen; busy, while its Go or Ship
-// runs, keeps the button off across a refresh.
-function reportPage({ id, html, round, written, shown, ship, busy, nonce, cspSource, css, js }) {
+// runs, keeps the button off across a refresh, and doing names which one.
+function reportPage({ id, html, round, written, shown, ship, busy, doing, nonce, cspSource, css, js }) {
   const label = `Review #${id}${round ? ` · round ${round}` : ""} · written ${written}`;
   return `<!doctype html>
 <html lang="en">
@@ -40,7 +40,7 @@ function reportPage({ id, html, round, written, shown, ship, busy, nonce, cspSou
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <link rel="stylesheet" href="${css}">
 </head>
-<body data-shown="${escape(shown)}" data-ship="${ship ? "1" : ""}" data-busy="${busy ? "1" : ""}" data-id="${id}">
+<body data-shown="${escape(shown)}" data-ship="${ship ? "1" : ""}" data-busy="${busy ? "1" : ""}" data-doing="${doing === "ship" ? "ship" : "go"}" data-id="${id}">
 <header role="toolbar" aria-label="Review #${id}">
 <span id="label">${escape(label)}</span>
 <span id="hint"></span>
@@ -78,6 +78,9 @@ class Reports {
   constructor(host) {
     this.host = host;
     this.panels = new Map();
+    // Each report's stamp when last shown, kept after its tab closes, so a report Go never saw
+    // disarms Ship even when it opens a new tab.
+    this.seen = new Map();
   }
 
   // Shows the report at file in its issue's tab: brings the tab to the front with the report as it
@@ -89,25 +92,38 @@ class Reports {
     // click is refused and the tab shows the file again, never the other way round.
     const shown = this.host.stamp(file);
     if (shown === null) return null;
-    const html = this.host.read(file);
+    let html;
+    try {
+      html = this.host.read(file);
+    } catch {
+      return null;
+    }
     let review = this.panels.get(file);
     if (review) {
       review.panel.reveal();
     } else {
-      review = { ...issue, file, busy: false };
+      review = { ...issue, file, busy: false, doing: null };
       review.panel = this.host.open(review);
       this.panels.set(file, review);
       review.panel.onDispose(() => this.panels.get(file) === review && this.panels.delete(file));
     }
     // A new report is a new round to review: a Ship that Go armed for the last one waits for Go.
-    if (this.host.armed(review) && review.shown !== undefined && review.shown !== shown) {
+    const disarms = this.host.armed(review) && this.seen.get(file) !== shown;
+    if (disarms) {
       this.host.disarm();
       this.host.say("warning", `Plan: #${review.id}'s report changed since Go; press Go again to ship it.`);
     }
+    this.seen.set(file, shown);
+    review.disarmed = disarms;
     review.shown = shown;
     review.ship = this.host.armed(review);
     review.panel.setHtml(this.host.render(review, html));
     return review;
+  }
+
+  // Brings file's tab, if it has one, back in front of the round's other files.
+  reveal(file) {
+    this.panels.get(file)?.panel.reveal();
   }
 
   // Tells every tab whether its button is Go or Ship, after Go arms Ship or Ship ends.
@@ -117,7 +133,7 @@ class Reports {
 
   state(review) {
     review.ship = this.host.armed(review);
-    review.panel.post({ type: "state", ship: review.ship, busy: review.busy });
+    review.panel.post({ type: "state", ship: review.ship, busy: review.busy, doing: review.doing });
   }
 
   // A message from review's page. Only the button's go or ship, and a link's href, are taken from
@@ -131,9 +147,18 @@ class Reports {
     }
     if (message?.type !== "go" && message?.type !== "ship") return;
     if (review.busy) return;
-    if (message.shown !== review.shown || this.host.stamp(review.file) !== review.shown) {
-      this.host.say("warning", `Plan: #${review.id}'s report changed; it's shown again. Press ${message.type === "go" ? "Go" : "Ship"} once you've read it.`);
+    const now = this.host.stamp(review.file);
+    if (now === null) {
+      this.host.say("error", `Plan: #${review.id}'s report is gone; nothing ran.`);
+      this.state(review);
+      return;
+    }
+    if (message.shown !== review.shown || now !== review.shown) {
+      // show() says so itself when the change disarms Ship.
       if (!this.show(review.file)) this.state(review);
+      else if (!review.disarmed) {
+        this.host.say("warning", `Plan: #${review.id}'s report changed; it's shown again. Press ${review.ship ? "Ship" : "Go"} once you've read it.`);
+      }
       return;
     }
     if (message.type === "ship" && !this.host.armed(review)) {
@@ -142,6 +167,7 @@ class Reports {
       return;
     }
     review.busy = true;
+    review.doing = message.type;
     this.state(review);
     try {
       // The Next up commands themselves, so Go checks the round's files and Ship refuses any changed

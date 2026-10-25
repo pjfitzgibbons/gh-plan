@@ -32,6 +32,8 @@ settings: what this repo needs is here or in `.claude/`.
 - **Review findings:** weigh severity, visibility and frequency. Fix silent failures that lose
   work, files, commits or the tracker's state, and hard crashes, even rare ones. A rare warning or
   a clean error-stop can stay.
+- **Before Go:** `/code-review low` on the uncommitted changes, once `scripts/assess` passes, to
+  catch the major issues before they're committed.
 - **A review round:** `/code-review high` on each commit Ship pushes, once that commit's `assess`
   check passes, on the branch's whole diff, review fixes included. Claude answers it in
   `.tmp/<n>/report.html`, which opens as the `Review #<n>` tab with Go and Ship, and the PR body

@@ -25,7 +25,7 @@ A review fix re-reads the whole table. Five of PR #110's findings came from fixe
 
 Only a silent failure needs a fix or an *Open* row. That means one that leaves no trace and loses work, files, commits or the tracker's state. A refusal or an error the user sees is already handled.
 
-Before each push, `/code-review high` runs on the branch's whole diff, review fixes included, and the PR body says it ran.
+Before Go, `/code-review low` runs on the uncommitted changes. Each commit Ship pushes then gets a review round, `/code-review high` on the branch's whole diff once its `assess` check passes, and the PR body says it ran.
 
 ## Redmine drops a status it won't allow
 

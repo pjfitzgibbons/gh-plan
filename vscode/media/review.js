@@ -8,22 +8,26 @@
   const hint = document.getElementById("hint");
   const frame = document.getElementById("report");
   const id = body.dataset.id;
-  const state = { ship: body.dataset.ship === "1", busy: body.dataset.busy === "1" };
+  const state = { ship: body.dataset.ship === "1", busy: body.dataset.busy === "1", doing: body.dataset.doing };
 
+  // While Go or Ship runs, the button names the one running: Ship disarms before pr starts, and Go
+  // arms before it stages.
   function draw() {
-    button.textContent = state.ship ? "Ship" : "Go";
+    const ship = state.busy ? state.doing === "ship" : state.ship;
+    button.textContent = ship ? "Ship" : "Go";
     button.disabled = state.busy;
     button.setAttribute("aria-busy", String(state.busy));
     hint.textContent = state.busy
-      ? state.ship ? `pr ${id} is running` : "Checking and staging"
-      : state.ship ? `Runs pr ${id}` : "Checks the round's files and opens the staged changes";
+      ? ship ? `pr ${id} is running` : "Checking and staging"
+      : ship ? `Runs pr ${id}` : "Checks the round's files and opens the staged changes";
   }
 
   button.addEventListener("click", () => {
     if (state.busy) return;
     state.busy = true;
+    state.doing = state.ship ? "ship" : "go";
     draw();
-    vscode.postMessage({ type: state.ship ? "ship" : "go", shown: body.dataset.shown });
+    vscode.postMessage({ type: state.doing, shown: body.dataset.shown });
   });
 
   window.addEventListener("message", (event) => {
@@ -31,6 +35,7 @@
     if (message?.type !== "state") return;
     state.ship = Boolean(message.ship);
     state.busy = Boolean(message.busy);
+    if (message.doing) state.doing = message.doing;
     draw();
   });
 
@@ -44,11 +49,21 @@ a:focus-visible { outline: 1px solid var(--vscode-focusBorder); }
 code, pre { font-family: var(--vscode-editor-font-family); }
 pre { background: var(--vscode-textCodeBlock-background); padding: 8px; overflow: auto; }`;
 
+  // Only the theme's variables and classes are copied, and the last copy's removed, so the report's
+  // own style and class on its root stay.
+  let lent = { props: [], classes: [] };
   function theme() {
     const doc = frame.contentDocument;
     if (!doc?.documentElement) return;
-    doc.documentElement.setAttribute("style", document.documentElement.getAttribute("style") || "");
-    doc.documentElement.className = body.className;
+    const root = doc.documentElement;
+    const from = document.documentElement.style;
+    const props = Array.from(from).filter((name) => name.startsWith("--"));
+    const classes = Array.from(body.classList);
+    for (const name of lent.props) if (!props.includes(name)) root.style.removeProperty(name);
+    for (const name of props) root.style.setProperty(name, from.getPropertyValue(name));
+    root.classList.remove(...lent.classes.filter((name) => !classes.includes(name)));
+    root.classList.add(...classes);
+    lent = { props, classes };
     if (!doc.getElementById("plan-theme")) {
       const style = doc.createElement("style");
       style.id = "plan-theme";
@@ -64,10 +79,24 @@ pre { background: var(--vscode-textCodeBlock-background); padding: 8px; overflow
     doc.planDressed = true;
     theme();
     doc.addEventListener("click", (event) => {
-      const link = event.target.closest?.("a[href]");
-      if (!link) return;
+      const link = event.target.closest?.("a, area");
+      const href = link && (link.getAttribute("href") ?? link.getAttributeNS("http://www.w3.org/1999/xlink", "href"));
+      if (href === null || href === undefined) return;
       event.preventDefault();
-      vscode.postMessage({ type: "link", href: link.getAttribute("href") });
+      // A srcdoc frame resolves #id against this page's address, so an in-report link is scrolled
+      // here rather than followed.
+      if (href.startsWith("#")) {
+        let target;
+        try {
+          target = doc.getElementById(decodeURIComponent(href.slice(1)));
+        } catch {
+          target = doc.getElementById(href.slice(1));
+        }
+        if (target) target.scrollIntoView();
+        else if (href === "#" || href === "#top") doc.scrollingElement?.scrollTo(0, 0);
+        return;
+      }
+      vscode.postMessage({ type: "link", href });
     });
   }
 

@@ -273,6 +273,8 @@ async function openHandover(dir) {
   for (const file of [...missing.filter((file) => file !== body), body]) {
     await vscode.window.showTextDocument(vscode.Uri.file(file), { viewColumn: 1, preview: false });
   }
+  // The round's report, when its tab opened first, goes back in front: it's read before the files.
+  reports?.reveal(path.join(dir, "report.html"));
 }
 
 // openFolder only focuses a window already open on the worktree, so that window watches for its
@@ -312,7 +314,7 @@ function reviewHost(media) {
   return {
     stamp,
     read: (file) => fs.readFileSync(file, "utf8"),
-    exists: (file) => Boolean(fs.statSync(file, { throwIfNoEntry: false })?.isFile()),
+    exists: (file) => stamp(file) !== null,
     armed: (review) => Boolean(armed && armed.root === review.root && armed.id === review.id),
     disarm: () => arm(null),
     say: (level, text) => say[level](text),
@@ -349,6 +351,7 @@ function reviewHost(media) {
         shown: review.shown,
         ship: review.ship,
         busy: review.busy,
+        doing: review.doing,
         nonce: crypto.randomBytes(16).toString("base64"),
         cspSource: webview.cspSource,
         css: webview.asWebviewUri(vscode.Uri.joinPath(media, "review.css")),
@@ -394,10 +397,11 @@ async function prepare(uri, staged = false) {
   const { root, id } = review;
   // Every file pr may send, replies included, so it never sends what's on disk while
   // an edit waits unsaved in its tab. A tab whose file pr already sent and deleted isn't saved, or
-  // the next pr would send it again.
+  // the next pr would send it again. The round's report isn't sent, and a save of it would be a new
+  // report, which disarms the Ship this Go arms.
   const round = path.join(root, ".tmp", String(id)) + path.sep;
   for (const doc of vscode.workspace.textDocuments) {
-    if (doc.isDirty && doc.uri.fsPath.startsWith(round) && fs.existsSync(doc.uri.fsPath)) await doc.save();
+    if (doc.isDirty && doc.uri.fsPath.startsWith(round) && !reportFile(doc.uri.fsPath) && fs.existsSync(doc.uri.fsPath)) await doc.save();
   }
   // Go stages, and pr commits, what's on disk: an edit still unsaved in a tab would be left out.
   const unsaved = vscode.workspace.textDocuments
