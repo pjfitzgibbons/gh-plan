@@ -23,11 +23,15 @@ goes only in a request header. REDMINE_URL defaults to http://127.0.0.1:3010.
 """
 
 import argparse
+import functools
 import sys
 
 from redmine import FORWARD, REVERSE, Redmine, Refused, canonical, fetch
 
 Rel = tuple[int, str, int]
+
+# Flushed, so each write is on screen as it lands even when stdout is a pipe.
+say = functools.partial(print, flush=True)
 
 
 def pair(rel: Rel) -> frozenset:
@@ -45,6 +49,8 @@ def parse(words: list[str], remove: bool = False) -> list[Rel]:
             a, b = int(a.lstrip("#")), int(b.lstrip("#"))
         except ValueError:
             raise Refused(f"'{words[i]} {kind} {words[i + 2]}' needs two issue numbers") from None
+        if a < 1 or b < 1:
+            raise Refused(f"'{words[i]} {kind} {words[i + 2]}' needs two issue numbers")
         if kind not in FORWARD and kind not in REVERSE:
             raise Refused(f"'{kind}' isn't a type; use one of {', '.join(FORWARD + list(REVERSE))}")
         if a == b:
@@ -89,24 +95,29 @@ def run(words: list[str], redmine, check_only: bool, remove: bool) -> str:
 
     todo = []
     for rel in wanted:
-        other = next((h for h in have if pair(h) == pair(rel) and h != rel), None)
-        if other and not remove and rel not in have:
+        others = sorted(h for h in have if pair(h) == pair(rel) and h != rel)
+        held = ", ".join(show(h) for h in others)
+        if others and not remove and rel not in have:
             raise Refused(
-                f"#{rel[0]} and #{rel[2]} already hold {show(other)}; remove it first: "
-                f"{command(True, [other])}"
+                f"#{rel[0]} and #{rel[2]} already hold {held}; "
+                f"remove {'it' if len(others) == 1 else 'them'} first: "
+                f"{command(True, others)}"
             )
         if (rel in have) == remove:
             todo.append(rel)
-        else:
-            print(
-                f"issue_relations: {show(rel)} {'is not there' if remove else 'is already there'}"
+        elif remove:
+            say(
+                f"issue_relations: {show(rel)} is not there"
+                + (f"; they hold {held}" if others else "")
             )
+        else:
+            say(f"issue_relations: {show(rel)} is already there")
     verb = "remove" if remove else "add"
     if check_only:
         for rel in todo:
-            print(f"issue_relations: would {verb} {show(rel)}")
+            say(f"issue_relations: would {verb} {show(rel)}")
             if rel[1] == "precedes" and not remove:
-                print(f"issue_relations: Redmine may move #{rel[2]}'s dates to follow #{rel[0]}'s")
+                say(f"issue_relations: Redmine may move #{rel[2]}'s dates to follow #{rel[0]}'s")
         return f"{len(todo)} to {verb}" + (f"; to write: {command(remove, todo)}" if todo else "")
 
     # Each write is printed as it lands, so a run refused part way shows what it changed, and
@@ -120,7 +131,7 @@ def run(words: list[str], redmine, check_only: bool, remove: bool) -> str:
                     redmine.send("DELETE", f"/relations/{rid}.json")
                 except Refused:
                     if i:
-                        print(f"issue_relations: removed {i} of {len(rows)} rows of {show(rel)}")
+                        say(f"issue_relations: removed {i} of {len(rows)} rows of {show(rel)}")
                     raise
         else:
             redmine.send(
@@ -128,9 +139,9 @@ def run(words: list[str], redmine, check_only: bool, remove: bool) -> str:
                 f"/issues/{a}/relations.json",
                 {"relation": {"issue_to_id": b, "relation_type": kind}},
             )
-        print(f"issue_relations: {'removed' if remove else 'added'} {show(rel)}")
+        say(f"issue_relations: {'removed' if remove else 'added'} {show(rel)}")
         if kind == "precedes" and not remove:
-            print(f"issue_relations: Redmine may have moved #{b}'s dates to follow #{a}'s")
+            say(f"issue_relations: Redmine may have moved #{b}'s dates to follow #{a}'s")
     # Redmine lists a relation on both its issues, so one end reads it back.
     back = relations(redmine, {a for a, _, _ in todo})
     wrong = [rel for rel in todo if (rel in back) == remove]
@@ -151,7 +162,7 @@ def main(argv=None) -> int:
     a = p.parse_args(argv)
     try:
         parse(a.relation, a.remove)  # a typo is named before the Keychain is read
-        print(f"issue_relations: {run(a.relation, Redmine(), a.check, a.remove)}")
+        say(f"issue_relations: {run(a.relation, Redmine(), a.check, a.remove)}")
     except Refused as e:
         sys.exit(f"issue_relations: {e}")
     return 0

@@ -1920,6 +1920,33 @@ class IssueRelations(unittest.TestCase):
             self.assertEqual(issue_relations.main("104 blocks 124".split()), 0)
         self.assertIn("issue_relations: 1 relation added", self.out.getvalue())
 
+    def test_a_refusal_names_every_other_relation_between_the_pair(self):
+        r = FakeRelations(
+            [
+                {"issue_id": 104, "issue_to_id": 124, "relation_type": "blocks"},
+                {"issue_id": 124, "issue_to_id": 104, "relation_type": "precedes"},
+            ]
+        )
+        with self.assertRaisesRegex(
+            Refused,
+            "hold #104 blocks #124, #124 precedes #104; remove them first: "
+            "issue_relations --remove 104 blocks 124 124 precedes 104",
+        ):
+            issue_relations.run("104 relates 124".split(), r, False, False)
+
+    def test_removing_a_relation_not_there_names_the_one_that_is(self):
+        r = FakeRelations([{"issue_id": 104, "issue_to_id": 124, "relation_type": "precedes"}])
+        said = issue_relations.run("104 blocks 124".split(), r, False, True)
+        self.assertEqual(said, "0 relations removed")
+        self.assertIn(
+            "#104 blocks #124 is not there; they hold #104 precedes #124", self.out.getvalue()
+        )
+
+    def test_parse_refuses_an_issue_number_below_one(self):
+        for words in ("104 blocks -1", "0 blocks 124"):
+            with self.subTest(words), self.assertRaisesRegex(Refused, "two issue numbers"):
+                issue_relations.parse(words.split())
+
 
 if __name__ == "__main__":
     unittest.main()
