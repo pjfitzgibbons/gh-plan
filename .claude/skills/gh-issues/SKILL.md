@@ -5,6 +5,18 @@ description: Work Redmine issues and their PRs the way gh-plan expects. Issues a
 
 # gh issues
 
+## Contents
+
+- [Rules](#rules)
+- [Aliases and commands](#aliases-and-commands)
+- [Picking up an issue](#picking-up-an-issue)
+- [Shipping](#shipping)
+- [Reverting a PR](#reverting-a-pr)
+- [Drafting a new issue](#drafting-a-new-issue)
+- [Answering a PR review](#answering-a-pr-review)
+- [Ticking the issue's Done list](#ticking-the-issues-done-list)
+- [Tests](#tests)
+
 Adapted from GitHub's `github-issues` skill ([github/awesome-copilot](https://github.com/github/awesome-copilot/tree/main/skills/github-issues), MIT), rewritten around Redmine issues and the outlines in `~/.claude/agents/technical-writer.md`.
 
 An issue is a Redmine issue, `#<n>`, its description in the issue outline. GitHub Issues are not used. The skill lives in gh-plan at `.claude/skills/gh-issues/`, and `~/.claude/skills/gh-issues` links to the main checkout's copy, so every repo uses the one skill. The scripts are stdlib Python and shell. Claude runs only the ones that read; every commit, push, `gh` write and Redmine write happens on a button in the GH Plan extension's Next up panel, or a `pr`, `new_issue`, `issue_body`, `redmine-set` or `issue_relations` a person runs.
