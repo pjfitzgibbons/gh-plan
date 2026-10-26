@@ -7,6 +7,7 @@ import subprocess
 import tempfile
 import unittest
 import urllib.error
+import urllib.parse
 from pathlib import Path
 from unittest import mock
 
@@ -22,7 +23,7 @@ from pr_threads import (
     read_reply_dir,
     write_drafts,
 )
-from redmine import Refused, reasons, unkept
+from redmine import Refused, every, reasons, unkept
 
 GLOBAL = "| L1 Security | q |\n| L2 Privacy and data | q |\n"
 REPO = "| L11 Invariants | q |\n- **Sections:** the global ones, then `### Notes`.\n"
@@ -830,6 +831,12 @@ class FakeTracker:
         self.issues = {79: {"id": 79, "subject": "Older", "relations": []}}
         self.posts = []
         self.drop_status = drop_status
+        # gh-plan on the second page, so its match needs every page.
+        self.projects = [
+            {"id": 1, "identifier": "plan", "homepage": ""},
+            {"id": 3, "identifier": "tempotag", "homepage": "https://github.com/example/tempotag"},
+            {"id": 2, "identifier": "gh-plan", "homepage": "https://github.com/example/gh-plan"},
+        ]
 
     def send(self, method, path, body=None):
         path, _, query = path.partition("?")
@@ -857,6 +864,12 @@ class FakeTracker:
                     "id": 2,
                     "trackers": [{"id": 1, "name": "Bug"}, {"id": 2, "name": "Feature"}],
                 }
+            }
+        if path == "/projects.json":
+            offset = int(urllib.parse.parse_qs(query).get("offset", ["0"])[0])
+            return {
+                "projects": self.projects[offset : offset + 2],
+                "total_count": len(self.projects),
             }
         if path == "/projects/gh-plan/versions.json":
             return {"versions": [{"id": 2, "name": "Redmine migration"}]}
@@ -905,7 +918,7 @@ class FakeTracker:
 class NewIssue(unittest.TestCase):
     """new_issue.py: every name checked before a write, a second run makes nothing new, and a dropped field is named."""
 
-    HEAD = "---\nproject: gh-plan\ntracker: Feature\nsubject: Retire it\nversion: Redmine migration\nstatus: Icebox\npoints: 3\nlane: infra\nordinal: 350\nparent:\nrelates: #79\n---\n\n"
+    HEAD = "---\ntracker: Feature\nsubject: Retire it\nversion: Redmine migration\nstatus: Icebox\npoints: 3\nlane: infra\nordinal: 350\nparent:\nrelates: #79\n---\n\n"
 
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
@@ -915,14 +928,17 @@ class NewIssue(unittest.TestCase):
     def tearDown(self):
         self.tmp.cleanup()
 
-    def run_it(self, redmine, head=None, check_only=False):
+    ORIGIN = "https://github.com/example/gh-plan.git"
+
+    def run_it(self, redmine, head=None, check_only=False, origin=ORIGIN):
         self.file.write_text((head or self.HEAD) + GOOD)
-        return new_issue.run(self.file, redmine, check_only, self.lenses, self.extra)
+        return new_issue.run(self.file, redmine, check_only, self.lenses, self.extra, origin)
 
     def test_creates_relates_and_reads_back(self):
         r = FakeTracker()
         self.assertEqual(
-            self.run_it(r), "#80 created, 1 relation added: http://redmine.test/issues/80"
+            self.run_it(r),
+            "#80 created in gh-plan, 1 relation added: http://redmine.test/issues/80",
         )
         issue = r.posts[0][1]["issue"]
         self.assertEqual(
@@ -952,12 +968,14 @@ class NewIssue(unittest.TestCase):
         r = FakeTracker()
         self.run_it(r)
         self.assertEqual(
-            self.run_it(r), "#80 already there, 0 relations added: http://redmine.test/issues/80"
+            self.run_it(r),
+            "#80 already there in gh-plan, 0 relations added: http://redmine.test/issues/80",
         )
         self.assertEqual(len(r.posts), 2)
         r.issues[80]["relations"] = []
         self.assertEqual(
-            self.run_it(r), "#80 already there, 1 relation added: http://redmine.test/issues/80"
+            self.run_it(r),
+            "#80 already there in gh-plan, 1 relation added: http://redmine.test/issues/80",
         )
 
     def test_check_writes_nothing(self):
@@ -982,7 +1000,7 @@ class NewIssue(unittest.TestCase):
         ]
         self.assertEqual(
             self.run_it(r, head),
-            "#80 already there, 0 relations added: http://redmine.test/issues/80",
+            "#80 already there in gh-plan, 0 relations added: http://redmine.test/issues/80",
         )
 
     def test_bad_fields_refuse_before_any_write(self):
@@ -997,18 +1015,93 @@ class NewIssue(unittest.TestCase):
             ("relates: #79", "relates: next", "isn't an issue number"),
             ("parent:", "parent: 79, 80", "one issue number"),
             ("subject: Retire it", "subject:", "subject is blank"),
-            ("ordinal: 350", "estimate: 3", "isn't one of project"),
+            ("ordinal: 350", "estimate: 3", "isn't one of tracker"),
+            ("tracker: Feature", "project: gh-plan\ntracker: Feature", "comes from the repo"),
         ]:
             r = FakeTracker()
             with self.subTest(new), self.assertRaisesRegex(Refused, says):
                 self.run_it(r, self.HEAD.replace(old, new))
             self.assertEqual(r.posts, [])
 
+    def test_the_project_is_the_one_whose_homepage_is_the_origin(self):
+        for origin in (
+            self.ORIGIN,
+            "git@github.com:Example/gh-plan.git",
+            "ssh://git@github.com/example/gh-plan.git",
+            "https://x-access-token:secret@github.com/example/gh-plan/",
+            "https://user:p@ss@github.com/example/gh-plan.git",
+            "git://github.com/example/gh-plan.git",
+        ):
+            r = FakeTracker()
+            with self.subTest(origin):
+                self.run_it(r, origin=origin)
+                self.assertEqual(r.posts[0][1]["issue"]["project_id"], 2)
+
+    def test_no_checkout_or_no_matching_project_refuses_before_any_write(self):
+        for origin, says in [
+            (None, "^run new_issue inside the checkout of the repo the issue is for$"),
+            (
+                "https://github.com/example/plan.git",
+                "^no project has github.com/example/plan as its homepage",
+            ),
+        ]:
+            for check_only in (True, False):
+                r = FakeTracker()
+                with (
+                    self.subTest(origin=origin, check_only=check_only),
+                    self.assertRaisesRegex(Refused, says),
+                ):
+                    self.run_it(r, check_only=check_only, origin=origin)
+                self.assertEqual(r.posts, [])
+
+    def test_a_token_in_any_hosts_origin_is_never_printed(self):
+        for origin, shown in [
+            ("https://oauth2:secret@gitlab.example/x/y.git", "https://gitlab.example/x/y"),
+            ("git@gitlab.example:x/y.git", "gitlab.example:x/y"),
+        ]:
+            with self.subTest(origin), self.assertRaises(Refused) as refused:
+                self.run_it(FakeTracker(), origin=origin)
+            self.assertIn(f"no project has {shown} as its homepage", str(refused.exception))
+            self.assertNotIn("secret", str(refused.exception))
+
+    def test_two_projects_with_the_origin_as_homepage_refuse_before_any_write(self):
+        r = FakeTracker()
+        r.projects[0]["homepage"] = "git@github.com:example/gh-plan.git"
+        with self.assertRaisesRegex(
+            Refused, "^plan, gh-plan all have github.com/example/gh-plan as their homepage"
+        ):
+            self.run_it(r)
+        self.assertEqual(r.posts, [])
+
+    def test_origin_is_none_outside_a_checkout_or_with_no_origin(self):
+        url = "https://github.com/example/gh-plan.git"
+        with tempfile.TemporaryDirectory() as d:
+            ceiling = {"GIT_CEILING_DIRECTORIES": str(Path(d).resolve().parent)}
+            old = Path.cwd()
+            os.chdir(d)
+            try:
+                with mock.patch.dict(os.environ, ceiling):
+                    self.assertIsNone(new_issue.origin())
+                    subprocess.run(["git", "init", "-q"], check=True)
+                    self.assertIsNone(new_issue.origin())
+                    subprocess.run(["git", "remote", "add", "origin", url], check=True)
+                    self.assertEqual(new_issue.origin(), url)
+            finally:
+                os.chdir(old)
+
+    def test_a_draft_that_isnt_there_stops_before_redmine_is_read(self):
+        with (
+            mock.patch.object(new_issue, "Redmine") as redmine,
+            self.assertRaisesRegex(SystemExit, "no such file here; give the draft's full path"),
+        ):
+            new_issue.main([str(self.file) + ".missing"])
+        redmine.assert_not_called()
+
     def test_a_body_off_the_outline_refuses_before_any_write(self):
         r = FakeTracker()
         self.file.write_text(self.HEAD + "### Task\nDo it.\n")
         with self.assertRaisesRegex(Refused, "missing section: ### Done"):
-            new_issue.run(self.file, r, False, self.lenses, self.extra)
+            new_issue.run(self.file, r, False, self.lenses, self.extra, self.ORIGIN)
         self.assertEqual(r.posts, [])
 
     def test_a_status_redmine_dropped_is_named(self):
@@ -1633,6 +1726,36 @@ class RedmineErrors(unittest.TestCase):
         for body in (b"", b"<html>", b"{}", b'{"errors": []}'):
             with self.subTest(body):
                 self.assertEqual(reasons(self.error(body)), "")
+
+
+class Every(unittest.TestCase):
+    """redmine.every: each page of a listing, its query kept."""
+
+    class Pages:
+        def __init__(self, items, total=True):
+            self.items, self.total, self.paths = items, total, []
+
+        def send(self, method, path, body=None):
+            self.paths.append(path)
+            q = urllib.parse.parse_qs(path.partition("?")[2])
+            offset, limit = int(q["offset"][0]), int(q["limit"][0])
+            page = {"issues": self.items[offset : offset + min(limit, 2)]}
+            if self.total:
+                page["total_count"] = len(self.items)
+            return page
+
+    def test_pages_a_path_with_a_query(self):
+        r = self.Pages([{"id": n} for n in range(1, 6)])
+        self.assertEqual(
+            [i["id"] for i in every(r, "/issues.json?sort=id", "issues")], [1, 2, 3, 4, 5]
+        )
+        self.assertEqual(r.paths[0], "/issues.json?sort=id&limit=100&offset=0")
+        self.assertEqual(r.paths[-1], "/issues.json?sort=id&limit=100&offset=4")
+
+    def test_a_path_without_a_query_and_a_listing_without_a_count(self):
+        r = self.Pages([{"id": 1}, {"id": 2}, {"id": 3}], total=False)
+        self.assertEqual(every(r, "/issues.json", "issues"), [{"id": 1}, {"id": 2}])
+        self.assertEqual(r.paths, ["/issues.json?limit=100&offset=0"])
 
 
 class ReadBack(unittest.TestCase):

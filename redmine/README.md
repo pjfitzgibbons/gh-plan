@@ -30,8 +30,10 @@ Redmine is at <http://127.0.0.1:3010>, bound to localhost only. `REDMINE_PORT` p
 port. The first sign-in is `admin` / `admin`, and Redmine makes you change the password at once.
 Nothing in the repo holds the new password or any API key.
 
-Each tracked repo's `.git` is mounted read-only, from `$HOME/programming/gh-plan/.git` and
-`$HOME/programming/tempotag/.git`. `GH_PLAN_GIT` and `TEMPOTAG_GIT` point them elsewhere. Mount a
+Each tracked repo's `.git` is mounted read-only, from `$HOME/programming/gh-plan/.git`,
+`$HOME/programming/tempotag/.git`, `$HOME/programming/redmine_ulysses/.git` and
+`$HOME/programming/glasswing/.git`. `GH_PLAN_GIT`, `TEMPOTAG_GIT`, `ULYSSES_GIT` and
+`GLASSWING_GIT` point them elsewhere. Mount a
 checkout's `.git` directory, not a worktree: a worktree's `.git` is a file naming a path on the
 Mac, which the container can't follow.
 
@@ -141,8 +143,11 @@ A run without `SYS_API_KEY` leaves the web service as it is.
 
 What it sets up:
 
-- A private parent project `plan`, with sub-projects `gh-plan` and `tempotag`, each with the
-  lane board, review findings, Gantt and repository modules.
+- A public parent project `plan`, with sub-projects `gh-plan`, `tempotag`, `ulysses` and
+  `glasswing`, each with the lane board, review findings, Gantt and repository modules.
+- Each sub-project's homepage is its repository's `origin` URL, read from the mount, so `new_issue`
+  knows the project from the checkout it runs in. A mount with no `origin` leaves the homepage as
+  it is, with a warning.
 - The default trackers, statuses, roles and workflows, on an empty database.
 - An `Icebox` status, open, with the transitions of New in each workflow, so it opens no route a
   role lacks. The lane board leaves it out.

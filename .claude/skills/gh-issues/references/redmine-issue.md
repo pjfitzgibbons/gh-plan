@@ -1,5 +1,4 @@
 ---
-project: gh-plan
 tracker: Feature
 subject: An imperative outcome, with no estimate in it
 version: Redmine migration

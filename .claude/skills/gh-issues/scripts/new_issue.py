@@ -4,9 +4,10 @@
     new_issue.py .tmp/79/retire-src.md            # create it, relate it, read it back
     new_issue.py --check .tmp/79/retire-src.md    # every check, reads only, nothing written
 
-The front matter holds the fields, by the names Redmine shows:
+Run it inside the checkout of the repo the issue is for. The project is the one whose homepage is
+that checkout's origin, as redmine/setup.rb sets it; outside a checkout, or for a repo no project
+names, it refuses. The front matter holds the other fields, by the names Redmine shows:
 
-    project     the project's identifier, as gh-plan or tempotag
     tracker     Bug, Feature or Support, as the project has them
     subject     the title
     version     a version the project can use, by name; blank for none
@@ -28,14 +29,14 @@ goes only in a request header. REDMINE_URL defaults to http://127.0.0.1:3010.
 
 import argparse
 import re
+import subprocess
 import sys
 from pathlib import Path
 
 import outline
-from redmine import Redmine, Refused, by_name, canonical, field_id, issue_fields, unkept
+from redmine import Redmine, Refused, by_name, canonical, every, field_id, issue_fields, unkept
 
 FIELDS = [
-    "project",
     "tracker",
     "subject",
     "version",
@@ -63,13 +64,17 @@ def parse(text: str) -> tuple[dict[str, str], str]:
             continue
         key, sep, value = line.partition(":")
         key = key.strip()
+        if key == "project":
+            raise Refused(
+                f"line {n}: the project comes from the repo new_issue runs in; delete the line"
+            )
         if not sep or key not in FIELDS:
             raise Refused(f"line {n}: {line!r} isn't one of {', '.join(FIELDS)}")
         if key in fields:
             raise Refused(f"line {n}: {key} is given twice")
         if value.strip():
             fields[key] = value.strip()
-    for key in ("project", "tracker", "subject"):
+    for key in ("tracker", "subject"):
         if key not in fields:
             raise Refused(f"{key} is blank")
     return fields, m[2].strip() + "\n"
@@ -85,16 +90,45 @@ def numbers(key: str, value: str) -> list[int]:
     return out
 
 
-def resolve(redmine, fields: dict[str, str]) -> tuple[dict, dict[str, list[int]]]:
+def github(url: str) -> str:
+    """A GitHub URL or remote, as github.com/<owner>/<repo>, so SSH and HTTPS forms compare equal.
+
+    Any user or token before the host is dropped, whatever the host, so none is matched on or printed.
+    """
+    url = url.strip().lower().rstrip("/").removesuffix(".git")
+    url = re.sub(r"^([a-z][a-z0-9+.-]*://)?[^/]*@", r"\1", url)
+    return re.sub(r"^([a-z][a-z0-9+.-]*://)?github\.com[:/]", "github.com/", url)
+
+
+def project_of(redmine, origin: str | None) -> str:
+    """The identifier of the project whose homepage is origin; Refused outside a checkout or for no match."""
+    if not origin:
+        raise Refused("run new_issue inside the checkout of the repo the issue is for")
+    origin = github(origin)
+    found = [
+        p["identifier"]
+        for p in every(redmine, "/projects.json", "projects")
+        if p.get("homepage") and github(p["homepage"]) == origin
+    ]
+    if not found:
+        raise Refused(
+            f"no project has {origin} as its homepage; redmine/setup.rb sets it for each repo in REPOS"
+        )
+    if len(found) > 1:
+        raise Refused(f"{', '.join(found)} all have {origin} as their homepage; give it to one")
+    return found[0]
+
+
+def resolve(redmine, fields: dict[str, str], identifier: str) -> tuple[dict, dict[str, list[int]]]:
     """The issue as Redmine's POST takes it, and the relations to add; Refused naming the first bad field."""
-    project = redmine.send("GET", f"/projects/{fields['project']}.json?include=trackers")["project"]
+    project = redmine.send("GET", f"/projects/{identifier}.json?include=trackers")["project"]
     issue = {
         "project_id": project["id"],
         "subject": fields["subject"],
         "tracker_id": by_name(project["trackers"], fields["tracker"], "tracker")["id"],
     }
     if "version" in fields:
-        versions = redmine.send("GET", f"/projects/{fields['project']}/versions.json")["versions"]
+        versions = redmine.send("GET", f"/projects/{identifier}/versions.json")["versions"]
         issue["fixed_version_id"] = by_name(versions, fields["version"], "version")["id"]
     statuses = redmine.send("GET", "/issue_statuses.json")["issue_statuses"]
     issue["status_id"] = by_name(statuses, fields.get("status", "New"), "status")["id"]
@@ -155,17 +189,20 @@ def kind(key: str) -> str:
     return "blocked" if key == "blocked_by" else "relates"
 
 
-def run(file: Path, redmine, check_only: bool, lenses: list[str], extra: list[str]) -> str:
+def run(
+    file: Path, redmine, check_only: bool, lenses: list[str], extra: list[str], origin: str | None
+) -> str:
     fields, body = parse(file.read_text(encoding="utf-8"))
     findings = outline.check(body, lenses, extra)
     if findings:
         raise Refused(
             "the body doesn't conform to the outline:\n" + "\n".join(f"  - {f}" for f in findings)
         )
-    issue, relations = resolve(redmine, fields)
+    project = project_of(redmine, origin)
+    issue, relations = resolve(redmine, fields, project)
     n = existing(redmine, issue["project_id"], issue["subject"])
     if check_only:
-        return f"{file} is ready: {'#' + str(n) + ' exists, and a run adds only its missing relations' if n else 'a run creates it'}"
+        return f"{file} is ready for {project}: {'#' + str(n) + ' exists, and a run adds only its missing relations' if n else 'a run creates it'}"
 
     if n is None:
         n = redmine.send("POST", "/issues.json", {"issue": {**issue, "description": body}})[
@@ -204,7 +241,20 @@ def run(file: Path, redmine, check_only: bool, lenses: list[str], extra: list[st
             f"#{n} was already there, and differs from the file in: {', '.join(lost)}; edit it in Redmine"
         )
     url = redmine.url + f"/issues/{n}"
-    return f"#{n} {made}, {added} relation{'s' if added != 1 else ''} added: {url}"
+    return f"#{n} {made} in {project}, {added} relation{'s' if added != 1 else ''} added: {url}"
+
+
+def origin() -> str | None:
+    """The origin remote of the checkout new_issue runs in; None outside one, or with no origin.
+
+    The raw remote.origin.url, as setup.rb reads it, so no insteadOf rewrite makes them differ.
+    """
+    url = subprocess.run(
+        ["git", "config", "--get", "remote.origin.url"], capture_output=True, text=True
+    )
+    if url.returncode != 0:
+        return None
+    return url.stdout.strip() or None
 
 
 def main(argv=None) -> int:
@@ -216,9 +266,11 @@ def main(argv=None) -> int:
     )
     p.add_argument("file", type=Path, help="a filled-in copy of references/redmine-issue.md")
     a = p.parse_args(argv)
+    if not a.file.is_file():
+        sys.exit(f"new_issue: {a.file}: no such file here; give the draft's full path")
     lenses, extra = outline.load_expected()
     try:
-        print(f"new_issue: {run(a.file, Redmine(), a.check, lenses, extra)}")
+        print(f"new_issue: {run(a.file, Redmine(), a.check, lenses, extra, origin())}")
     except Refused as e:
         sys.exit(f"new_issue: {a.file}: {e}")
     return 0

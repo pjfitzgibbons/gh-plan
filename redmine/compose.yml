@@ -34,6 +34,8 @@ services:
       # Each tracked repo's .git, read-only. setup.rb registers each as its project's repository.
       - ${GH_PLAN_GIT:-${HOME}/programming/gh-plan/.git}:/repos/gh-plan.git:ro
       - ${TEMPOTAG_GIT:-${HOME}/programming/tempotag/.git}:/repos/tempotag.git:ro
+      - ${ULYSSES_GIT:-${HOME}/programming/redmine_ulysses/.git}:/repos/ulysses.git:ro
+      - ${GLASSWING_GIT:-${HOME}/programming/glasswing/.git}:/repos/glasswing.git:ro
 
 volumes:
   db:

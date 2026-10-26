@@ -1,6 +1,6 @@
 ---
 name: gh-issues
-description: Work Redmine issues and their PRs the way Peter's repos expect. Issues are Redmine's (`#<n>` at http://127.0.0.1:3010, gh-plan ADR 0011); GitHub Issues are not used, and PRs are the one GitHub integration. Use when picking up, drafting or checking an issue, when writing a commit message or PR body, and when answering a PR review. Triggers on "work on #<n>", "pick up #<n>", "draft an issue", "create the ticket", "check the outline", "open the PR", "reply to the review".
+description: Work Redmine issues and their PRs the way gh-plan expects. Issues are Redmine's (`#<n>` at http://127.0.0.1:3010, gh-plan ADR 0011); GitHub Issues are not used, and PRs are the one GitHub integration. Use when picking up, drafting or checking an issue, when writing a commit message or PR body, and when answering a PR review. Triggers on "work on #<n>", "pick up #<n>", "draft an issue", "create the ticket", "check the outline", "open the PR", "reply to the review".
 ---
 
 # gh issues
@@ -12,7 +12,7 @@ An issue is a Redmine issue, `#<n>`, its description in the issue outline. GitHu
 ## Rules
 
 1. **Read the issue before you write about it.** `redmine-get /issues/<n>.json`, or `?include=journals` for its history. Never write an issue's description from memory.
-2. **Peter presses the buttons.** Claude writes the files in `.tmp/<n>/` (the commit message, the PR body with its Done list ticked, review replies) for Peter to review; Ship sends them with `pr`. Never `git commit`, `git push`, `gh pr create` or a Redmine write on Claude's own.
+2. **A person presses the buttons.** Claude writes the files in `.tmp/<n>/` (the commit message, the PR body with its Done list ticked, review replies) for a person to review; Ship sends them with `pr`. Never `git commit`, `git push`, `gh pr create` or a Redmine write on Claude's own.
 3. **Branches are `<type>/<n>-<slug>`**, `feat/`, `fix/` or `chore/`, off the default branch. Start makes the branch and its worktree. Everything reaches the default branch by PR.
 4. **The first commit's subject is the PR's title**, and ends `(fixes #<n>)` when the PR finishes issue `<n>`, `(refs #<n>)` only when it does part of it. `gh pc` titles the PR with the branch's first commit subject, the squash merge keeps it, and Redmine closes the issue when it next fetches that commit. The PR body always opens with the same, `Fixes #<n>.` or `Refs #<n>.`, on its own line. The first commit's message says what the issue asks for and how this commit does it. When the work is split across PRs on purpose, it says only this PR's part. Every commit message, this one and a later round's, is terse: about ten lines, subject and trailer included, as guidance rather than a limit; a line or two over is fine, and more when the commit's detail needs it. The PR body holds the detail.
 5. **A later round's commit describes only what it changes.** Its subject and body name what the round fixes, such as the review findings it answers or a check that failed, and never restate the PR's whole change or tell how earlier rounds led to it: what was found, and how it's fixed. Write it from the round's diff, `git diff` before Go, not from the issue.
@@ -42,19 +42,19 @@ An issue is a Redmine issue, `#<n>`, its description in the issue outline. GitHu
 
 ## Picking up an issue
 
-Peter presses **Start** on the issue's row in Next up. It makes the branch and its worktree, sets the issue In Progress, and opens the worktree in a new window with Claude Code beside it. Then, before any code:
+A person presses **Start** on the issue's row in Next up. It makes the branch and its worktree, sets the issue In Progress, and opens the worktree in a new window with Claude Code beside it. Then, before any code:
 
 1. **Read the issue**, with `redmine-get /issues/<n>.json`.
 2. **Check its description** against the issue outline, Task, Guardrails, Lenses and Done, plus whatever the repo's `docs/agents/technical-writer.md` adds. Save the description to a file and run, from inside the repo so it finds that file:
    ```
    python3 ~/.claude/skills/gh-issues/scripts/outline.py <file>
    ```
-   Done must be at least two pass/fail checkboxes, each `[x]` lens needs a Done condition that names it (`- [ ] L6: …`), and no Done line is ticked. If the description doesn't conform, write the rewrite to `.tmp/<n>/issue-<n>-body.md`, the description alone, and run `issue_body --check <n> .tmp/<n>/issue-<n>-body.md`, which only reads: the outline check and the diff. Then give Peter the `issue_body --expect …` command it prints; it writes the description and nothing else, refuses if the description changed since the check, and reads it back. The same goes for an issue the work changes. An issue in the old outline (Summary, Scope, Acceptance, Tests, Lenses) is rewritten now: Summary and Scope become Task, out-of-scope lines become Guardrails, Lenses stays, and Acceptance and Tests become Done's conditions.
+   Done must be at least two pass/fail checkboxes, each `[x]` lens needs a Done condition that names it (`- [ ] L6: …`), and no Done line is ticked. If the description doesn't conform, write the rewrite to `.tmp/<n>/issue-<n>-body.md`, the description alone, and run `issue_body --check <n> .tmp/<n>/issue-<n>-body.md`, which only reads: the outline check and the diff. Then hand over the `issue_body --expect …` command it prints; it writes the description and nothing else, refuses if the description changed since the check, and reads it back. The same goes for an issue the work changes. An issue in the old outline (Summary, Scope, Acceptance, Tests, Lenses) is rewritten now: Summary and Scope become Task, out-of-scope lines become Guardrails, Lenses stays, and Acceptance and Tests become Done's conditions.
 3. **Code once the description conforms.**
 
 ## Shipping
 
-When the work is done and tested, write `.tmp/<n>/commit.txt` (rules 4 and 5, ending `Assisted-by: Claude:<model>`) and `.tmp/<n>/pr-body.md`, its `## Done` section ticked as below and followed by Testing, Risk and How to revert as [references/pr-body.md](references/pr-body.md) lays them out, plus any replies. The extension opens them as tabs. Peter reviews them and presses **Go**, which checks them, then stages every change and opens the changes. **Ship** refuses any file changed since Go, then runs `pr <n>` and links the PR in the issue's Pull requests field. Go and Ship again run `pr` again, for the next round. After the merge, **Done** cleans up and closes the issue.
+When the work is done and tested, write `.tmp/<n>/commit.txt` (rules 4 and 5, ending `Assisted-by: Claude:<model>`) and `.tmp/<n>/pr-body.md`, its `## Done` section ticked as below and followed by Testing, Risk and How to revert as [references/pr-body.md](references/pr-body.md) lays them out, plus any replies. The extension opens them as tabs. A person reviews them and presses **Go**, which checks them, then stages every change and opens the changes. **Ship** refuses any file changed since Go, then runs `pr <n>` and links the PR in the issue's Pull requests field. Go and Ship again run `pr` again, for the next round. After the merge, **Done** cleans up and closes the issue.
 
 ## Reverting a PR
 
@@ -62,16 +62,17 @@ A revert is an issue of its own, started and shipped like any other. On its bran
 
 ## Drafting a new issue
 
-1. Copy `references/redmine-issue.md` to `.tmp/<n>/<slug>.md`, `<n>` being the issue whose work found it. Fill in the front matter by the names Redmine shows: `project`, `tracker` and `subject` are required. A blank field is left out. With no version, set `status: Icebox`. Name issues as numbers, `#79` or `79`, with commas between them in `blocked_by` and `relates`. Then write the body in the outline.
-2. Check it, from inside the repo so the repo's lenses count. This only reads: it runs the outline check, looks up every name in Redmine and checks every value.
+1. Copy `references/redmine-issue.md` to `.tmp/<n>/<slug>.md`, `<n>` being the issue whose work found it. Fill in the front matter by the names Redmine shows: `tracker` and `subject` are required. There is no `project` field: `new_issue` files in the project whose homepage is the origin of the checkout it runs in, and refuses outside a checkout, for an origin no project has, and for a `project:` line. A blank field is left out. With no version, set `status: Icebox`. Name issues as numbers, `#79` or `79`, with commas between them in `blocked_by` and `relates`. Then write the body in the outline.
+2. Check it from the checkout of the repo the issue is for, so its lenses count and its project is found, giving the draft's full path when it is in another repo's worktree. This only reads: it runs the outline check, looks up every name in Redmine and checks every value.
    ```
-   new_issue --check .tmp/<n>/<slug>.md
+   cd <checkout> && new_issue --check <draft>
    ```
-3. Give Peter the same command without `--check`, as `! new_issue .tmp/<n>/<slug>.md`. It creates the issue, adds its relations and reads it back. A second run finds the issue by its subject and adds only the relations still missing.
+   The result names the project the issue goes to.
+3. Hand over the same command without `--check`, as `cd <checkout> && new_issue <draft>`. It creates the issue in that project, adds its relations and reads it back. A second run finds the issue by its subject and adds only the relations still missing.
 
 ## Answering a PR review
 
-Fix the findings first. Then write each open thread's context into `.tmp/<n>/replies/`, one `<comment id>.md` each, and write the reply below it: "Fixed: …" saying what changed, or why not. The context, the path and line, the review comment and the last lines of the diff hunk it's on, is an HTML comment at the top, so Peter reads each reply against what it answers; `pr` strips it before posting. Run `--drafts` again after writing replies without it, and it adds the context above them.
+Fix the findings first. Then write each open thread's context into `.tmp/<n>/replies/`, one `<comment id>.md` each, and write the reply below it: "Fixed: …" saying what changed, or why not. The context, the path and line, the review comment and the last lines of the diff hunk it's on, is an HTML comment at the top, so a person reads each reply against what it answers; `pr` strips it before posting. Run `--drafts` again after writing replies without it, and it adds the context above them.
 
 ```
 python3 ~/.claude/skills/gh-issues/scripts/pr_threads.py 73          # open threads: comment id, path:line, first line
