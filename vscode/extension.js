@@ -296,10 +296,10 @@ function watchHandoff(context, storage) {
 // tree's changes, as pr's commit will, and open them, whose title bar then holds Ship. With nothing to commit, Ship sits on the
 // review files instead. Only Ship runs pr; once pr succeeds, the review files and diffs close and the
 // issue's Pull requests field links its PR.
-// armed is the issue Go armed Ship for, { root, id, report }, report being its round report's stamp
-// when Go began, so Ship ships only the report Go saw.
+// armed is the issue Go armed Ship for, { root, id, report, message }: its round report's stamp when
+// Go began and its commit.txt's once Go saved it, so Ship ships only the report and message Go saw.
 let armed = null;
-// The issue whose pr Ship is running, so Go doesn't stage while pr commits.
+// The issue Ship is running for, from its checks to pr's end, so Go doesn't stage while pr commits.
 let shipping = null;
 
 function arm(review) {
@@ -461,19 +461,22 @@ async function gitRepository(root) {
 
 async function go(uri) {
   if (shipping) {
-    vscode.window.showErrorMessage(`Plan: pr ${shipping} is running; press Go once it ends. Nothing ran.`);
+    vscode.window.showErrorMessage(`Plan: Ship is running for #${shipping}; press Go once it ends. Nothing ran.`);
     return;
   }
   // The report as Go finds it, before its checks run, so one written while they run waits for Go.
   const issue = reviewFile((uri || vscode.window.activeTextEditor?.document.uri)?.fsPath || "");
   const report = issue && stamp(path.join(issue.root, ".tmp", String(issue.id), "report.html"));
   const ready = await prepare(uri);
+  // The commit message as Go saved it, stamped before the tab reads it, so Ship commits only the one
+  // shown.
+  const message = ready && stamp(path.join(ready.root, ".tmp", String(ready.id), "commit.txt"));
   if (ready && reports.changedSinceGo({ ...ready, report })) {
     await arm(null);
     vscode.window.showWarningMessage(`Plan: #${ready.id}'s report changed while Go ran; read it, then press Go again. Nothing was staged.`);
     return;
   }
-  await arm(ready && { root: ready.root, id: ready.id, report });
+  await arm(ready && { root: ready.root, id: ready.id, report, message });
   if (!ready) return;
   if (ready.dirty) {
     try {
@@ -486,10 +489,10 @@ async function go(uri) {
     // The staged diff shows in the issue's Review tab; one git can't print, as over execFile's buffer,
     // opens in VS Code's Staged Changes instead.
     let diff;
-    let message;
+    let text;
     try {
       diff = await stagedChanges(ready.root);
-      message = fs.readFileSync(path.join(ready.root, ".tmp", String(ready.id), "commit.txt"), "utf8");
+      text = fs.readFileSync(path.join(ready.root, ".tmp", String(ready.id), "commit.txt"), "utf8");
     } catch (error) {
       const missed = await openStaged(await gitRepository(ready.root), (command) => vscode.commands.executeCommand(command));
       const why = /maxBuffer/i.test(error.message) ? "the diff is too large to show" : error.message;
@@ -501,7 +504,7 @@ async function go(uri) {
       return;
     }
     // A report saved while git ran disarmed Ship, and said so.
-    if (!reports.staged(ready, { message, diff })?.staged) return;
+    if (!reports.staged(ready, { message: text, diff })?.staged) return;
     vscode.window.showInformationMessage(`Plan: #${ready.id}'s changes are staged and show in Review #${ready.id}; Ship commits them with pr ${ready.id}.`);
   } else {
     vscode.window.showInformationMessage(`Plan: nothing to commit; the rocket pushes ${ready.branch} and updates its PR.`);
@@ -515,19 +518,24 @@ async function ship(refresh) {
   }
   const taken = armed;
   const { root, id } = taken;
-  const found = await prepare(vscode.Uri.file(`${root}/.tmp/${id}/pr-body.md`), true);
-  // A Go pressed while the checks ran, on this issue or another, armed Ship anew: it stays.
-  if (armed === taken) await arm(null);
-  if (!found) return;
-  if (reports.changedSinceGo(taken)) {
-    // A report shown while the checks ran has disarmed Ship already, and said so.
-    if (!taken.warned) vscode.window.showErrorMessage(`Plan: #${id}'s report changed since Go; pr didn't run. Read it, then press Go again.`);
-    return;
-  }
-
+  // Go waits from here, so it never stages while Ship's checks or pr run.
   shipping = id;
   let exitCode;
+  let found;
   try {
+    found = await prepare(vscode.Uri.file(`${root}/.tmp/${id}/pr-body.md`), true);
+    await arm(null);
+    if (!found) return;
+    if (reports.changedSinceGo(taken)) {
+      // A report shown while the checks ran has disarmed Ship already, and said so.
+      if (!taken.warned) vscode.window.showErrorMessage(`Plan: #${id}'s report changed since Go; pr didn't run. Read it, then press Go again.`);
+      return;
+    }
+    // Ship's checks save an edit to the commit message; one Go didn't show waits for Go.
+    if (stamp(path.join(root, ".tmp", String(id), "commit.txt")) !== taken.message) {
+      vscode.window.showErrorMessage(`Plan: #${id}'s commit.txt changed since Go; pr didn't run. Press Go again to see it.`);
+      return;
+    }
     exitCode = await runPr(root, id);
   } finally {
     shipping = null;

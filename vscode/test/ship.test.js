@@ -324,3 +324,26 @@ test("the staged changes are git's diff of what Go staged, renames as renames an
   assert.match(diff, /^\+\+\+ b\/added\.txt$/m);
   assert.ok(!diff.includes("\u001b["), "no colour codes");
 });
+
+test("the staged changes read the same whatever the user's diff prefixes and blank-line config", async (t) => {
+  const s = sandbox(t);
+  s.write("a.txt", "one\n\ntwo\n");
+  await stage(s.root);
+  execFileSync("git", ["-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "--quiet", "-m", "second"], { cwd: s.root });
+  s.write("a.txt", "one\n\nthree\n");
+  await stage(s.root);
+  execFileSync("git", ["config", "diff.noprefix", "true"], { cwd: s.root });
+  execFileSync("git", ["config", "diff.suppressBlankEmpty", "true"], { cwd: s.root });
+  const diff = await stagedChanges(s.root);
+  assert.match(diff, /^diff --git a\/a\.txt b\/a\.txt$/m);
+  assert.match(diff, /^\+\+\+ b\/a\.txt$/m);
+  // The blank line between keeps its space, so line numbers count it.
+  assert.match(diff, /^ one\n \n-two$/m);
+});
+
+test("a staged diff over execFile's buffer is refused by name", async (t) => {
+  const s = sandbox(t);
+  s.write("big.txt", ("y".repeat(99) + "\n").repeat(15000));
+  await stage(s.root);
+  await assert.rejects(stagedChanges(s.root), /maxBuffer/);
+});

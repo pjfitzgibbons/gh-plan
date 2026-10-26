@@ -84,8 +84,11 @@ function run(command, args, cwd, timeout = 0) {
     const timer = timeout && setTimeout(() => refuse(`timed out after ${timeout / 1000}s`), timeout);
     execFile(command, args, { cwd, timeout }, (error, stdout, stderr) => {
       clearTimeout(timer);
-      const late = timeout && error?.killed && error.code !== "ERR_CHILD_PROCESS_STDIO_MAXBUFFER";
-      if (error) refuse(late ? `timed out after ${timeout / 1000}s` : (stderr || error.message || "").trim());
+      const overflow = error?.code === "ERR_CHILD_PROCESS_STDIO_MAXBUFFER";
+      const late = timeout && error?.killed && !overflow;
+      // An overflow is named whatever the command wrote to stderr first.
+      if (overflow) refuse("output over execFile's 1 MB buffer (maxBuffer)");
+      else if (error) refuse(late ? `timed out after ${timeout / 1000}s` : (stderr || error.message || "").trim());
       else resolve(stdout);
     });
   });

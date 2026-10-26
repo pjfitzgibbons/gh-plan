@@ -44,7 +44,7 @@ Source Control's does on a Git refresh.
 - **Ship** is the button Go becomes in the Review tab, and the rocket Go puts on the review files
   and on Staged Changes when they open there. Only
   Ship runs `pr`: it saves and checks again, refuses by name a file changed since Go staged the
-  tree, so nothing goes in unreviewed, then runs `pr <n>` in a terminal in the worktree. That `pr`
+  tree, and a `commit.txt` changed since Go showed it, so nothing goes in unreviewed, then runs `pr <n>` in a terminal in the worktree. That `pr`
   commits what Go staged, and refuses a change made since. Go and Ship both refuse a worktree file
   with unsaved edits. `pr` then fetches `origin` and, when the branch lacks `main`'s tip, rebases
   it onto `origin/main` and prints "rebased onto <sha>", else "already on main", so the PR isn't

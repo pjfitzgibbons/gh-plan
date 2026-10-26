@@ -36,7 +36,10 @@
   function fit() {
     const doc = frame?.contentDocument;
     if (!doc?.documentElement) return;
-    frame.style.height = body.dataset.view === "staged" ? `${doc.documentElement.scrollHeight}px` : "";
+    // The root's own box, not its scrollHeight, which never drops below the frame's height, so a
+    // closed <details> gives its space back.
+    const height = Math.max(doc.documentElement.getBoundingClientRect().height, doc.body?.scrollHeight ?? 0);
+    frame.style.height = body.dataset.view === "staged" ? `${Math.ceil(height)}px` : "";
   }
 
   button.addEventListener("click", () => {

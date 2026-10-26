@@ -527,3 +527,24 @@ test("a tab with no report isn't opened by show, nor restored", () => {
   assert.equal(reports.show(file, {}), null);
   assert.equal(panels.length, 0);
 });
+
+test("a path with a space keeps no tab git adds after it", () => {
+  const files = stagedDiff("diff --git a/my file.txt b/my file.txt\nnew file mode 100644\n--- /dev/null\n+++ b/my file.txt\t\n@@ -0,0 +1 @@\n+x\ndiff --git a/old one.txt b/old one.txt\ndeleted file mode 100644\n--- a/old one.txt\t\n+++ /dev/null\n@@ -1 +0,0 @@\n-y\n");
+  assert.deepEqual(files.map((file) => file.path), ["my file.txt", "old one.txt"]);
+});
+
+test("a new Go drops the last Go's staged changes before it stages, and redraws the tab without them", () => {
+  const { root, file, panels, reports, write, arm } = fixture();
+  write("<p>round 1</p>");
+  const review = reports.show(file);
+  arm(review.shown);
+  reports.staged({ root, id: 110 }, { message: "m", diff: DIFF });
+  const drawn = panels[0].html;
+  // Go arms again before staging: the old diff goes, and the page is drawn again.
+  reports.armedChanged();
+  assert.equal(review.staged, null);
+  assert.notEqual(panels[0].html, null);
+  assert.equal(panels[0].html, drawn);
+  reports.staged({ root, id: 110 }, { message: "m2", diff: DIFF });
+  assert.equal(review.staged.message, "m2");
+});

@@ -55,8 +55,9 @@ function stagedDiff(text) {
     else if (line.startsWith("deleted file mode")) file.status = "deleted";
     else if (line.startsWith("rename from ")) [file.from, file.status] = [line.slice("rename from ".length), "renamed"];
     else if (line.startsWith("rename to ")) file.path = line.slice("rename to ".length);
-    else if (line.startsWith("--- a/")) file.from = line.slice("--- a/".length);
-    else if (line.startsWith("+++ b/")) file.path = line.slice("+++ b/".length);
+    // git ends a path holding a space with a tab here.
+    else if (line.startsWith("--- a/")) file.from = line.slice("--- a/".length).replace(/\t$/, "");
+    else if (line.startsWith("+++ b/")) file.path = line.slice("+++ b/".length).replace(/\t$/, "");
     else if (line.startsWith("Binary files ")) file.binary = true;
   }
   for (const each of files) if (each.status === "deleted") each.path = each.from;
@@ -172,17 +173,17 @@ class Reports {
   // is on disk, or opens one when the issue has none here; from is a panel VS Code restored, which
   // becomes the tab. Returns the tab's review, or null, when from is then for the caller to close.
   show(file, from) {
-    return this.open(file, from);
+    return this.#open(file, from);
   }
 
   // Shows what Go staged for the issue, { message, diff } as git diff prints it, below its report,
   // opening its tab, with or without a report, when it has none here. Returns the tab's review, whose
   // staged is null when a new report has disarmed Ship since Go began.
   staged({ root, id }, { message, diff }) {
-    return this.open(path.join(root, ".tmp", String(id), "report.html"), null, { message, files: stagedDiff(diff) });
+    return this.#open(path.join(root, ".tmp", String(id), "report.html"), null, { message, files: stagedDiff(diff) });
   }
 
-  open(file, from, staged) {
+  #open(file, from, staged) {
     const issue = reportFile(file);
     if (!issue) return null;
     // Stamped before it's read: a write in between leaves a stamp older than what's shown, so a
@@ -249,8 +250,27 @@ class Reports {
   }
 
   // Tells every tab whether its button is Go or Ship, after Go arms Ship or Ship ends.
+  // A Go arming Ship drops the staged changes an earlier Go showed, before it stages, so Ship is
+  // never shown over a diff it won't commit; its own arrive with staged().
   armedChanged() {
-    for (const review of this.panels.values()) this.state(review);
+    for (const review of this.panels.values()) {
+      if (review.staged && this.host.armed(review)) {
+        review.staged = null;
+        this.redraw(review);
+      } else this.state(review);
+    }
+  }
+
+  // The tab's page drawn again from the report on disk, as last shown.
+  redraw(review) {
+    let html = null;
+    try {
+      if (review.shown !== null) html = this.host.read(review.file);
+    } catch {
+      // Gone since: the watcher shows it as gone.
+    }
+    review.ship = this.ship(review);
+    review.panel.setHtml(this.host.render(review, html));
   }
 
   // A closed tab is told nothing: its webview is gone.
