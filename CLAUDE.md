@@ -52,6 +52,9 @@ settings: what this repo needs is here or in `.claude/`.
 - **A PR title ends `(fixes #<n>)`** when the PR finishes Redmine issue `<n>`, and `(refs #<n>)`
   only when it does part of it. The title becomes the squash commit's subject, and Redmine closes
   the issue when it next fetches that commit.
+- **Branch commits end `(refs #<n>)`**, and `pr` refuses a `commit.txt` that says `fixes`: Redmine
+  scans every branch, so it would close the issue before the merge. `gh pc` and `gh pb` take the
+  title's keyword from the PR body's opening `Fixes #<n>.` or `Refs #<n>.`.
 - **Dependabot's PRs are the exception** to the branch and title rules (`.github/dependabot.yml`):
   `dependabot/` branches, `chore:` titles, no Redmine issue and no Done. A person, never an agent,
   merges one once CI passes, and a Redmine one by `redmine/README.md`'s *Upgrading*; CI doesn't

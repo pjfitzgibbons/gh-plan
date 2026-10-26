@@ -33,8 +33,8 @@ Fixes #<n>.
 
 <!--
 Rules (delete this comment):
-- The body opens with Fixes #<n>. when the PR finishes the issue, Refs #<n>. when it does part of it,
-  matching the title, which (from the commit subject) ends (fixes #<n>) or (refs #<n>).
+- The body opens with Fixes #<n>. when the PR finishes the issue, Refs #<n>. when it does part of it.
+  gh pc and gh pb end the title the same way; the branch's commits say refs.
 - Done copies every line of the issue's ### Done, lens conditions included, as Redmine has it now
   (redmine-get /issues/<n>.json). Tick each the PR meets, and say after a colon why any other
   isn't. The issue's description is never ticked: this section is the record, and Done's closing

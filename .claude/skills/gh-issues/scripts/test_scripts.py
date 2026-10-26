@@ -302,7 +302,7 @@ class PrStaged(unittest.TestCase):
         self.env["PR_STAGED"] = "1"
         message = self.tree / ".tmp" / "9" / "commit.txt"
         message.parent.mkdir(parents=True)
-        message.write_text("Reviewed (fixes #9)\n")
+        message.write_text("Reviewed (refs #9)\n")
         (self.tree / "reviewed.txt").write_text("staged by Go")
         subprocess.run(["git", "add", "-A"], cwd=self.tree, check=True)
 
@@ -326,7 +326,119 @@ class PrStaged(unittest.TestCase):
 
     def test_what_go_staged_is_committed(self):
         self.pr()  # The fetch then fails: the fixture has no origin.
-        self.assertEqual(self.committed(), ["Reviewed", "(fixes", "#9)", "reviewed.txt"])
+        self.assertEqual(self.committed(), ["Reviewed", "(refs", "#9)", "reviewed.txt"])
+
+    def test_a_message_that_says_fixes_is_refused_naming_the_line(self):
+        message = self.tree / ".tmp" / "9" / "commit.txt"
+        for text, line in [
+            ("Reviewed (fixes #9)\n", "line 1:Reviewed (fixes #9)"),
+            ("Reviewed (refs #9)\n\nFixes: #12 too.\n", "line 3:Fixes: #12 too."),
+            ("Reviewed (refs #9)\n\n-FIXES  #9\n", "line 3:-FIXES  #9"),
+            ("Reviewed (refs #9), and fixes\n#9 too.\n", "line fixes and #<n> on separate lines"),
+        ]:
+            message.write_text(text)
+            run = self.pr()
+            self.assertEqual(run.returncode, 2)
+            self.assertIn("say refs #9", run.stderr)
+            self.assertIn(line, run.stderr)
+            self.assertEqual(self.committed(), ["start"])
+            self.assertTrue(message.exists())
+
+    def test_fixes_inside_a_word_or_without_a_number_is_committed(self):
+        message = self.tree / ".tmp" / "9" / "commit.txt"
+        message.write_text("Reviewed (refs #9)\n\nprefixes #1, and fixes the rest.\n")
+        self.pr()
+        self.assertEqual(self.committed()[:3], ["Reviewed", "(refs", "#9)"])
+
+
+class GhBody(unittest.TestCase):
+    """ghbody.sh, which gh pc and gh pb run, with GHBODY_DRY: the PR title is the first commit's
+    subject, its (refs #N) made (fixes #N) when the body opens Fixes #N."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        top = Path(self.tmp.name)
+        bin = top / "bin"
+        bin.mkdir()
+        (bin / "gh").write_text('#!/bin/sh\ncase "$*" in "repo view"*) echo main ;; esac\n')
+        (bin / "gh").chmod(0o755)
+        self.env = {
+            **os.environ,
+            "PATH": f"{bin}:{os.environ['PATH']}",
+            "GHBODY_DRY": "1",
+            "GIT_AUTHOR_NAME": "T",
+            "GIT_AUTHOR_EMAIL": "t@example.com",
+            "GIT_COMMITTER_NAME": "T",
+            "GIT_COMMITTER_EMAIL": "t@example.com",
+            "GIT_CONFIG_GLOBAL": "/dev/null",
+        }
+        origin = top / "origin.git"
+        self.tree = top / "tree"
+        self.git(top, "init", "-q", "--bare", "-b", "main", str(origin))
+        self.git(top, "clone", "-q", str(origin), str(self.tree))
+        self.git(self.tree, "commit", "-q", "--allow-empty", "-m", "start")
+        self.git(self.tree, "push", "-q", "origin", "HEAD:main")
+        self.git(self.tree, "fetch", "-q")
+        self.git(self.tree, "checkout", "-q", "-b", "fix/9-x")
+        self.git(self.tree, "commit", "-q", "--allow-empty", "-m", "Work (refs #9)")
+        self.git(self.tree, "commit", "-q", "--allow-empty", "-m", "Round two (refs #9)")
+        self.body = self.tree / ".tmp" / "9" / "pr-body.md"
+        self.body.parent.mkdir(parents=True)
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def git(self, cwd, *args):
+        subprocess.run(["git", *args], cwd=cwd, env=self.env, check=True, capture_output=True)
+
+    def ghbody(self, kind, body):
+        self.body.write_text(body)
+        return subprocess.run(
+            ["sh", str(Path(__file__).parent / "ghbody.sh"), kind],
+            cwd=self.tree,
+            env=self.env,
+            capture_output=True,
+            text=True,
+        )
+
+    def test_the_body_s_opening_sets_the_title_s_keyword(self):
+        for opening, title in [
+            ("Fixes #9.", "Work (fixes #9)"),
+            ("Refs #9.", "Work (refs #9)"),
+            ("Fixes #8, #9.\r", "Work (fixes #8, #9)"),
+            ("Fixes #9.  ", "Work (fixes #9)"),
+        ]:
+            for kind, command in [("pr-create", "gh pr create"), ("pr-edit", "gh pr edit")]:
+                run = self.ghbody(kind, f"{opening}\n\nWhat it does.\n")
+                self.assertEqual(run.returncode, 0, run.stderr)
+                self.assertIn(f"{command} --title {title} --body-file", run.stdout)
+
+    def test_an_old_branch_s_fixes_subject_follows_the_body_too(self):
+        self.git(self.tree, "reset", "-q", "--hard", "origin/main")
+        self.git(self.tree, "commit", "-q", "--allow-empty", "-m", "Old work (Fixes #9)")
+        run = self.ghbody("pr-edit", "Refs #9.\n")
+        self.assertEqual(run.returncode, 0, run.stderr)
+        self.assertIn("--title Old work (refs #9) --body-file", run.stdout)
+
+    def test_a_merged_pr_keeps_its_title(self):
+        self.env["GHBODY_KEEP_TITLE"] = "1"
+        run = self.ghbody("pr-edit", "Fixes #9.\n")
+        self.assertEqual(run.returncode, 0, run.stderr)
+        self.assertIn("gh pr edit --body-file", run.stdout)
+        self.assertNotIn("--title", run.stdout)
+
+    def test_a_body_opening_neither_fixes_nor_refs_is_refused_before_gh_writes(self):
+        for body in [
+            "Closes #9.\n",
+            "\nFixes #9.\n",
+            "What it does.\n",
+            "Fixes #9\n",
+            "Fixes #10.\n",
+        ]:
+            for kind in ("pr-create", "pr-edit"):
+                run = self.ghbody(kind, body)
+                self.assertEqual(run.returncode, 1, body)
+                self.assertNotIn("gh pr", run.stdout)
 
 
 class PrRebase(unittest.TestCase):

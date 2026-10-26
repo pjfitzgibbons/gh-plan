@@ -4,6 +4,7 @@
 #
 #   commit  when the tree has changes: stages everything (.tmp/ is ignored) and commits with the
 #           message in .tmp/N/commit.txt, then deletes that file, so the next change needs a new one.
+#           Refuses a message that says fixes #<n>: branch commits say refs, and the PR title fixes.
 #           Under Ship (PR_STAGED=1) it commits what Go staged, and refuses a change made since
 #   fetch   every time: fetches origin, and stops before the push when that fails. Refuses a
 #           GitHub branch with commits the local one lacks, so a push never drops them
@@ -81,7 +82,8 @@ case $state in
     send_round
     if [ -f ".tmp/$n/pr-body.md" ]; then
       echo "pr: updating the PR body"
-      gh pb "$n"
+      # The title stays the squash commit's subject, whatever the body now says.
+      GHBODY_KEEP_TITLE=1 gh pb "$n"
     fi
     echo "pr: the PR for $branch has merged; press Done on #$n in Next up to clean up"
     exit 0 ;;
@@ -90,6 +92,17 @@ esac
 if [ -n "$(git status --porcelain)" ]; then
   message=".tmp/$n/commit.txt"
   [ -f "$message" ] || { echo "pr: the tree has changes and $message is missing" >&2; git status --short >&2; exit 2; }
+  # Redmine scans every branch of the shared .git, so a branch commit's fixes #<n> closes the issue
+  # at the next fetch, before the PR merges. Only the squash commit, titled by gh pc, says fixes.
+  # The pattern is Redmine's: any case, after a space, ( [ , - or the start, then : or spaces, which
+  # may be line breaks, so the message is checked whole as well as line by line.
+  says_fixes='(^|[[:space:]([,-])fixes[[:space:]:]+#[0-9]'
+  if tr '\n' ' ' <"$message" | grep -qiE "$says_fixes"; then
+    fixes=$(grep -niE "$says_fixes" "$message" || echo "fixes and #<n> on separate lines")
+    echo "pr: $message says fixes, which closes the issue when Redmine fetches the branch; say refs #$n, and the PR title says fixes:" >&2
+    printf '%s\n' "$fixes" | sed 's/^/  line /' >&2
+    exit 2
+  fi
   if [ -n "${PR_STAGED:-}" ]; then
     # From Ship: commit what Go staged and showed, never a change made since.
     late=$(git diff --name-only; git ls-files --others --exclude-standard)

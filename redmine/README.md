@@ -386,4 +386,6 @@ issue first.
 
 GitHub makes a PR's title the subject of its squash commit, so the title carries the keyword: a
 PR that finishes issue `<n>` ends its title `(fixes #<n>)`, and one that does part of it ends
-`(refs #<n>)`. A `refs` commit leaves the issue open, to be closed by Done or by hand.
+`(refs #<n>)`. A `refs` commit leaves the issue open, to be closed by Done or by hand. Redmine
+scans every branch of the shared `.git`, so branch commits say `refs`, and only the title says
+`fixes`: `pr` refuses a `commit.txt` that says it.
