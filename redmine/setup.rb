@@ -208,8 +208,10 @@ ActiveRecord::Base.transaction do
     save(repository, "repository of #{identifier}")
     origin, status = Open3.capture2('git', "--git-dir=#{repository.url}", 'config', '--get', 'remote.origin.url')
     if status.success?
-      # SSH forms and any user or token before the host become a plain https://github.com/ link.
-      child.homepage = origin.strip.sub(/\.git\z/, '').sub(%r{\A(\w+://)?([^@/]+@)?github\.com[:/]}, 'https://github.com/')
+      # Any user or token before the host is dropped, whatever the host, and SSH forms become a
+      # plain https://github.com/ link.
+      child.homepage = origin.strip.sub(%r{\A(\w+://)?[^@/]+@}, '\\1').sub(/\.git\z/, '')
+                             .sub(%r{\A(\w+://)?github\.com[:/]}, 'https://github.com/')
       save(child, "homepage of #{identifier}")
     else
       warn "setup: #{repository.url} has no origin; #{identifier}'s homepage is left as it is"

@@ -1057,6 +1057,24 @@ class NewIssue(unittest.TestCase):
                     self.run_it(r, check_only=check_only, origin=origin)
                 self.assertEqual(r.posts, [])
 
+    def test_a_token_in_any_hosts_origin_is_never_printed(self):
+        for origin, shown in [
+            ("https://oauth2:secret@gitlab.example/x/y.git", "https://gitlab.example/x/y"),
+            ("git@gitlab.example:x/y.git", "gitlab.example:x/y"),
+        ]:
+            with self.subTest(origin), self.assertRaises(Refused) as refused:
+                self.run_it(FakeTracker(), origin=origin)
+            self.assertIn(f"no project has {shown} as its homepage", str(refused.exception))
+            self.assertNotIn("secret", str(refused.exception))
+
+    def test_a_draft_that_isnt_there_stops_before_redmine_is_read(self):
+        with (
+            mock.patch.object(new_issue, "Redmine") as redmine,
+            self.assertRaisesRegex(SystemExit, "no such file here; give the draft's full path"),
+        ):
+            new_issue.main([str(self.file) + ".missing"])
+        redmine.assert_not_called()
+
     def test_a_body_off_the_outline_refuses_before_any_write(self):
         r = FakeTracker()
         self.file.write_text(self.HEAD + "### Task\nDo it.\n")

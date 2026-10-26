@@ -93,10 +93,11 @@ def numbers(key: str, value: str) -> list[int]:
 def github(url: str) -> str:
     """A GitHub URL or remote, as github.com/<owner>/<repo>, so SSH and HTTPS forms compare equal.
 
-    Any user or token before the host is dropped, so none is matched on or printed.
+    Any user or token before the host is dropped, whatever the host, so none is matched on or printed.
     """
     url = url.strip().lower().rstrip("/").removesuffix(".git")
-    return re.sub(r"^(https?://|ssh://)?([^@/]+@)?github\.com[:/]", "github.com/", url)
+    url = re.sub(r"^([a-z][a-z0-9+.-]*://)?[^@/]+@", r"\1", url)
+    return re.sub(r"^(https?://|ssh://)?github\.com[:/]", "github.com/", url)
 
 
 def project_of(redmine, origin: str | None) -> str:
@@ -244,8 +245,13 @@ def run(
 
 
 def origin() -> str | None:
-    """The origin remote of the checkout new_issue runs in; None outside one, or with no origin."""
-    url = subprocess.run(["git", "remote", "get-url", "origin"], capture_output=True, text=True)
+    """The origin remote of the checkout new_issue runs in; None outside one, or with no origin.
+
+    The raw remote.origin.url, as setup.rb reads it, so no insteadOf rewrite makes them differ.
+    """
+    url = subprocess.run(
+        ["git", "config", "--get", "remote.origin.url"], capture_output=True, text=True
+    )
     if url.returncode != 0:
         return None
     return url.stdout.strip() or None
@@ -260,6 +266,8 @@ def main(argv=None) -> int:
     )
     p.add_argument("file", type=Path, help="a filled-in copy of references/redmine-issue.md")
     a = p.parse_args(argv)
+    if not a.file.is_file():
+        sys.exit(f"new_issue: {a.file}: no such file here; give the draft's full path")
     lenses, extra = outline.load_expected()
     try:
         print(f"new_issue: {run(a.file, Redmine(), a.check, lenses, extra, origin())}")
