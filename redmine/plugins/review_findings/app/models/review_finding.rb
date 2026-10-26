@@ -155,6 +155,52 @@ class ReviewFinding < ApplicationRecord
     end.values.sort_by { |r| r['rule_id'] }
   end
 
+  # How many rows of the given issues have the rule, and how many of those are confirmed.
+  def self.rule_findings(issue_ids, rule)
+    rows = where(issue_id: issue_ids, rule_id: rule)
+    { 'rule_id' => rule, 'findings' => rows.count, 'confirmed' => rows.where.not(confirmed_by_id: nil).count }
+  end
+
+  # Moves every row of the given issues from one rule id to another in one transaction, so a rule
+  # renamed in REVIEW.md keeps one id across its findings (§3.10). Each confirmed row gets the
+  # journal note an outcome line's change makes. A row with the old id on an issue of `tree` that
+  # isn't one of the given issues, such as one in a closed project, refuses the rename; the check
+  # is inside the transaction, so a row sent meanwhile can't be left behind. Answers how many it
+  # renamed and noted, or raises Refused having renamed none.
+  def self.rename_rule(issue_ids, tree, from, to, user)
+    unless to.is_a?(String) && RULE.match?(to)
+      raise Refused, 'new_rule_id must be lowercase words and digits joined by hyphens'
+    end
+    raise Refused, "new_rule_id is #{from}, the rule's own id" if to == from
+
+    counts = { 'renamed' => 0, 'noted' => 0 }
+    transaction do
+      outside = where(rule_id: from, issue_id: tree).where.not(issue_id: issue_ids).count
+      if outside.positive?
+        raise Refused, "#{outside} #{outside == 1 ? 'finding' : 'findings'} with rule #{from} " \
+                       "#{outside == 1 ? 'is' : 'are'} on issues you can't see or manage review " \
+                       'findings in, or in a closed project'
+      end
+
+      where(issue_id: issue_ids, rule_id: from).order(:id).each do |finding|
+        counts['renamed'] += 1
+        counts['noted'] += 1 if finding.rename_rule(to, user)
+      end
+    end
+    counts
+  end
+
+  # Answers whether it added a journal note, which it does for a confirmed row.
+  def rename_rule(to, user)
+    before = NOTED_FIELDS.index_with { |f| self[f] }
+    self.rule_id = to
+    raise Refused, "#{fingerprint} in round #{round}: #{errors.full_messages.join(', ')}" unless save
+    return false unless confirmed_by_id.present?
+
+    note_change(before, user)
+    true
+  end
+
   private
 
   def note_change(before, user)

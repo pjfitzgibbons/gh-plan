@@ -17,6 +17,8 @@ API key (`X-Redmine-API-Key`) or basic auth, even from a signed-in browser.
 | `GET /issues/:issue_id/review_findings.json` | The issue's findings, every round, as `{"review_findings": [...]}` | View review findings |
 | `PUT /issues/:issue_id/review_findings.json` | Upserts `{"review_findings": [...]}` by `(fingerprint, round)`, in one transaction, and answers `{"created", "updated", "unchanged"}` | Manage review findings |
 | `GET /projects/:project_id/review_findings/rules.json` | `{"rules": [{"rule_id", "real", "noise"}]}` over the issues the user can see in the project and its sub-projects | View review findings |
+| `GET /projects/:project_id/review_findings/rules/:rule_id.json` | `{"rule_id", "findings", "confirmed"}`: how many findings have the rule, over the same issues | View review findings |
+| `PUT /projects/:project_id/review_findings/rules/:rule_id.json` | Renames the rule to `{"new_rule_id": "…"}` on every finding in the project and its sub-projects, in one transaction, and answers `{"renamed", "noted"}` | Manage review findings |
 
 A `PUT` line is one of two kinds:
 
@@ -40,6 +42,11 @@ more and finds the winner's rows.
 `rules.json` counts confirmed rows that have a rule, each fingerprint once, by its latest confirmed
 round: `fixed` and `intentional` are real, `wrong` and `doesnt-matter` are noise. It counts only
 the projects where the user has View review findings.
+
+A rename (§3.10) adds the same journal note to the issue of each confirmed finding it changes. A
+`new_rule_id` that isn't lowercase words and digits joined by hyphens, or is the old id, gets a
+422, and so does a rename when a finding with the old id is on an issue the user can't see or
+can't manage findings in: it renames all of them or none. `redmine-set rule OLD NEW` sends it.
 
 Deleting an issue leaves its findings' rows in the table.
 

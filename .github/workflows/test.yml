@@ -49,6 +49,10 @@ jobs:
       - run: npm ci --ignore-scripts
         working-directory: vscode
 
+      # tests/test_redmine_sql.py runs redmine/sql.rb on the runner's own Ruby (3.2.3), with the
+      # sqlite3 gem at the version the Redmine image has. Its precompiled build needs no compiler.
+      - run: gem install --user-install --no-document sqlite3 -v 2.9.6
+
       # -v prints every check's output, not only a failure's. pytest takes its CI options from
       # PYTEST_ADDOPTS: -v names every test in the log; the annotate-failures plugin pins each
       # failure to its line in the PR diff; md-report writes the job summary. Options take values
