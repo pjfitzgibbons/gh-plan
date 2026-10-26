@@ -7,7 +7,7 @@ const fs = require("fs");
 const path = require("path");
 const { Redmine } = require("./redmine");
 const { ACTION, checkId, start, expandHome } = require("./start");
-const { reviewFile, roundFiles, shipTab, stage, openStaged, check, shipped, keepEdits } = require("./ship");
+const { reviewFile, roundFiles, shipTab, stage, stagedChanges, openStaged, check, shipped, keepEdits } = require("./ship");
 const { finish } = require("./done");
 const { handoffFile, issueUrl, writeHandoff, takeHandoffFor } = require("./handoff");
 const { reportFile, reportRound, reportPage, Reports } = require("./review");
@@ -276,7 +276,7 @@ async function openHandover(dir) {
   // The round's report, when its tab opened first, goes back in front: it's read before the files.
   // A report older than the files is the last round's, which mustn't cover this one's.
   const report = path.join(dir, "report.html");
-  const mtime = (file) => fs.statSync(file, { throwIfNoEntry: false })?.mtimeMs ?? 0;
+  const mtime = (file) => fileStat(file)?.mtimeMs ?? 0;
   if (mtime(report) >= Math.max(...files.map(mtime))) reports?.reveal(report);
 }
 
@@ -299,6 +299,8 @@ function watchHandoff(context, storage) {
 // armed is the issue Go armed Ship for, { root, id, report }, report being its round report's stamp
 // when Go began, so Ship ships only the report Go saw.
 let armed = null;
+// The issue whose pr Ship is running, so Go doesn't stage while pr commits.
+let shipping = null;
 
 function arm(review) {
   armed = review;
@@ -310,9 +312,14 @@ function arm(review) {
 // saved in this window's worktree, with Go and Ship on it.
 let reports = null;
 
+// A file's fs.Stats, or undefined once it's gone.
+function fileStat(file) {
+  return fs.statSync(file, { throwIfNoEntry: false });
+}
+
 // A file's modified time and size, which change with each write; null once it's gone.
 function stamp(file) {
-  const stat = fs.statSync(file, { throwIfNoEntry: false });
+  const stat = fileStat(file);
   return stat?.isFile() ? `${stat.mtimeMs}:${stat.size}` : null;
 }
 
@@ -350,21 +357,23 @@ function reviewHost(media) {
         setHtml: (html) => (webview.html = html),
         post: (message) => webview.postMessage(message),
         onDispose: (callback) => panel.onDidDispose(callback),
+        onVisible: (callback) => panel.onDidChangeViewState(() => panel.visible && callback()),
       };
     },
     render(review, html) {
       const { webview } = review.panel;
-      const written = new Date(Number(review.shown.split(":")[0]));
+      const written = review.shown && new Date(Number(review.shown.split(":")[0]));
       return reportPage({
         id: review.id,
         file: review.file,
         html,
         round: reportRound(html),
-        written: written.toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" }),
+        written: written && written.toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" }),
         shown: review.shown,
         ship: review.ship,
         busy: review.busy,
         doing: review.doing,
+        staged: review.staged,
         nonce: crypto.randomBytes(16).toString("base64"),
         cspSource: webview.cspSource,
         css: webview.asWebviewUri(vscode.Uri.joinPath(media, "review.css")),
@@ -451,10 +460,19 @@ async function gitRepository(root) {
 }
 
 async function go(uri) {
+  if (shipping) {
+    vscode.window.showErrorMessage(`Plan: pr ${shipping} is running; press Go once it ends. Nothing ran.`);
+    return;
+  }
   // The report as Go finds it, before its checks run, so one written while they run waits for Go.
   const issue = reviewFile((uri || vscode.window.activeTextEditor?.document.uri)?.fsPath || "");
   const report = issue && stamp(path.join(issue.root, ".tmp", String(issue.id), "report.html"));
   const ready = await prepare(uri);
+  if (ready && reports.changedSinceGo({ ...ready, report })) {
+    await arm(null);
+    vscode.window.showWarningMessage(`Plan: #${ready.id}'s report changed while Go ran; read it, then press Go again. Nothing was staged.`);
+    return;
+  }
   await arm(ready && { root: ready.root, id: ready.id, report });
   if (!ready) return;
   if (ready.dirty) {
@@ -465,12 +483,26 @@ async function go(uri) {
       vscode.window.showErrorMessage(`Plan: #${ready.id}'s changes couldn't be staged: ${error.message}`);
       return;
     }
-    const missed = await openStaged(await gitRepository(ready.root), (command) => vscode.commands.executeCommand(command));
-    if (missed) {
-      vscode.window.showWarningMessage(`Plan: #${ready.id}'s changes are staged, but they didn't open: ${missed} Source Control's Staged Changes lists them; the rocket on the review file commits them with pr ${ready.id}.`);
-    } else {
-      vscode.window.showInformationMessage(`Plan: #${ready.id}'s changes are staged and open; the rocket commits them with pr ${ready.id}.`);
+    // The staged diff shows in the issue's Review tab; one git can't print, as over execFile's buffer,
+    // opens in VS Code's Staged Changes instead.
+    let diff;
+    let message;
+    try {
+      diff = await stagedChanges(ready.root);
+      message = fs.readFileSync(path.join(ready.root, ".tmp", String(ready.id), "commit.txt"), "utf8");
+    } catch (error) {
+      const missed = await openStaged(await gitRepository(ready.root), (command) => vscode.commands.executeCommand(command));
+      const why = /maxBuffer/i.test(error.message) ? "the diff is too large to show" : error.message;
+      vscode.window.showWarningMessage(
+        missed
+          ? `Plan: #${ready.id}'s changes are staged, but they didn't open: ${why}; ${missed} Source Control's Staged Changes lists them; Ship commits them with pr ${ready.id}.`
+          : `Plan: #${ready.id}'s changes are staged and open in Staged Changes, not the Review tab: ${why}. Ship commits them with pr ${ready.id}.`,
+      );
+      return;
     }
+    // A report saved while git ran disarmed Ship, and said so.
+    if (!reports.staged(ready, { message, diff })?.staged) return;
+    vscode.window.showInformationMessage(`Plan: #${ready.id}'s changes are staged and show in Review #${ready.id}; Ship commits them with pr ${ready.id}.`);
   } else {
     vscode.window.showInformationMessage(`Plan: nothing to commit; the rocket pushes ${ready.branch} and updates its PR.`);
   }
@@ -484,16 +516,22 @@ async function ship(refresh) {
   const taken = armed;
   const { root, id } = taken;
   const found = await prepare(vscode.Uri.file(`${root}/.tmp/${id}/pr-body.md`), true);
-  // A report shown while the checks ran has disarmed Ship already, and said so.
-  const warned = armed !== taken;
-  await arm(null);
+  // A Go pressed while the checks ran, on this issue or another, armed Ship anew: it stays.
+  if (armed === taken) await arm(null);
   if (!found) return;
   if (reports.changedSinceGo(taken)) {
-    if (!warned) vscode.window.showErrorMessage(`Plan: #${id}'s report changed since Go; pr didn't run. Read it, then press Go again.`);
+    // A report shown while the checks ran has disarmed Ship already, and said so.
+    if (!taken.warned) vscode.window.showErrorMessage(`Plan: #${id}'s report changed since Go; pr didn't run. Read it, then press Go again.`);
     return;
   }
 
-  const exitCode = await runPr(root, id);
+  shipping = id;
+  let exitCode;
+  try {
+    exitCode = await runPr(root, id);
+  } finally {
+    shipping = null;
+  }
   if (exitCode !== 0) {
     vscode.window.showErrorMessage(`Plan: pr ${id} stopped (exit ${exitCode}); its terminal says why. Go and Ship again once it's fixed.`);
     // pr may have sent some of the round before it stopped.

@@ -37,9 +37,12 @@ Source Control's does on a Git refresh.
 - **Go** is the diff icon in the title bar of any of them. It saves them all, refuses by name a
   missing PR body, a missing commit message while the tree has changes, a reply `pr` can't send, an empty
   reply or two replies to one thread, or a branch that isn't the issue's. It then stages every change
-  and opens them (Git: View Staged Changes), so what it shows is what Ship commits. With nothing to
-  commit, it opens nothing.
-- **Ship** is the rocket that Go then puts in the changes' title bar, and on the review files. Only
+  and shows them, with the commit message, below the report in the issue's `Review #<n>` tab,
+  opening the tab when the issue has no report yet, so what it shows is what Ship commits. A diff
+  git can't hand over in one go, over 1 MB, opens in VS Code's Staged Changes instead, and Go says
+  why. With nothing to commit, it shows nothing.
+- **Ship** is the button Go becomes in the Review tab, and the rocket Go puts on the review files
+  and on Staged Changes when they open there. Only
   Ship runs `pr`: it saves and checks again, refuses by name a file changed since Go staged the
   tree, so nothing goes in unreviewed, then runs `pr <n>` in a terminal in the worktree. That `pr`
   commits what Go staged, and refuses a change made since. Go and Ship both refuse a worktree file
@@ -62,9 +65,11 @@ Source Control's does on a Git refresh.
   issue shows in the same tab. Close the tab and **Plan: Show report**, in report.html's title
   bar, opens it again. The bar above the report names the round and
   when the report was written. Its one button is Go, which runs Go on the issue's round files, and
-  then Ship, which runs Ship. A click on a report that was rewritten after it was shown runs
+  then Ship, which runs Ship. While the button is Ship, what Go staged shows below the report: the
+  commit message, then each file's diff in a section of its own that opens on a click. A click on a report that was rewritten after it was shown runs
   nothing and shows the new report. A new report after Go puts the button back to Go. Claude
-  writes the report's HTML, so it shows in a frame that runs no script and loads nothing. A link
+  writes the report's HTML, so it shows in a frame that runs no script and loads nothing; an image in it shows only as
+  inline SVG or a `data:` URI. A link
   in it opens an http(s) URL in a browser tab or a file in `.tmp/<n>/` in an editor, and nothing
   else.
 - **Done** shows beside Open on an In Progress row that links a PR. Once that PR has merged, it

@@ -5,7 +5,7 @@ const assert = require("node:assert/strict");
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
-const { reportFile, reportRound, reportPage, linkTarget, Reports } = require("../review");
+const { reportFile, reportRound, stagedDiff, stagedSection, reportPage, linkTarget, Reports } = require("../review");
 
 test("a report names its issue and checkout; any other file names none", () => {
   assert.deepEqual(reportFile("/work/gh-plan.worktrees/110/.tmp/110/report.html"), { root: "/work/gh-plan.worktrees/110", id: 110 });
@@ -41,6 +41,8 @@ test("L1: the report runs in a frame sandboxed without scripts, under a policy t
   const policy = /http-equiv="Content-Security-Policy" content="([^"]*)"/.exec(page)[1];
   assert.match(policy, /default-src 'none'/);
   assert.match(policy, /script-src 'nonce-N0nce';/);
+  // Images only from the report itself, never fetched.
+  assert.match(policy, /; img-src data:; /);
   assert.doesNotMatch(policy, /unsafe-eval|script-src[^;]*unsafe-inline/);
   // The report is the frame's srcdoc, escaped: none of it is the page's markup.
   const own = outside(page);
@@ -102,6 +104,7 @@ function fixture() {
       panel.setHtml = (html) => (panel.html = html);
       panel.post = (message) => panel.posts.push(message);
       panel.onDispose = (callback) => panel.disposers.push(callback);
+      panel.onVisible = (callback) => (panel.shownAgain = callback);
       panel.dispose = () => panel.disposers.forEach((callback) => callback());
       panels.push(panel);
       return panel;
@@ -121,7 +124,7 @@ function fixture() {
     mtime += 1000;
     fs.utimesSync(file, mtime / 1000, mtime / 1000);
   };
-  return { root, dir, file, panels, ran, said, host, write, arm: (report) => (armed = { report }), reports: new Reports(host) };
+  return { root, dir, file, panels, ran, said, host, write, arm: (report) => (armed = { report }), armed: () => armed, reports: new Reports(host) };
 }
 
 test("L3, L8: a report saved twice leaves one tab, showing the second file", () => {
@@ -354,4 +357,173 @@ test("a tab VS Code restores after a reload becomes the report's tab; a second f
   assert.equal(reports.show(file, { restored: true }), null);
   assert.equal(panels.length, 1);
   assert.equal(reports.show(file), review);
+});
+
+test("a tab shows Ship only for the report Go saw, even when Go armed it after the tab showed a newer one", () => {
+  const { file, reports, write, arm, said } = fixture();
+  write("<p>round 1</p>");
+  const old = reports.show(file).shown;
+  write("<p>round 2</p>");
+  const review = reports.show(file);
+  // Go stamped round 1 before its checks and armed after the tab showed round 2.
+  arm(old);
+  reports.armedChanged();
+  assert.equal(review.ship, false);
+  assert.deepEqual(said, []);
+});
+
+test("a report shown again unchanged keeps its page, and its place in it", () => {
+  const { file, panels, reports, write, arm } = fixture();
+  write("<p>round 1</p>");
+  const review = reports.show(file);
+  const page = panels[0].html;
+  panels[0].html = "kept";
+  arm(review.shown);
+  assert.equal(reports.show(file), review);
+  assert.equal(panels[0].html, "kept");
+  assert.equal(panels[0].posts.at(-1).ship, true);
+  assert.ok(page.endsWith("<p>round 1</p>"));
+});
+
+test("a tab shown again after being hidden is told the state", () => {
+  const { file, panels, reports, write, arm } = fixture();
+  write("<p>round 1</p>");
+  const review = reports.show(file);
+  arm(review.shown);
+  panels[0].shownAgain();
+  assert.deepEqual(panels[0].posts.at(-1), { type: "state", ship: true, busy: false, doing: null });
+});
+
+test("a link that opens nothing says so", async () => {
+  const { file, ran, said, reports, write } = fixture();
+  write("<p>round 1</p>");
+  const review = reports.show(file);
+  await reports.receive(review, { type: "link", href: "../../vscode/review.js" });
+  assert.deepEqual(ran, []);
+  assert.equal(said.length, 1);
+  assert.match(said[0][1], /opens nothing/);
+});
+
+test("a disarm by a new report marks the Go it undid, for a Ship whose checks are running", () => {
+  const { file, reports, write, arm, armed } = fixture();
+  write("<p>round 1</p>");
+  arm(reports.show(file).shown);
+  const taken = armed();
+  write("<p>round 2</p>");
+  reports.show(file);
+  assert.equal(taken.warned, true);
+  assert.equal(armed(), null);
+});
+
+const DIFF = `diff --git a/a.js b/a.js
+index 1111111..2222222 100644
+--- a/a.js
++++ b/a.js
+@@ -3,3 +3,3 @@ function f() {
+ keep
+-old <b>
++new <script>x()</script>
+ keep
+diff --git a/new.md b/new.md
+new file mode 100644
+index 0000000..3333333
+--- /dev/null
++++ b/new.md
+@@ -0,0 +1,2 @@
++one
++two
+diff --git a/gone.txt b/gone.txt
+deleted file mode 100644
+index 4444444..0000000
+--- a/gone.txt
++++ /dev/null
+@@ -1 +0,0 @@
+-bye
+diff --git a/old name.js b/new name.js
+similarity 100%
+rename from old name.js
+rename to new name.js
+diff --git a/logo.png b/logo.png
+index 5555555..6666666 100644
+Binary files a/logo.png and b/logo.png differ
+diff --git a/run.sh b/run.sh
+old mode 100644
+new mode 100755
+`;
+
+test("the staged diff reads as files: modified, added, deleted, renamed, binary and mode-only", () => {
+  const files = stagedDiff(DIFF);
+  assert.deepEqual(
+    files.map(({ path, from, status, binary, adds, dels }) => [path, from, status, binary, adds, dels]),
+    [
+      ["a.js", "a.js", "modified", false, 1, 1],
+      ["new.md", "new.md", "added", false, 2, 0],
+      ["gone.txt", "gone.txt", "deleted", false, 0, 1],
+      ["new name.js", "old name.js", "renamed", false, 0, 0],
+      ["logo.png", "logo.png", "modified", true, 0, 0],
+      ["run.sh", "run.sh", "modified", false, 0, 0],
+    ],
+  );
+  assert.deepEqual(files[0].hunks, [{ old: 3, new: 3, lines: [" keep", "-old <b>", "+new <script>x()</script>", " keep"] }]);
+  assert.deepEqual(stagedDiff(""), []);
+});
+
+test("L1: the staged diff and commit message show escaped, outside the frame, numbered by line", () => {
+  const section = stagedSection({ message: "Fix <it>\n\nAssisted-by: x", files: stagedDiff(DIFF) });
+  assert.match(section, /<h2>Staged changes · 6 files \+3 −2<\/h2>/);
+  assert.ok(section.includes("Fix &lt;it&gt;"));
+  assert.ok(section.includes("+new &lt;script&gt;x()&lt;/script&gt;"));
+  assert.doesNotMatch(section, /<script|<b>|<it>/);
+  assert.match(section, /<span class="ln">4<\/span><span class="ln"><\/span><span class="del">-old &lt;b&gt;<\/span>/);
+  assert.match(section, /<span class="ln"><\/span><span class="ln">4<\/span><span class="add">/);
+  assert.ok(section.includes("<code>old name.js → new name.js</code>"));
+  assert.match(section, /A binary file/);
+  assert.match(section, /Only its mode changed/);
+  const page = reportPage({ ...PAGE, html: "<p>r</p>", ship: true, staged: { message: "m", files: stagedDiff(DIFF) } });
+  assert.ok(outside(page).includes('<section id="staged"'));
+  assert.equal(outside(page).match(/<script\b/g).length, 1);
+});
+
+test("with no report yet, the tab says so and has no frame", () => {
+  const page = reportPage({ ...PAGE, html: null, round: null, written: null, shown: null, staged: { message: "m", files: [] } });
+  assert.match(page, /<span id="label">Review #110 · no report yet<\/span>/);
+  assert.doesNotMatch(page, /<iframe/);
+  assert.match(page, /<p id="empty">/);
+  assert.match(page, /data-shown=""/);
+});
+
+test("Go's staged changes open the tab with no report, and Ship ships them", async () => {
+  const { root, panels, ran, reports, arm } = fixture();
+  arm(null);
+  const review = reports.staged({ root, id: 110 }, { message: "m", diff: DIFF });
+  assert.equal(panels.length, 1);
+  assert.equal(review.shown, null);
+  assert.equal(review.ship, true);
+  assert.equal(review.staged.files.length, 6);
+  assert.equal(panels[0].html, "null|true|null");
+  await reports.receive(review, { type: "ship", shown: "" });
+  assert.equal(ran.length, 1);
+});
+
+test("staged changes show only for the Go armed on the report shown, and a new report hides them", () => {
+  const { root, file, reports, write, arm } = fixture();
+  write("<p>round 1</p>");
+  // Not armed: nothing staged shows.
+  assert.equal(reports.staged({ root, id: 110 }, { message: "m", diff: DIFF }).staged, null);
+  arm(reports.show(file).shown);
+  const review = reports.staged({ root, id: 110 }, { message: "m", diff: DIFF });
+  assert.equal(review.staged.files.length, 6);
+  // The same report again keeps them.
+  reports.show(file);
+  assert.equal(review.staged.files.length, 6);
+  write("<p>round 2</p>");
+  reports.show(file);
+  assert.equal(review.staged, null);
+});
+
+test("a tab with no report isn't opened by show, nor restored", () => {
+  const { file, panels, reports } = fixture();
+  assert.equal(reports.show(file), null);
+  assert.equal(reports.show(file, {}), null);
+  assert.equal(panels.length, 0);
 });

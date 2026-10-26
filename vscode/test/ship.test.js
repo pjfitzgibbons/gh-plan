@@ -6,7 +6,7 @@ const fs = require("fs");
 const os = require("os");
 const path = require("path");
 const { execFileSync } = require("child_process");
-const { reviewFile, roundFiles, shipTab, stage, openStaged, check, prLink, linkPullRequest, shipped, unsent, keepEdits } = require("../ship");
+const { reviewFile, roundFiles, shipTab, stage, stagedChanges, openStaged, check, prLink, linkPullRequest, shipped, unsent, keepEdits } = require("../ship");
 
 test("a review file names its issue and checkout; any other file names none", () => {
   assert.deepEqual(reviewFile("/work/gh-plan.worktrees/81/.tmp/81/commit.txt"), { root: "/work/gh-plan.worktrees/81", id: 81 });
@@ -308,4 +308,19 @@ test("without the git extension's repository, or when it can't read the index, G
   const failing = { status: async () => { throw new Error("index.lock exists"); } };
   assert.equal(await openStaged(failing, execute), "VS Code's git extension couldn't read it: index.lock exists.");
   assert.deepEqual(opened, []);
+});
+
+test("the staged changes are git's diff of what Go staged, renames as renames and paths unquoted", async (t) => {
+  const s = sandbox(t);
+  s.write("é name.txt", "one\ntwo\nthree\n");
+  await stage(s.root);
+  execFileSync("git", ["-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "--quiet", "-m", "second"], { cwd: s.root });
+  fs.renameSync(path.join(s.root, "é name.txt"), path.join(s.root, "moved.txt"));
+  s.write("added.txt");
+  await stage(s.root);
+  const diff = await stagedChanges(s.root);
+  assert.match(diff, /^rename from é name\.txt$/m);
+  assert.match(diff, /^rename to moved\.txt$/m);
+  assert.match(diff, /^\+\+\+ b\/added\.txt$/m);
+  assert.ok(!diff.includes("\u001b["), "no colour codes");
 });

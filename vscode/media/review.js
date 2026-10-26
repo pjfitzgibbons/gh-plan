@@ -7,6 +7,7 @@
   const button = document.getElementById("act");
   const hint = document.getElementById("hint");
   const frame = document.getElementById("report");
+  const staged = document.getElementById("staged");
   const id = body.dataset.id;
   const state = { ship: body.dataset.ship === "1", busy: body.dataset.busy === "1", doing: body.dataset.doing };
   // What VS Code hands back after a window reload, so the extension shows the report again.
@@ -21,7 +22,21 @@
     button.setAttribute("aria-busy", String(state.busy));
     hint.textContent = state.busy
       ? ship ? `pr ${id} is running` : "Checking and staging"
-      : ship ? `Runs pr ${id}` : "Checks the round's files and opens the staged changes";
+      : ship ? `Runs pr ${id}` : "Checks the round's files and shows the staged changes";
+    // What Go staged shows while Ship is the button, below the report, and the page scrolls as one.
+    if (staged) {
+      staged.hidden = !ship;
+      if (ship) body.dataset.view = "staged";
+      else delete body.dataset.view;
+      fit();
+    }
+  }
+
+  // With the staged changes below it, the report's frame is as tall as the report.
+  function fit() {
+    const doc = frame?.contentDocument;
+    if (!doc?.documentElement) return;
+    frame.style.height = body.dataset.view === "staged" ? `${doc.documentElement.scrollHeight}px` : "";
   }
 
   button.addEventListener("click", () => {
@@ -55,7 +70,7 @@ pre { background: var(--vscode-textCodeBlock-background); padding: 8px; overflow
   // own style and class on its root stay.
   let lent = { props: [], classes: [] };
   function theme() {
-    const doc = frame.contentDocument;
+    const doc = frame?.contentDocument;
     if (!doc?.documentElement) return;
     const root = doc.documentElement;
     const from = document.documentElement.style;
@@ -80,6 +95,8 @@ pre { background: var(--vscode-textCodeBlock-background); padding: 8px; overflow
     if (!doc || doc.planDressed) return;
     doc.planDressed = true;
     theme();
+    fit();
+    doc.addEventListener("toggle", fit, true);
     doc.addEventListener("click", (event) => {
       const link = event.target.closest?.("a, area");
       const href = link && (link.getAttribute("href") ?? link.getAttributeNS("http://www.w3.org/1999/xlink", "href"));
@@ -102,9 +119,13 @@ pre { background: var(--vscode-textCodeBlock-background); padding: 8px; overflow
     });
   }
 
-  // A short report's frame can finish loading before this script runs.
-  frame.addEventListener("load", dress);
-  if (frame.contentDocument?.readyState === "complete" && frame.contentDocument.URL === "about:srcdoc") dress();
+  // A short report's frame can finish loading before this script runs; a tab with no report yet has
+  // no frame.
+  if (frame) {
+    frame.addEventListener("load", dress);
+    if (frame.contentDocument?.readyState === "complete" && frame.contentDocument.URL === "about:srcdoc") dress();
+  }
+  window.addEventListener("resize", fit);
   new MutationObserver(theme).observe(document.documentElement, { attributes: true, attributeFilter: ["style"] });
   new MutationObserver(theme).observe(body, { attributes: true, attributeFilter: ["class"] });
 

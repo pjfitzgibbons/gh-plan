@@ -73,7 +73,7 @@ Found by the last local review and left unfixed: each is unlikely in use, and it
 
 ## Ship
 
-Go stages every change, so the staged list it opens is what Ship commits. Ship refuses a file changed since then, runs `pr`, then links the PR on the issue. `pr` rebases the branch onto `origin/main` after the commit and before the push, so a PR isn't behind `main` when Ship opens or updates it, and never takes a merge from it.
+Go stages every change, so the staged diff it shows in the Review tab is what Ship commits; one too large for git to hand over opens in VS Code's Staged Changes instead, and Go says why. Ship refuses a file changed since then, runs `pr`, then links the PR on the issue. `pr` rebases the branch onto `origin/main` after the commit and before the push, so a PR isn't behind `main` when Ship opens or updates it, and never takes a merge from it.
 
 | Step | Fails | Twice | At once | Stale | Guards |
 |---|---|---|---|---|---|
