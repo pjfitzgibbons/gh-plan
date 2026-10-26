@@ -117,7 +117,23 @@ FINDINGS = [
         "wrong",
         1,
         "2026-10-19 12:00:00",
-    ),  # Its issue was deleted: the plugin's routes no longer see it, so the counts leave it out too.
+    ),
+    # Not yet answered, so it has no outcome, and the counts, over accepted findings, leave it out.
+    (
+        8,
+        1,
+        "finding/v1:00000000000000f6",
+        "f.py",
+        2,
+        "ignored-file-overwrite",
+        "nothing",
+        "silent",
+        "not yet answered",
+        None,
+        None,
+        "2026-10-12 12:00:00",
+    ),
+    # Its issue was deleted: the plugin's routes no longer see it, so the counts leave it out too.
     (
         99,
         1,
@@ -268,6 +284,7 @@ def test_a_second_statement_is_refused_not_ignored(db):
         "SELECT 1 AS one;",
         "SELECT 1 AS one;;",
         "SELECT 1 AS one; -- a note",
+        "SELECT 1 AS one; /* unclosed",
         "-- a note\nSELECT 1 AS one /* and another */ ;",
         "  /* a note */ select 1 AS one",
     ],
@@ -281,6 +298,13 @@ def test_a_bad_query_names_the_error(db):
     run = sql(db, "SELEC 1")
     assert run.returncode == 1
     assert "SQLite3::SQLException" in run.stderr
+
+
+@pytest.mark.skipif(os.getuid() == 0, reason="root owns the file this test borrows")
+def test_a_database_another_user_owns_is_refused():
+    run = sql(Path("/etc/hosts"), "SELECT 1")
+    assert run.returncode == 2
+    assert "owner, root (exec -u root)" in run.stderr
 
 
 def test_a_missing_database_is_an_error_and_is_not_created(tmp_path):

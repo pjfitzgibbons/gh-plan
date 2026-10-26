@@ -1734,7 +1734,7 @@ class RedmineSet(unittest.TestCase):
         )
         self.assertEqual(
             self.rule(r, "old-rule", "new-rule"),
-            "no findings have rule old-rule; nothing written",
+            "no findings you can see have rule old-rule; nothing written",
         )
         self.assertEqual(len(r.writes), 1)
 

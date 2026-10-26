@@ -277,7 +277,7 @@ def set_rule(redmine, old: str, new: str, a) -> str:
     found = redmine.send("GET", path)
     n, confirmed = found["findings"], found["confirmed"]
     if not n:
-        return f"no findings have rule {old}; nothing written"
+        return f"no findings you can see have rule {old}; nothing written"
     print(f"  rule_id: {old} → {new} on {count(n, 'finding')}, {confirmed} of them confirmed")
     if a.check:
         return f"rule {old}: {count(n, 'finding')} to rename; nothing written"

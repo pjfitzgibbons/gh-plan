@@ -378,7 +378,7 @@ docker compose -f redmine/compose.yml exec -T -u redmine redmine ruby /setup/sql
 
 It opens `sqlite/redmine.db` with `SQLite3::Database.new(path, readonly: true)`. In the running
 image (sqlite3 gem 2.9.6, SQLite 3.53.2) a write on that connection raises
-`SQLite3::ReadOnlyException`, so a mistyped query can't change the tracker. `VACUUM INTO` is the exception: it writes a copy of the database even on a read-only connection, so `sql.rb` refuses any statement that starts with `VACUUM` before it opens the database. It also refuses a second statement after the first. `NULL` prints as an empty field. A tab, newline, carriage return or backslash prints as `\t`, `\n`, `\r` or `\\`, and any other control character as `\x` and two hex digits, so each row stays on one line.
+`SQLite3::ReadOnlyException`, so a mistyped query can't change the tracker. `VACUUM INTO` is the exception: it writes a copy of the database even on a read-only connection, so `sql.rb` refuses any statement that starts with `VACUUM` before it opens the database. It also refuses a second statement after the first, and runs only as the database's owner, since a read-only connection still creates the `-wal` and `-shm` files and root's would stop Redmine writing. `NULL` prints as an empty field. A tab, newline, carriage return or backslash prints as `\t`, `\n`, `\r` or `\\`, and any other control character as `\x` and two hex digits, so each row stays on one line.
 
 Counts by rule and outcome, over accepted findings. A finding seen in three rounds is three rows,
 so each fingerprint counts once, by its latest round:
@@ -392,7 +392,7 @@ WITH latest AS (
                    WHERE g.issue_id = f.issue_id AND g.fingerprint = f.fingerprint
                      AND g.confirmed_by_id IS NOT NULL)
 )
-SELECT rule_id, COALESCE(outcome, 'open') AS outcome, COUNT(*) AS n
+SELECT rule_id, outcome, COUNT(*) AS n
 FROM latest
 WHERE rule_id IS NOT NULL
 GROUP BY rule_id, outcome
@@ -411,8 +411,7 @@ found AS (
   SELECT issue_id, fingerprint, MIN(created_on) AS found_on FROM review_findings
   GROUP BY issue_id, fingerprint
 )
-SELECT strftime('%Y-%W', found.found_on) AS week, COALESCE(latest.outcome, 'open') AS outcome,
-       COUNT(*) AS n
+SELECT strftime('%Y-%W', found.found_on) AS week, latest.outcome, COUNT(*) AS n
 FROM latest JOIN found USING (issue_id, fingerprint)
 WHERE latest.rule_id = 'ignored-file-overwrite'
 GROUP BY week, outcome

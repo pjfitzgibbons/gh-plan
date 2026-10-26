@@ -8,15 +8,21 @@
 # return or backslash in a value prints as \t, \n, \r or \\, and any other control character as
 # \x and two hex digits, so each row is one line; bytes that aren't UTF-8 print as U+FFFD. SQL_DB
 # names another database, for the tests.
+#
+# A read-only connection still creates the -wal and -shm files when no other connection has them
+# open, so sql.rb runs only as the database's owner: run as root, it would leave root's files that
+# Redmine can't write.
 
+require 'etc'
 require 'sqlite3'
 
 DB = ENV.fetch('SQL_DB', '/usr/src/redmine/sqlite/redmine.db')
 ESCAPES = { "\\" => '\\\\', "\t" => '\t', "\n" => '\n', "\r" => '\r' }.freeze
 # The C0 controls, DEL and the C1 controls, which a terminal could act on or break a row at.
 CONTROLS = /[\\\u0000-\u001f\u007f-\u009f]/
-# Whitespace, comments and semicolons, which may come before the query and after it.
-FILLER = %r{\A(?:\s+|;|--[^\n]*(?:\n|\z)|/\*.*?\*/)*}m
+# Whitespace, comments and semicolons, which may come before the query and after it. SQLite
+# ends an unclosed /* comment at the end of the text.
+FILLER = %r{\A(?:\s+|;|--[^\n]*(?:\n|\z)|/\*.*?(?:\*/|\z))*}m
 VACUUM = /\AVACUUM\b/i
 USAGE = 'usage: sql.rb "<SELECT …>"'.freeze
 
@@ -30,6 +36,16 @@ end
 def refuse(message)
   warn message
   exit 2
+end
+
+if File.exist?(DB) && Process.uid != (owner = File.stat(DB).uid)
+  name = begin
+    Etc.getpwuid(owner).name
+  rescue ArgumentError # no user has that uid
+    owner
+  end
+  refuse "sql.rb: run as #{DB}'s owner, #{name} (exec -u #{name}), " \
+         'so the -wal and -shm files stay its own'
 end
 
 query = ARGV[0].to_s.sub(FILLER, '')

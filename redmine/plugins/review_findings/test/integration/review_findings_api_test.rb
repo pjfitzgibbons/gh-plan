@@ -188,6 +188,14 @@ class ReviewFindingsApiTest < Redmine::ApiTest::Base
     assert_match(/needs an outcome/, json['errors'].first)
   end
 
+  test 'a confirmed row always has an outcome, and an unconfirmed one may not' do
+    confirmed = review_findings(:fixed_verified)
+    confirmed.outcome = nil
+    refute confirmed.valid?
+    assert confirmed.errors.added?(:outcome, :blank)
+    assert review_findings(:open_silent).valid?
+  end
+
   test 'a 422 saves nothing from its request' do
     rows = [finding_row('finding/v1:00000000000000b1', 4),
             { 'fingerprint' => review_findings(:open_silent).fingerprint, 'round' => 1, 'line' => 99 },

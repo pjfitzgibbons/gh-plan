@@ -47,6 +47,8 @@ class ReviewFinding < ApplicationRecord
   validates :visibility, inclusion: { in: VISIBILITIES }, allow_nil: true
   validates :summary, presence: true, length: { maximum: 255 }
   validates :outcome, inclusion: { in: OUTCOMES }, allow_nil: true
+  # The counting queries (§3.6) read a confirmed row's outcome without a fallback.
+  validates :outcome, presence: true, if: :confirmed_by_id?
   validates :verified_round, numericality: { only_integer: true, less_than: INT_MAX }, allow_nil: true
   validates :pr_url, format: { with: PR_URL }, allow_nil: true
   validate :visibility_unless_nothing, :round_zero_for_missed, :verified_after_round

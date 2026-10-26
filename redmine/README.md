@@ -230,8 +230,10 @@ query can't change the tracker. `VACUUM` is refused before it runs, since `VACUU
 copy of the database even on a read-only connection. A second statement after the first is
 refused. `NULL` prints as an empty field. A tab, newline, carriage return or backslash in a value
 prints as `\t`, `\n`, `\r` or `\\`, and any other control character as `\x` and two hex digits,
-such as `\x1b`, so each row is one line and nothing reaches the terminal as a control. Bytes that
-aren't UTF-8, such as a BLOB's, print as `�`. Put the query in double quotes, as above, and its
+such as `\x1b`, so each row is one line and no C0 or C1 control reaches the terminal. Bytes that
+aren't UTF-8, such as a BLOB's, print as `�`. It runs only as the database's owner, hence
+`-u redmine`: a read-only connection still creates the `-wal` and `-shm` files when Redmine has
+none open, and root's would stop Redmine writing. Put the query in double quotes, as above, and its
 string literals in single quotes.
 
 Counts by rule and outcome, over accepted findings. A finding seen in three rounds is three rows,
@@ -248,7 +250,7 @@ WITH latest AS (
                    WHERE g.issue_id = f.issue_id AND g.fingerprint = f.fingerprint
                      AND g.confirmed_by_id IS NOT NULL)
 )
-SELECT rule_id, COALESCE(outcome, 'open') AS outcome, COUNT(*) AS n
+SELECT rule_id, outcome, COUNT(*) AS n
 FROM latest
 WHERE rule_id IS NOT NULL
 GROUP BY rule_id, outcome
@@ -271,8 +273,7 @@ found AS (
   SELECT issue_id, fingerprint, MIN(created_on) AS found_on FROM review_findings
   GROUP BY issue_id, fingerprint
 )
-SELECT strftime('%Y-%W', found.found_on) AS week, COALESCE(latest.outcome, 'open') AS outcome,
-       COUNT(*) AS n
+SELECT strftime('%Y-%W', found.found_on) AS week, latest.outcome, COUNT(*) AS n
 FROM latest JOIN found USING (issue_id, fingerprint)
 WHERE latest.rule_id = 'ignored-file-overwrite'
 GROUP BY week, outcome
