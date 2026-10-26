@@ -1005,7 +1005,7 @@ class NewIssue(unittest.TestCase):
         ]
         self.assertEqual(
             self.run_it(r, head),
-            "#80 already there, 0 relations added: http://redmine.test/issues/80",
+            "#80 already there in gh-plan, 0 relations added: http://redmine.test/issues/80",
         )
 
     def test_bad_fields_refuse_before_any_write(self):
