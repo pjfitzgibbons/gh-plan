@@ -107,8 +107,9 @@ project.
 
 An issue is `#<n>`, numbered by Redmine across every project. Its branch is `<type>/<n>-<slug>`,
 with `feat/`, `fix/` or `chore/`, and its worktree is `<repo>.worktrees/<n>` beside the main
-checkout. A commit message names the issue with `refs #<n>`, which links the commit, or
-`fixes #<n>`, which also closes the issue when Redmine fetches the commit. GitHub also links `#<n>`
+checkout. A branch's commit messages name the issue with `refs #<n>`, which links the commit; the
+squash commit on the default branch may say `fixes #<n>`, which also closes the issue when Redmine
+fetches the commit. GitHub also links `#<n>`
 in a commit message to the repo's own issue or pull request `<n>`, so a reference can point at
 both 🔍.
 
@@ -251,7 +252,8 @@ to an open PR also asks Copilot to review it again, for the commits that answer 
 
 The finish is the squash merge. GitHub makes the PR's title the squash commit's subject, so a PR
 that finishes issue `<n>` ends its title `(fixes #<n>)`, and one that does part of it
-`(refs #<n>)`. Redmine closes the issue when it fetches that commit.
+`(refs #<n>)`. Redmine closes the issue when it fetches that commit. Branch commits say `refs`,
+since Redmine scans every branch; `gh pc` and `gh pb` take the title's keyword from the PR body.
 
 Done shows beside Open on an In Progress row that links a PR. Once the PR has merged, it removes
 the issue's worktree, brings the main checkout's base up to the merge, deletes the branch, has
