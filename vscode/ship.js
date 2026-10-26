@@ -87,10 +87,10 @@ async function stage(root) {
 }
 
 // What Go staged, as git diff prints it, for the Review tab; renames as renames, and paths as they
-// are, unquoted. The prefixes and blank context lines are set here, so a user's diff config can't
-// change what stagedDiff reads. Output over execFile's 1 MB buffer refuses.
+// are, unquoted. The prefixes, blank context lines and textconv filters are set here, so no git
+// config changes what stagedDiff reads. Output over execFile's 1 MB buffer refuses.
 function stagedChanges(root) {
-  return git(root, "-c", "core.quotepath=false", "-c", "diff.suppressBlankEmpty=false", "diff", "--cached", "--no-color", "--no-ext-diff", "-M", "--src-prefix=a/", "--dst-prefix=b/");
+  return git(root, "-c", "core.quotepath=false", "-c", "diff.suppressBlankEmpty=false", "diff", "--cached", "--no-color", "--no-ext-diff", "--no-textconv", "-M", "--src-prefix=a/", "--dst-prefix=b/");
 }
 
 // Opens what Go staged, and returns why not, or null once it's open. VS Code's git extension reads

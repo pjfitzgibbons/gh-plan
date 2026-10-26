@@ -186,15 +186,7 @@ class Reports {
   #open(file, from, staged) {
     const issue = reportFile(file);
     if (!issue) return null;
-    // Stamped before it's read: a write in between leaves a stamp older than what's shown, so a
-    // click is refused and the tab shows the file again, never the other way round.
-    let shown = this.host.stamp(file);
-    let html = null;
-    try {
-      if (shown !== null) html = this.host.read(file);
-    } catch {
-      shown = null;
-    }
+    const { shown, html } = this.#read(file);
     // Only Go's staged changes open a tab with no report.
     if (shown === null && !staged) return null;
     let review = this.panels.get(file);
@@ -215,6 +207,24 @@ class Reports {
       // A hidden tab may miss a post, so a tab shown again is told the state.
       review.panel.onVisible(() => this.state(review));
     }
+    this.#draw(review, shown, html, staged);
+    return review;
+  }
+
+  // The report's stamp and text, stamped before it's read: a write in between leaves a stamp older
+  // than what's shown, so a click is refused and the tab shows the file again, never the other way
+  // round. Both are null once it's gone.
+  #read(file) {
+    const shown = this.host.stamp(file);
+    try {
+      return { shown, html: shown === null ? null : this.host.read(file) };
+    } catch {
+      return { shown: null, html: null };
+    }
+  }
+
+  // Draws the tab's page for the report as read, with Go's staged changes when it's given them.
+  #draw(review, shown, html, staged) {
     // A report other than the one Go saw is a new round to review: Ship waits for Go again. The
     // mark tells a Ship whose checks are running that this has been said.
     const go = this.host.armed(review);
@@ -229,7 +239,6 @@ class Reports {
     review.shown = shown;
     review.ship = this.ship(review);
     review.panel.setHtml(this.host.render(review, html));
-    return review;
   }
 
   // Whether the tab's button is Ship: Go armed it for this issue, on the report the tab shows.
@@ -261,16 +270,10 @@ class Reports {
     }
   }
 
-  // The tab's page drawn again from the report on disk, as last shown.
+  // The tab's page drawn again from the report as it is on disk; one changed since Go disarms Ship.
   redraw(review) {
-    let html = null;
-    try {
-      if (review.shown !== null) html = this.host.read(review.file);
-    } catch {
-      // Gone since: the watcher shows it as gone.
-    }
-    review.ship = this.ship(review);
-    review.panel.setHtml(this.host.render(review, html));
+    const { shown, html } = this.#read(review.file);
+    this.#draw(review, shown, html);
   }
 
   // A closed tab is told nothing: its webview is gone.

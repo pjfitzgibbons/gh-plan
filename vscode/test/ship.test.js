@@ -325,7 +325,7 @@ test("the staged changes are git's diff of what Go staged, renames as renames an
   assert.ok(!diff.includes("\u001b["), "no colour codes");
 });
 
-test("the staged changes read the same whatever the user's diff prefixes and blank-line config", async (t) => {
+test("the staged changes read the same whatever the diff prefixes, blank-line and textconv config", async (t) => {
   const s = sandbox(t);
   s.write("a.txt", "one\n\ntwo\n");
   await stage(s.root);
@@ -334,6 +334,9 @@ test("the staged changes read the same whatever the user's diff prefixes and bla
   await stage(s.root);
   execFileSync("git", ["config", "diff.noprefix", "true"], { cwd: s.root });
   execFileSync("git", ["config", "diff.suppressBlankEmpty", "true"], { cwd: s.root });
+  // A textconv filter would show its own text, not the file's, which pr commits.
+  fs.writeFileSync(path.join(s.root, ".git", "info", "attributes"), "*.txt diff=upper\n");
+  execFileSync("git", ["config", "diff.upper.textconv", "tr a-z A-Z <"], { cwd: s.root });
   const diff = await stagedChanges(s.root);
   assert.match(diff, /^diff --git a\/a\.txt b\/a\.txt$/m);
   assert.match(diff, /^\+\+\+ b\/a\.txt$/m);

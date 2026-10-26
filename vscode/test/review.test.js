@@ -109,7 +109,7 @@ function fixture() {
       panels.push(panel);
       return panel;
     },
-    render: (review, html) => `${review.shown}|${review.ship}|${html}`,
+    render: (review, html) => `${review.shown}|${review.ship}|${html}${review.staged ? `|${review.staged.message}` : ""}`,
     stamp: (at) => (fs.existsSync(at) ? `${fs.statSync(at).mtimeMs}:${fs.statSync(at).size}` : null),
     read: (at) => fs.readFileSync(at, "utf8"),
     exists: (at) => fs.existsSync(at),
@@ -500,7 +500,7 @@ test("Go's staged changes open the tab with no report, and Ship ships them", asy
   assert.equal(review.shown, null);
   assert.equal(review.ship, true);
   assert.equal(review.staged.files.length, 6);
-  assert.equal(panels[0].html, "null|true|null");
+  assert.equal(panels[0].html, "null|true|null|m");
   await reports.receive(review, { type: "ship", shown: "" });
   assert.equal(ran.length, 1);
 });
@@ -539,12 +539,25 @@ test("a new Go drops the last Go's staged changes before it stages, and redraws 
   const review = reports.show(file);
   arm(review.shown);
   reports.staged({ root, id: 110 }, { message: "m", diff: DIFF });
-  const drawn = panels[0].html;
-  // Go arms again before staging: the old diff goes, and the page is drawn again.
+  assert.match(panels[0].html, /\|m$/);
+  // Go arms again before staging: the old diff goes, and the page is drawn again without it.
   reports.armedChanged();
   assert.equal(review.staged, null);
-  assert.notEqual(panels[0].html, null);
-  assert.equal(panels[0].html, drawn);
+  assert.equal(panels[0].html, `${review.shown}|true|<p>round 1</p>`);
   reports.staged({ root, id: 110 }, { message: "m2", diff: DIFF });
   assert.equal(review.staged.message, "m2");
+});
+
+test("a redraw reads the report as it is now: one written since Go shows with its own stamp, and disarms Ship", () => {
+  const { root, file, panels, reports, write, arm, armed, said } = fixture();
+  write("<p>round 1</p>");
+  const review = reports.show(file);
+  arm(review.shown);
+  reports.staged({ root, id: 110 }, { message: "m", diff: DIFF });
+  write("<p>round 2</p>");
+  reports.armedChanged();
+  assert.equal(armed(), null);
+  assert.equal(review.ship, false);
+  assert.equal(panels[0].html, `${review.shown}|false|<p>round 2</p>`);
+  assert.match(said.at(-1)[1], /report changed since Go/);
 });

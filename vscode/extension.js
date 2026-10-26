@@ -299,8 +299,10 @@ function watchHandoff(context, storage) {
 // armed is the issue Go armed Ship for, { root, id, report, message }: its round report's stamp when
 // Go began and its commit.txt's once Go saved it, so Ship ships only the report and message Go saw.
 let armed = null;
-// The issue Ship is running for, from its checks to pr's end, so Go doesn't stage while pr commits.
+// The issue Ship is running for, from its checks to pr's end, so Go doesn't stage while pr commits;
+// and the one Go is running for, so Ship doesn't disarm or commit what Go is still staging.
 let shipping = null;
+let going = null;
 
 function arm(review) {
   armed = review;
@@ -464,8 +466,22 @@ async function go(uri) {
     vscode.window.showErrorMessage(`Plan: Ship is running for #${shipping}; press Go once it ends. Nothing ran.`);
     return;
   }
-  // The report as Go finds it, before its checks run, so one written while they run waits for Go.
+  if (going) {
+    vscode.window.showErrorMessage(`Plan: Go is running for #${going}; press Go once it ends. Nothing ran.`);
+    return;
+  }
   const issue = reviewFile((uri || vscode.window.activeTextEditor?.document.uri)?.fsPath || "");
+  // Set before the first await, so a Ship pressed while Go runs waits for it.
+  going = issue?.id ?? "?";
+  try {
+    await goChecked(uri, issue);
+  } finally {
+    going = null;
+  }
+}
+
+async function goChecked(uri, issue) {
+  // The report as Go finds it, before its checks run, so one written while they run waits for Go.
   const report = issue && stamp(path.join(issue.root, ".tmp", String(issue.id), "report.html"));
   const ready = await prepare(uri);
   // The commit message as Go saved it, stamped before the tab reads it, so Ship commits only the one
@@ -512,6 +528,10 @@ async function go(uri) {
 }
 
 async function ship(refresh) {
+  if (going) {
+    vscode.window.showErrorMessage(`Plan: Go is running for #${going}; press Ship once it ends. Nothing ran.`);
+    return;
+  }
   if (!armed) {
     vscode.window.showErrorMessage("Plan: press Go on an issue's review files first.");
     return;
