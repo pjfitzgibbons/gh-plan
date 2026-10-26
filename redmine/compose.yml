@@ -31,6 +31,7 @@ services:
       - ./setup.rb:/setup/setup.rb:ro
       - ./import.rb:/setup/import.rb:ro
       - ./backfill.rb:/setup/backfill.rb:ro
+      - ./sql.rb:/setup/sql.rb:ro
       # Each tracked repo's .git, read-only. setup.rb registers each as its project's repository.
       - ${GH_PLAN_GIT:-${HOME}/programming/gh-plan/.git}:/repos/gh-plan.git:ro
       - ${TEMPOTAG_GIT:-${HOME}/programming/tempotag/.git}:/repos/tempotag.git:ro

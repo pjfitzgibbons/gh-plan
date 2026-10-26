@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Change a Redmine issue or version, one committed command for each transition.
+"""Change a Redmine issue, version or review rule, one committed command for each transition.
 
     redmine_set.py issue 69 --status "In Progress" --note "Reopened: the fix didn't hold"
     redmine_set.py issue 69 --version "M2 Many windows"     # or --no-version to clear it
@@ -7,6 +7,7 @@
     redmine_set.py issue 69 --description .tmp/69/issue-69-body.md --expect 3f2a9c01d4e5  # from --check
     redmine_set.py version "M1 Claude review" --status closed
     redmine_set.py version "M5 Next" --create --description "…"    # shared with the project tree
+    redmine_set.py rule ignored-file-overwrite file-overwrite      # renames the rule on every finding
     redmine_set.py --check issue 69 --status Closed               # what would change; nothing written
 
 Every name and value is looked up in Redmine and checked before the first write: the status
@@ -25,11 +26,17 @@ exist, and a change over many issues is a list of these lines in a script.
 Versions are looked up in --project, plan by default, whose versions are shared with its
 subprojects; --create makes one there with sharing: tree.
 
+A rule renamed in REVIEW.md keeps its old id on the findings already recorded, so the review_findings
+plugin's counts split it in two (design 0005 §3.10). `rule OLD NEW` renames it on every finding in
+--project and its subprojects, in one transaction, and the plugin adds a journal note to the issue of
+each confirmed one. A finding on an issue the key can't manage findings in refuses the whole rename.
+
 The API key comes from the Keychain item redmine-gh-plan (REDMINE_KEYCHAIN picks another), and
 goes only in a request header. REDMINE_URL defaults to http://127.0.0.1:3010.
 """
 
 import argparse
+import re
 import shlex
 import sys
 from pathlib import Path
@@ -49,6 +56,8 @@ from redmine import (
 )
 
 VERSION_STATUSES = ["open", "locked", "closed"]
+# A rule id, as the review_findings plugin's ReviewFinding::RULE takes it.
+RULE = re.compile(r"[a-z0-9]+(?:-[a-z0-9]+)*")
 
 
 def points_id(redmine, issue: dict, points: str) -> int:
@@ -177,7 +186,7 @@ def set_issue(redmine, n: int, a, lenses: list[str], extra: list[str]) -> str:
     for _, line in changes:
         print(f"  {line}", end="" if line.endswith("\n") else "\n")
     if a.check:
-        said = f"#{n}: {len(changes)} change{'s' if len(changes) != 1 else ''} to make; nothing written"
+        said = f"#{n}: {count(len(changes), 'change')} to make; nothing written"
         if "description" in put:
             now = digest(normal(issue.get("description") or ""))
             said += f"; to write it, run the same command without --check and with --expect {now}"
@@ -249,13 +258,44 @@ def set_version(redmine, name: str, a) -> str:
     for key, value in put.items():
         print(f"  {key}: {v.get(key) or 'none'} → {value}")
     if a.check:
-        return f"version {name}: {len(put)} change{'s' if len(put) != 1 else ''} to make; nothing written"
+        return f"version {name}: {count(len(put), 'change')} to make; nothing written"
     redmine.send("PUT", f"/versions/{v['id']}.json", {"version": put})
     back = redmine.send("GET", f"/versions/{v['id']}.json")["version"]
     lost = version_unkept(back, put)
     if lost:
         raise Refused(f"version {name} was written, and Redmine didn't keep: {', '.join(lost)}")
     return f"version {name} changed: {redmine.url}/versions/{v['id']}"
+
+
+def set_rule(redmine, old: str, new: str, a) -> str:
+    for name in (old, new):
+        if not RULE.fullmatch(name):
+            raise Refused(f"rule id {name!r} isn't lowercase words and digits joined by hyphens")
+    if old == new:
+        raise Refused(f"the new rule id is {old}, the old one")
+    path = f"/projects/{a.project}/review_findings/rules/{old}.json"
+    found = redmine.send("GET", path)
+    n, confirmed = found["findings"], found["confirmed"]
+    if not n:
+        return f"no findings you can see have rule {old}; nothing written"
+    print(f"  rule_id: {old} → {new} on {count(n, 'finding')}, {confirmed} of them confirmed")
+    if a.check:
+        return f"rule {old}: {count(n, 'finding')} to rename; nothing written"
+    said = redmine.send("PUT", path, {"new_rule_id": new})
+    left = redmine.send("GET", path)["findings"]
+    if left:
+        raise Refused(
+            f"rule {old} was renamed, and Redmine still has {count(left, 'finding')} with it; "
+            "check them in Redmine"
+        )
+    return (
+        f"rule {old} renamed to {new} on {count(said['renamed'], 'finding')}, with "
+        f"{count(said['noted'], 'journal note')}"
+    )
+
+
+def count(n: int, thing: str) -> str:
+    return f"{n} {thing}{'s' if n != 1 else ''}"
 
 
 def parser() -> argparse.ArgumentParser:
@@ -307,6 +347,18 @@ def parser() -> argparse.ArgumentParser:
     v.add_argument(
         "--check", action="store_true", default=argparse.SUPPRESS, help=argparse.SUPPRESS
     )
+
+    r = sub.add_parser("rule", help="rename a review rule on every finding that has it")
+    r.add_argument("old", help="the rule id the findings have")
+    r.add_argument("new", help="the rule id REVIEW.md gives it now")
+    r.add_argument(
+        "--project",
+        default="plan",
+        help="the project whose findings it renames, with its subprojects; plan by default",
+    )
+    r.add_argument(
+        "--check", action="store_true", default=argparse.SUPPRESS, help=argparse.SUPPRESS
+    )
     return p
 
 
@@ -319,6 +371,8 @@ def main(argv=None) -> int:
         redmine = Redmine()
         if a.what == "version":
             said = set_version(redmine, a.name, a)
+        elif a.what == "rule":
+            said = set_rule(redmine, a.old, a.new, a)
         else:
             lenses, extra = outline.load_expected() if a.description is not None else ([], [])
             said = set_issue(redmine, a.issue, a, lenses, extra)

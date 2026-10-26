@@ -13,6 +13,7 @@ command here from the root of the gh-plan checkout.
 | `setup.rb` | The projects, fields, status, workflow, settings, repositories and versions |
 | `import.rb` | The one-time import of each repo's `.tracker/` items |
 | `backfill.rb` | The one-time backfill of each imported issue's commits, pull requests and status history |
+| `sql.rb` | One read-only query on the database, printed as tab-separated rows (*Querying the findings*) |
 | `plugins/lane_board/` | The lane board plugin, mounted read-only |
 | `plugins/review_findings/` | The review findings plugin, mounted read-only; the container migrates it on start |
 | `test_plugin`, `test-plugin.sh` | A plugin's tests, in the `test` stage (*Testing a plugin*) |
@@ -169,9 +170,9 @@ What it sets up:
 - A public query `Next up` in `plan`: open issues, Icebox left out, in Ordinal order.
 - The home page: links to `plan` and to `Next up`.
 
-`compose.yml` mounts `setup.rb`, `import.rb` and `backfill.rb` as single files. An editor that
-saves by replacing the file leaves the container holding the old one, or none, so recreate the
-container (`up -d --force-recreate`) after editing one.
+`compose.yml` mounts `setup.rb`, `import.rb`, `backfill.rb` and `sql.rb` as single files. An
+editor that saves by replacing the file leaves the container holding the old one, or none, so
+recreate the container (`up -d --force-recreate`) after editing one.
 
 ## Importing the items
 
@@ -212,6 +213,99 @@ issue already has is skipped.
 Redmine's commit keyword scan is off while the backfill fetches the old commits. Their `#<n>`
 numbers GitHub issues, and "Closes #3" would otherwise close Redmine's #3. Commits fetched later
 are scanned as usual.
+
+## Querying the findings
+
+The review findings live in the `review_findings` table of Redmine's database
+([design 0005 §3.6](../docs/design/0005-review-findings.md#queries)), so any question about them
+is a `SELECT`. `sql.rb` runs one, on a connection opened read-only, and prints the rows as
+tab-separated text, the column names first:
+
+```
+docker compose -f redmine/compose.yml exec -T -u redmine redmine ruby /setup/sql.rb "<SELECT …>"
+```
+
+A write on that connection raises `SQLite3::ReadOnlyException` and changes nothing, so a mistyped
+query can't change the tracker. `VACUUM` is refused before it runs, since `VACUUM INTO` writes a
+copy of the database even on a read-only connection. A second statement after the first is
+refused. `NULL` prints as an empty field. A tab, newline, carriage return or backslash in a value
+prints as `\t`, `\n`, `\r` or `\\`, and any other control character as `\x` and two hex digits,
+such as `\x1b`, so each row is one line and no C0 or C1 control reaches the terminal. Bytes that
+aren't UTF-8, such as a BLOB's, print as `�`. It runs only as the database's owner, hence
+`-u redmine`: a read-only connection still creates the `-wal` and `-shm` files when Redmine has
+none open, and root's would stop Redmine writing. Put the query in double quotes, as above, and its
+string literals in single quotes.
+
+Counts by rule and outcome, over accepted findings. A finding seen in three rounds is three rows,
+so each fingerprint counts once, by its latest accepted round. A finding re-opened in a round
+nobody has answered yet still counts by its last accepted answer. The join on `issues` leaves out
+a finding whose issue was deleted, as the plugin's routes do:
+
+```sql
+WITH latest AS (
+  SELECT f.* FROM review_findings f
+  JOIN issues i ON i.id = f.issue_id
+  WHERE f.confirmed_by_id IS NOT NULL
+    AND f.round = (SELECT MAX(g.round) FROM review_findings g
+                   WHERE g.issue_id = f.issue_id AND g.fingerprint = f.fingerprint
+                     AND g.confirmed_by_id IS NOT NULL)
+)
+SELECT rule_id, outcome, COUNT(*) AS n
+FROM latest
+WHERE rule_id IS NOT NULL
+GROUP BY rule_id, outcome
+ORDER BY rule_id, outcome;
+```
+
+One rule's findings by week, over the same latest rows, each in the week it was first found;
+change `ignored-file-overwrite` to the rule:
+
+```sql
+WITH latest AS (
+  SELECT f.* FROM review_findings f
+  JOIN issues i ON i.id = f.issue_id
+  WHERE f.confirmed_by_id IS NOT NULL
+    AND f.round = (SELECT MAX(g.round) FROM review_findings g
+                   WHERE g.issue_id = f.issue_id AND g.fingerprint = f.fingerprint
+                     AND g.confirmed_by_id IS NOT NULL)
+),
+found AS (
+  SELECT issue_id, fingerprint, MIN(created_on) AS found_on FROM review_findings
+  GROUP BY issue_id, fingerprint
+)
+SELECT strftime('%Y-%W', found.found_on) AS week, latest.outcome, COUNT(*) AS n
+FROM latest JOIN found USING (issue_id, fingerprint)
+WHERE latest.rule_id = 'ignored-file-overwrite'
+GROUP BY week, outcome
+ORDER BY week, outcome;
+```
+
+The open silent findings, across every issue: each finding once, by its latest round, listed
+while that round has no answer:
+
+```sql
+SELECT i.id AS issue, i.subject, f.round, f.file, f.line, f.severity, f.summary
+FROM review_findings f
+JOIN issues i ON i.id = f.issue_id
+WHERE f.round = (SELECT MAX(g.round) FROM review_findings g
+                 WHERE g.issue_id = f.issue_id AND g.fingerprint = f.fingerprint)
+  AND f.visibility = 'silent' AND f.severity <> 'nothing' AND f.outcome IS NULL
+ORDER BY i.id, f.round, f.id;
+```
+
+A rule renamed in `REVIEW.md` keeps its old id on the findings already recorded, so the counts
+split it in two; fingerprints don't include the rule, so no finding repeats. `redmine-set` moves
+them to the new id, in `plan` and its subprojects (`--project` picks another), in one transaction,
+and adds a journal note to the issue of each confirmed one:
+
+```
+redmine-set --check rule old-id new-id    # how many findings it would rename; nothing written
+redmine-set rule old-id new-id
+```
+
+A second run finds no findings with the old id and writes nothing. Rails loads the plugin's routes
+when the container starts, so a Redmine started before the plugin had the rename answers 404
+until `docker compose -f redmine/compose.yml restart redmine`, run from the checkout on `main`.
 
 ## Upgrading
 

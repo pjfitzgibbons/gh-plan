@@ -188,6 +188,14 @@ class ReviewFindingsApiTest < Redmine::ApiTest::Base
     assert_match(/needs an outcome/, json['errors'].first)
   end
 
+  test 'a confirmed row always has an outcome, and an unconfirmed one may not' do
+    confirmed = review_findings(:fixed_verified)
+    confirmed.outcome = nil
+    refute confirmed.valid?
+    assert confirmed.errors.added?(:outcome, :blank)
+    assert review_findings(:open_silent).valid?
+  end
+
   test 'a 422 saves nothing from its request' do
     rows = [finding_row('finding/v1:00000000000000b1', 4),
             { 'fingerprint' => review_findings(:open_silent).fingerprint, 'round' => 1, 'line' => 99 },
@@ -285,5 +293,84 @@ class ReviewFindingsApiTest < Redmine::ApiTest::Base
     Role.find(2).remove_permission!(:view_review_findings)
     get '/projects/1/review_findings/rules.json', headers: signed_in('dlopper')
     assert_response :forbidden
+  end
+
+  def rename_rule(to, user: 'jsmith', from: 'ignored-file-overwrite')
+    put "/projects/1/review_findings/rules/#{from}.json",
+        params: { 'new_rule_id' => to }.to_json,
+        headers: { 'CONTENT_TYPE' => 'application/json' }.merge(signed_in(user))
+  end
+
+  def rule_ids
+    ReviewFinding.order(:id).pluck(:id, :rule_id)
+  end
+
+  test 'GET rules/:rule_id counts the rule findings and the confirmed ones' do
+    get '/projects/1/review_findings/rules/ignored-file-overwrite.json', headers: signed_in('dlopper')
+    assert_response :success
+    assert_equal({ 'rule_id' => 'ignored-file-overwrite', 'findings' => 4, 'confirmed' => 3 }, json)
+  end
+
+  test 'a rename moves every finding to the new rule, notes each confirmed one, and a second changes nothing' do
+    assert_difference 'Journal.count', 3 do
+      rename_rule('file-overwrite')
+    end
+    assert_response :success
+    assert_equal({ 'renamed' => 4, 'noted' => 3 }, json)
+    assert_equal 0, ReviewFinding.where(rule_id: 'ignored-file-overwrite').count
+    assert_equal 4, ReviewFinding.where(rule_id: 'file-overwrite').count
+    note = Journal.order(:id).last
+    assert_includes note.notes, 'changed review finding'
+    assert_includes note.notes, '* rule_id: "ignored-file-overwrite" → "file-overwrite"'
+    assert_equal User.find_by(login: 'jsmith'), note.user
+    assert_not_nil review_findings(:fixed_verified).reload.confirmed_by_id
+
+    assert_no_difference 'Journal.count' do
+      rename_rule('file-overwrite')
+    end
+    assert_response :success
+    assert_equal({ 'renamed' => 0, 'noted' => 0 }, json)
+  end
+
+  test 'a new rule id that is not kebab-case, or is the old one, is refused' do
+    before = rule_ids
+    ['File-Overwrite', '', nil, 'ignored-file-overwrite'].each do |to|
+      assert_no_difference 'Journal.count' do
+        rename_rule(to)
+      end
+      assert_response :unprocessable_content
+      assert_match(/new_rule_id/, json['errors'].first)
+    end
+    assert_equal before, rule_ids
+  end
+
+  test 'L3: a rename that fails part-way renames none' do
+    ReviewFinding.where(rule_id: 'ignored-file-overwrite').order(:id).last.update_column(:summary, '')
+    before = rule_ids
+    assert_no_difference 'Journal.count' do
+      rename_rule('file-overwrite')
+    end
+    assert_response :unprocessable_content
+    assert_match(/Summary/, json['errors'].first)
+    assert_equal before, rule_ids
+  end
+
+  test 'L1: a rename without manage_review_findings gets 403' do
+    rename_rule('file-overwrite', user: 'dlopper')
+    assert_response :forbidden
+    assert_equal 0, ReviewFinding.where(rule_id: 'file-overwrite').count
+  end
+
+  test 'L1: a finding on an issue the user cannot see refuses the whole rename' do
+    # Manager sees only its own issues: jsmith wrote issue 1, and issue 2, which has the seed row,
+    # is made dlopper's.
+    Role.find(1).update!(issues_visibility: 'own')
+    Issue.find(2).update_columns(author_id: 3, assigned_to_id: 3)
+    Watcher.where(watchable_type: 'Issue', watchable_id: 2).delete_all
+    before = rule_ids
+    rename_rule('file-overwrite')
+    assert_response :unprocessable_content
+    assert_match(/1 finding with rule ignored-file-overwrite is on issues you can't see or manage/, json['errors'].first)
+    assert_equal before, rule_ids
   end
 end

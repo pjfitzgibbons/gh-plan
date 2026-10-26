@@ -163,6 +163,8 @@ records the outcome and the confirmation when Ship sends it (§3.4). If round 7 
 | `GET /issues/:issue_id/review_findings.json` | The issue's findings, every round | `view_review_findings` |
 | `PUT /issues/:issue_id/review_findings.json` | Upserts a list of rows by `(fingerprint, round)`, in one transaction. A field the request leaves out is left as it is. A row Peter has confirmed changes only from an outcome line (`"confirm": true`); a round line leaves every field of it as it is. A change to a confirmed row adds a journal note to the issue, with the user and the old and new values | `manage_review_findings` |
 | `GET /projects/:project_id/review_findings/rules.json` | Per rule: real and noise counts over confirmed findings, each fingerprint counted once by its latest round (§3.7) | `view_review_findings` |
+| `GET /projects/:project_id/review_findings/rules/:rule_id.json` | How many findings have the rule, and how many of them are confirmed, over the same issues as `rules.json` | `view_review_findings` |
+| `PUT /projects/:project_id/review_findings/rules/:rule_id.json` | Renames the rule to the body's `new_rule_id` on every finding in the project and its sub-projects, in one transaction, with a journal note for each confirmed one (§3.10). A finding on an issue the user can't see or can't manage findings in refuses the whole rename | `manage_review_findings` |
 | `GET /projects/:project_id/review_findings` | The Findings tab (§5, L5) | `view_review_findings` |
 
 A `PUT` that names a value outside the allowed values above is refused with 422, and nothing in
@@ -371,12 +373,12 @@ The store is Redmine's SQLite database, so any question about findings is a `SEL
 prints the rows as tab-separated text:
 
 ```
-docker compose -f redmine/compose.yml exec -T redmine ruby /setup/sql.rb "<SELECT …>"
+docker compose -f redmine/compose.yml exec -T -u redmine redmine ruby /setup/sql.rb "<SELECT …>"
 ```
 
 It opens `sqlite/redmine.db` with `SQLite3::Database.new(path, readonly: true)`. In the running
 image (sqlite3 gem 2.9.6, SQLite 3.53.2) a write on that connection raises
-`SQLite3::ReadOnlyException`, so a mistyped query can't change the tracker.
+`SQLite3::ReadOnlyException`, so a mistyped query can't change the tracker. `VACUUM INTO` is the exception: it writes a copy of the database even on a read-only connection, so `sql.rb` refuses any statement that starts with `VACUUM` before it opens the database. It also refuses a second statement after the first, and runs only as the database's owner, since a read-only connection still creates the `-wal` and `-shm` files and root's would stop Redmine writing. `NULL` prints as an empty field. A tab, newline, carriage return or backslash prints as `\t`, `\n`, `\r` or `\\`, and any other control character as `\x` and two hex digits, so each row stays on one line.
 
 Counts by rule and outcome, over accepted findings. A finding seen in three rounds is three rows,
 so each fingerprint counts once, by its latest round:
@@ -384,12 +386,13 @@ so each fingerprint counts once, by its latest round:
 ```sql
 WITH latest AS (
   SELECT f.* FROM review_findings f
+  JOIN issues i ON i.id = f.issue_id
   WHERE f.confirmed_by_id IS NOT NULL
     AND f.round = (SELECT MAX(g.round) FROM review_findings g
                    WHERE g.issue_id = f.issue_id AND g.fingerprint = f.fingerprint
                      AND g.confirmed_by_id IS NOT NULL)
 )
-SELECT rule_id, COALESCE(outcome, 'open') AS outcome, COUNT(*) AS n
+SELECT rule_id, outcome, COUNT(*) AS n
 FROM latest
 WHERE rule_id IS NOT NULL
 GROUP BY rule_id, outcome
@@ -397,27 +400,34 @@ ORDER BY rule_id, outcome;
 ```
 
 The latest round is the latest accepted one, so a finding re-opened in a round nobody has answered
-yet still counts by its last accepted answer.
+yet still counts by its last accepted answer. The join on `issues` leaves out a finding whose issue
+was deleted, as the plugin's routes do.
 
-A rule's findings over time, by week, over the same `latest` rows:
+A rule's findings over time, by week, over the same `latest` rows. Each finding counts in the week it was first found, not the week of its latest round:
 
 ```sql
-WITH latest AS (/* as above */)
-SELECT strftime('%Y-%W', created_on) AS week, COALESCE(outcome, 'open') AS outcome, COUNT(*) AS n
-FROM latest
-WHERE rule_id = 'ignored-file-overwrite'
+WITH latest AS (/* as above */),
+found AS (
+  SELECT issue_id, fingerprint, MIN(created_on) AS found_on FROM review_findings
+  GROUP BY issue_id, fingerprint
+)
+SELECT strftime('%Y-%W', found.found_on) AS week, latest.outcome, COUNT(*) AS n
+FROM latest JOIN found USING (issue_id, fingerprint)
+WHERE latest.rule_id = 'ignored-file-overwrite'
 GROUP BY week, outcome
-ORDER BY week;
+ORDER BY week, outcome;
 ```
 
-The open silent findings, across every issue:
+The open silent findings, across every issue. Each finding is listed once, by its latest round, and only while that round has no answer, so one answered in a later round drops off:
 
 ```sql
 SELECT i.id AS issue, i.subject, f.round, f.file, f.line, f.severity, f.summary
 FROM review_findings f
 JOIN issues i ON i.id = f.issue_id
-WHERE f.visibility = 'silent' AND f.severity <> 'nothing' AND f.outcome IS NULL
-ORDER BY i.id, f.round;
+WHERE f.round = (SELECT MAX(g.round) FROM review_findings g
+                 WHERE g.issue_id = f.issue_id AND g.fingerprint = f.fingerprint)
+  AND f.visibility = 'silent' AND f.severity <> 'nothing' AND f.outcome IS NULL
+ORDER BY i.id, f.round, f.id;
 ```
 
 <a id="codify"></a>
@@ -524,7 +534,7 @@ the rules or the model change, never on a schedule.
 | Peter deletes a line from `outcomes.md` | The finding stays open; a silent one brings another round, up to round 3 |
 | An outcome line names a fingerprint the issue doesn't have | `pr` stops before recording anything and names the line |
 | Two windows send the same round | One transaction takes SQLite's write lock and wins. The other waits out the busy timeout and fails with `SQLite3::BusyException`, or, if it got past the lock, `RecordNotUnique` at the unique index. The controller rolls back and runs it once more on either, and the retry finds the rows and changes nothing. A retry that fails again answers 500, the outbox keeps the file, and the next `pr` sends it |
-| A rule is renamed in `REVIEW.md` | Old rows keep the old id. Fingerprints don't include the rule, so no finding repeats. A rename is a one-line `UPDATE` W3 documents |
+| A rule is renamed in `REVIEW.md` | Old rows keep the old id. Fingerprints don't include the rule, so no finding repeats. `redmine-set rule OLD NEW` moves them to the new id through the plugin's rename route, all or none, with a journal note on each confirmed row, and a second run writes nothing |
 
 <a id="alternatives"></a>
 ## 4. Alternatives considered
@@ -632,7 +642,7 @@ Each item is a Redmine issue in project `plan`, related to #84.
 |---|---|---|---|
 | W1 | The plugin in `redmine/plugins/review_findings/`: model, migration, the API's routes and permissions, the journal note on a confirmed row's change (§3.1), the mount and `REDMINE_PLUGINS_MIGRATE` in `compose.yml`, its README, and `redmine/README.md`'s upgrade check | — | 5 |
 | W2 | The Findings tab and the issue page's count (§5, L5) | W1 | 3 |
-| W3 | `redmine/sql.rb`, its mount and the queries in §3.6, in `redmine/README.md` | W1 | 1 |
+| W3 | `redmine/sql.rb`, its mount and the queries in §3.6, in `redmine/README.md`; the rename route (§3.1) and `redmine-set rule` (§3.10) | W1 | 1 |
 | W4 | `findings.py` with `add-round` (the check gate, fingerprints, no-repeat) and `send`, the outbox, and `pr` calling it (§3.3, §3.4, §3.5) | W1 | 5 |
 | W5 | Go opens `outcomes.md`; Done's existing refusal over unsent `replies/` (`vscode/done.js`) extends to an outbox that isn't empty | W4 | 2 |
 | W6 | `redmine/import_findings.rb` and the 38 seed rows, after Peter confirms §3.2's draft | W1 | 2 |

@@ -1292,6 +1292,8 @@ class FakePlan:
         }
         self.writes = []
         self.keep = keep
+        # Each finding's rule id, and whether it is confirmed.
+        self.findings = [("old-rule", True), ("old-rule", False), ("other-rule", True)]
 
     def send(self, method, path, body=None):
         path, _, _ = path.partition("?")
@@ -1299,6 +1301,14 @@ class FakePlan:
             self.writes.append((method, path, body))
             if not self.keep:
                 return None
+        if path.startswith("/projects/plan/review_findings/rules/"):
+            rule = path.split("/")[-1].removesuffix(".json")
+            rows = [f for f in self.findings if f[0] == rule]
+            if method == "PUT":
+                to = body["new_rule_id"]
+                self.findings = [(to if f[0] == rule else f[0], f[1]) for f in self.findings]
+                return {"renamed": len(rows), "noted": sum(c for _, c in rows)}
+            return {"rule_id": rule, "findings": len(rows), "confirmed": sum(c for _, c in rows)}
         if path == "/issues/69.json":
             if method == "PUT":
                 self.put_issue(body["issue"])
@@ -1697,6 +1707,60 @@ class RedmineSet(unittest.TestCase):
             Refused, "didn't keep: status; it kept: version, note; check it in Redmine"
         ):
             self.issue(r, "--no-version", "--status", "In Progress", "--note", "Reopened.")
+
+    def rule(self, r, *args):
+        a = redmine_set.parser().parse_args(["rule", *args])
+        return redmine_set.set_rule(r, a.old, a.new, a)
+
+    def test_a_rule_is_renamed_on_every_finding_and_a_second_run_writes_nothing(self):
+        r = FakePlan()
+        said = self.rule(r, "old-rule", "new-rule")
+        self.assertEqual(
+            said, "rule old-rule renamed to new-rule on 2 findings, with 1 journal note"
+        )
+        self.assertEqual(
+            r.writes,
+            [
+                (
+                    "PUT",
+                    "/projects/plan/review_findings/rules/old-rule.json",
+                    {"new_rule_id": "new-rule"},
+                )
+            ],
+        )
+        self.assertIn(
+            "rule_id: old-rule → new-rule on 2 findings, 1 of them confirmed",
+            self.out.getvalue(),
+        )
+        self.assertEqual(
+            self.rule(r, "old-rule", "new-rule"),
+            "no findings you can see have rule old-rule; nothing written",
+        )
+        self.assertEqual(len(r.writes), 1)
+
+    def test_a_rule_check_writes_nothing(self):
+        r = FakePlan()
+        a = redmine_set.parser().parse_args(["--check", "rule", "old-rule", "new-rule"])
+        said = redmine_set.set_rule(r, a.old, a.new, a)
+        self.assertEqual(said, "rule old-rule: 2 findings to rename; nothing written")
+        self.assertEqual(r.writes, [])
+
+    def test_bad_rule_ids_refuse_before_any_read(self):
+        for args, says in [
+            (["Old-Rule", "new-rule"], "rule id 'Old-Rule' isn't lowercase"),
+            (["old-rule", "new_rule"], "rule id 'new_rule' isn't lowercase"),
+            (["old-rule", "old-rule"], "the new rule id is old-rule, the old one"),
+        ]:
+            r = FakePlan()
+            r.send = mock.Mock(side_effect=AssertionError("read Redmine"))
+            with self.subTest(args), self.assertRaisesRegex(Refused, says):
+                self.rule(r, *args)
+
+    def test_a_rename_redmine_did_not_keep_is_named(self):
+        with self.assertRaisesRegex(
+            Refused, "renamed, and Redmine still has 2 findings with it; check them"
+        ):
+            self.rule(FakePlan(keep=False), "old-rule", "new-rule")
 
     def test_main_prints_the_result_and_exits_on_a_refusal(self):
         r = FakePlan()
