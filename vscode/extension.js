@@ -307,7 +307,8 @@ let going = null;
 function arm(review) {
   armed = review;
   reports?.armedChanged();
-  return vscode.commands.executeCommand("setContext", "plan.shipReady", Boolean(review));
+  // armed as it is now: a redraw in armedChanged can disarm, and its own setContext goes first.
+  return vscode.commands.executeCommand("setContext", "plan.shipReady", Boolean(armed));
 }
 
 // The Review tabs (review.js): each issue's .tmp/<n>/report.html, opened or refreshed whenever it's
@@ -471,8 +472,10 @@ async function go(uri) {
     return;
   }
   const issue = reviewFile((uri || vscode.window.activeTextEditor?.document.uri)?.fsPath || "");
+  // Not an issue's file: prepare says so.
+  if (!issue) return prepare(uri);
   // Set before the first await, so a Ship pressed while Go runs waits for it.
-  going = issue?.id ?? "?";
+  going = issue.id;
   try {
     await goChecked(uri, issue);
   } finally {
@@ -482,7 +485,7 @@ async function go(uri) {
 
 async function goChecked(uri, issue) {
   // The report as Go finds it, before its checks run, so one written while they run waits for Go.
-  const report = issue && stamp(path.join(issue.root, ".tmp", String(issue.id), "report.html"));
+  const report = stamp(path.join(issue.root, ".tmp", String(issue.id), "report.html"));
   const ready = await prepare(uri);
   // The commit message as Go saved it, stamped before the tab reads it, so Ship commits only the one
   // shown.
@@ -493,7 +496,8 @@ async function goChecked(uri, issue) {
     return;
   }
   await arm(ready && { root: ready.root, id: ready.id, report, message });
-  if (!ready) return;
+  // A report the arm's redraw found changed has disarmed Ship again, and said so.
+  if (!ready || armed?.id !== ready.id) return;
   if (ready.dirty) {
     try {
       await stage(ready.root);

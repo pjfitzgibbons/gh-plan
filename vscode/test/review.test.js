@@ -114,7 +114,11 @@ function fixture() {
     read: (at) => fs.readFileSync(at, "utf8"),
     exists: (at) => fs.existsSync(at),
     armed: () => armed,
-    disarm: () => (armed = null),
+    // As the extension's: disarming tells every tab, from inside a redraw too.
+    disarm: () => {
+      armed = null;
+      reports.armedChanged();
+    },
     execute: async (...args) => ran.push(args),
     say: (level, text) => said.push([level, text]),
   };
@@ -124,7 +128,8 @@ function fixture() {
     mtime += 1000;
     fs.utimesSync(file, mtime / 1000, mtime / 1000);
   };
-  return { root, dir, file, panels, ran, said, host, write, arm: (report) => (armed = { report }), armed: () => armed, reports: new Reports(host) };
+  const reports = new Reports(host);
+  return { root, dir, file, panels, ran, said, host, write, arm: (report) => (armed = { report }), armed: () => armed, reports };
 }
 
 test("L3, L8: a report saved twice leaves one tab, showing the second file", () => {
@@ -560,4 +565,16 @@ test("a redraw reads the report as it is now: one written since Go shows with it
   assert.equal(review.ship, false);
   assert.equal(panels[0].html, `${review.shown}|false|<p>round 2</p>`);
   assert.match(said.at(-1)[1], /report changed since Go/);
+  assert.equal(said.length, 1);
+});
+
+test("a redraw after the report is deleted says it's gone, not changed", () => {
+  const { root, file, reports, arm, armed, said, write } = fixture();
+  write("<p>round 1</p>");
+  arm(reports.show(file).shown);
+  reports.staged({ root, id: 110 }, { message: "m", diff: DIFF });
+  fs.unlinkSync(file);
+  reports.armedChanged();
+  assert.equal(armed(), null);
+  assert.match(said.at(-1)[1], /report is gone since Go/);
 });
