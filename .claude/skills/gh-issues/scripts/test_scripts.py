@@ -831,6 +831,12 @@ class FakeTracker:
         self.issues = {79: {"id": 79, "subject": "Older", "relations": []}}
         self.posts = []
         self.drop_status = drop_status
+        # gh-plan on the second page, so its match needs every page.
+        self.projects = [
+            {"id": 1, "identifier": "plan", "homepage": ""},
+            {"id": 3, "identifier": "tempotag", "homepage": "https://github.com/example/tempotag"},
+            {"id": 2, "identifier": "gh-plan", "homepage": "https://github.com/example/gh-plan"},
+        ]
 
     def send(self, method, path, body=None):
         path, _, query = path.partition("?")
@@ -860,22 +866,11 @@ class FakeTracker:
                 }
             }
         if path == "/projects.json":
-            # gh-plan on the second page, so its match needs every page.
-            listed = [
-                {"id": 1, "identifier": "plan", "homepage": ""},
-                {
-                    "id": 3,
-                    "identifier": "tempotag",
-                    "homepage": "https://github.com/example/tempotag",
-                },
-                {
-                    "id": 2,
-                    "identifier": "gh-plan",
-                    "homepage": "https://github.com/example/gh-plan",
-                },
-            ]
             offset = int(urllib.parse.parse_qs(query).get("offset", ["0"])[0])
-            return {"projects": listed[offset : offset + 2], "total_count": len(listed)}
+            return {
+                "projects": self.projects[offset : offset + 2],
+                "total_count": len(self.projects),
+            }
         if path == "/projects/gh-plan/versions.json":
             return {"versions": [{"id": 2, "name": "Redmine migration"}]}
         if path == "/issue_statuses.json":
@@ -1034,6 +1029,8 @@ class NewIssue(unittest.TestCase):
             "git@github.com:Example/gh-plan.git",
             "ssh://git@github.com/example/gh-plan.git",
             "https://x-access-token:secret@github.com/example/gh-plan/",
+            "https://user:p@ss@github.com/example/gh-plan.git",
+            "git://github.com/example/gh-plan.git",
         ):
             r = FakeTracker()
             with self.subTest(origin):
@@ -1066,6 +1063,31 @@ class NewIssue(unittest.TestCase):
                 self.run_it(FakeTracker(), origin=origin)
             self.assertIn(f"no project has {shown} as its homepage", str(refused.exception))
             self.assertNotIn("secret", str(refused.exception))
+
+    def test_two_projects_with_the_origin_as_homepage_refuse_before_any_write(self):
+        r = FakeTracker()
+        r.projects[0]["homepage"] = "git@github.com:example/gh-plan.git"
+        with self.assertRaisesRegex(
+            Refused, "^plan, gh-plan all have github.com/example/gh-plan as their homepage"
+        ):
+            self.run_it(r)
+        self.assertEqual(r.posts, [])
+
+    def test_origin_is_none_outside_a_checkout_or_with_no_origin(self):
+        url = "https://github.com/example/gh-plan.git"
+        with tempfile.TemporaryDirectory() as d:
+            ceiling = {"GIT_CEILING_DIRECTORIES": str(Path(d).resolve().parent)}
+            old = Path.cwd()
+            os.chdir(d)
+            try:
+                with mock.patch.dict(os.environ, ceiling):
+                    self.assertIsNone(new_issue.origin())
+                    subprocess.run(["git", "init", "-q"], check=True)
+                    self.assertIsNone(new_issue.origin())
+                    subprocess.run(["git", "remote", "add", "origin", url], check=True)
+                    self.assertEqual(new_issue.origin(), url)
+            finally:
+                os.chdir(old)
 
     def test_a_draft_that_isnt_there_stops_before_redmine_is_read(self):
         with (

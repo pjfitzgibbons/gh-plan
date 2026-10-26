@@ -210,7 +210,7 @@ ActiveRecord::Base.transaction do
     if status.success?
       # Any user or token before the host is dropped, whatever the host, and SSH forms become a
       # plain https://github.com/ link.
-      child.homepage = origin.strip.sub(%r{\A(\w+://)?[^@/]+@}, '\\1').sub(/\.git\z/, '')
+      child.homepage = origin.strip.sub(%r{\A(\w+://)?[^/]*@}, '\\1').sub(/\.git\z/, '')
                              .sub(%r{\A(\w+://)?github\.com[:/]}, 'https://github.com/')
       save(child, "homepage of #{identifier}")
     else

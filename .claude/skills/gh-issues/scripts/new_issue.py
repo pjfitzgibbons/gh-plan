@@ -96,8 +96,8 @@ def github(url: str) -> str:
     Any user or token before the host is dropped, whatever the host, so none is matched on or printed.
     """
     url = url.strip().lower().rstrip("/").removesuffix(".git")
-    url = re.sub(r"^([a-z][a-z0-9+.-]*://)?[^@/]+@", r"\1", url)
-    return re.sub(r"^(https?://|ssh://)?github\.com[:/]", "github.com/", url)
+    url = re.sub(r"^([a-z][a-z0-9+.-]*://)?[^/]*@", r"\1", url)
+    return re.sub(r"^([a-z][a-z0-9+.-]*://)?github\.com[:/]", "github.com/", url)
 
 
 def project_of(redmine, origin: str | None) -> str:
