@@ -276,6 +276,16 @@ here are gh-plan's, as its `setup.rb` places them (§3.6).
 Relations, subtasks, linked commits, attachments and history stay below the groups, as core
 draws them.
 
+The Status group ends with a slot for lines other plugins add. Ulysses's plugin calls its own hook
+there, `view_ulysses_status_rows`, with the issue, then sets `@ulysses_status_rows` on the view.
+The review findings plugin's Findings line belongs in that slot, since the open silent count is
+part of the issue's state. Until Ulysses's plugin is built, the line renders through core's
+`view_issues_show_details_bottom` hook, inside `div.attributes` after the fields. The build adds a
+listener on the slot to the review findings plugin, and its `view_issues_show_details_bottom`
+partial skips once `@ulysses_status_rows` is set, so the line shows once. Either way the line
+writes core's attribute markup itself rather than calling `issue_fields_rows`, which Ulysses's
+plugin overrides.
+
 **Rendering.** Core's `show.html.erb` is untouched, and draws, in order: the heading
 (`render_issue_subject_with_tree`), the attributes (`issue_fields_rows` and
 `render_half_width_custom_fields_rows`, inside `div.attributes`), the description, the
@@ -554,7 +564,7 @@ checkout (`plan.checkouts`).
 | W3 | `redmine_ulysses` | The `edit` and `PATCH` routes, their checks, notes, and their Turbo Stream answers for the field and `lock_version` (§3.2) | W1 | 5 |
 | W4 | `redmine_ulysses` | Issue-page editors for single-valued fields and booleans, saving on leave (§3.3) | W2, W3 | 5 |
 | W5 | `redmine_ulysses` | The tag combobox, and the subject and description editors (§3.3) | W4 | 3 |
-| W6 | `redmine_ulysses` | Group rendering, the plugin's default layout, the groups' redraw after a status or tracker save, and collapse state (§3.2, §3.4, §3.5, §3.6) | W2, W3 | 3 |
+| W6 | `redmine_ulysses` | Group rendering, the plugin's default layout, the Status group's slot for other plugins' lines with the Findings line moved into it, the groups' redraw after a status or tracker save, and collapse state (§3.2, §3.4, §3.5, §3.6) | W2, W3 | 3 |
 | W7 | `redmine_ulysses` | The settings page for placing fields (§3.6) | W6 | 3 |
 | W8 | `redmine_ulysses` | Editing in the issue list (§3.7) | W4 | 5 |
 | W9 | gh-plan | Installs a Ulysses release; Opale out; glasswing as `redmine/ulysses/theme.css` with its fonts and design book, passing the theme check; `setup.rb` sets the theme to Default and writes gh-plan's layout; `redmine/README.md`, `CLAUDE.md`, and architecture §1, §6.1, §6.3 and §9 | W5, W7, W8 | 5 |

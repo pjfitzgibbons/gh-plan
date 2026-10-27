@@ -108,4 +108,23 @@ class ReviewFindingTest < ActiveSupport::TestCase
     assert_equal({ 'created' => 1, 'updated' => 1, 'unchanged' => 0 }, counts)
     assert_equal ['Second'], ReviewFinding.where(fingerprint: 'finding/v1:00000000000000f1').pluck(:summary)
   end
+
+  test 'the open silent count is nil with no rows, and counts only silent rows with no outcome' do
+    assert_equal 2, ReviewFinding.open_silent_count(1)
+    assert_equal 0, ReviewFinding.open_silent_count(2)
+    assert_nil ReviewFinding.open_silent_count(3)
+    assert_equal [review_findings(:open_silent).id, review_findings(:repeat_round_3).id].sort,
+                 ReviewFinding.where(issue_id: 1).open_silent.ids.sort
+  end
+
+  test 'a finding answered in a later round is no longer open silent' do
+    fingerprint = 'finding/v1:00000000000000cc'
+    ReviewFinding.record(Issue.find(3), [finding_row(fingerprint, 1)], User.find(2))
+    assert_equal 1, ReviewFinding.open_silent_count(3)
+    ReviewFinding.record(Issue.find(3), [finding_row(fingerprint, 2)], User.find(2))
+    assert_equal 1, ReviewFinding.open_silent_count(3)
+    ReviewFinding.record(Issue.find(3), [{ 'fingerprint' => fingerprint, 'round' => 2, 'confirm' => true,
+                                           'outcome' => 'fixed' }], User.find(2))
+    assert_equal 0, ReviewFinding.open_silent_count(3)
+  end
 end
