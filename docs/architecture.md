@@ -127,9 +127,9 @@ client of one of them:
 
 - **The extension** shows Next up in a panel, and holds the Start, Open, Go, Ship and Done
   buttons ([`vscode/README.md`](../vscode/README.md)).
-- **`pr`** commits, pushes, opens or updates the PR, and posts review replies. After a push that
-  moves the branch, it has Claude review the branch under `REVIEW.md` (`review.py`), and writes the
-  findings to `.tmp/<n>/review/<commit>.json`. Nothing is posted. After a merge it
+- **`pr`** commits, pushes, opens or updates the PR, and posts review replies. After a push, it
+  has Claude review the branch under `REVIEW.md` (`review.py`), and writes the findings to
+  `.tmp/<n>/review/<commit>.json`, unless that commit has one already. Nothing is posted. After a merge it
   sends only the replies and the PR body, and leaves the cleanup to Done. It and its Python scripts live in
   `.claude/skills/gh-issues/scripts/`, with their tests. `~/.claude/skills/gh-issues` links to the
   main checkout's copy, so every repo uses the one skill and `~/.local/bin/pr` reaches it.
@@ -164,7 +164,8 @@ network or a repo.
 `gh` is already authenticated, so nothing holds a GitHub token ([`G3`](requirements.md)); a library
 such as Octokit would need one. Outside the repo, `pr` writes to GitHub through `gh` and to Redmine
 through the REST API, with the same Keychain keys, and runs `claude -p` for the review, with
-read-only tools and no API key, so it runs on the CLI's own login.
+read-only tools confined to the repo (`--restricted`) and no API key, so it runs on the CLI's own
+login.
 
 <a id="platform"></a>
 ### 6.3 Platform
@@ -253,12 +254,14 @@ issue's `Pull requests` field links the PR, with a journal note. A `pr` whose pu
 to an open PR also asks Copilot to review it again, for the commits that answer a review; `gh pc` asks for a new PR.
 `gh pr edit --help` (2.102.0) says `--add-reviewer` adds or re-requests a reviewer.
 
-After a push that moves the branch, including the one that opens the PR, `pr` runs `review.py`.
+After each push, including the one that opens the PR, `pr` runs `review.py` when the head has no
+review file yet, so a `pr` stopped after its push, or a failed review, is reviewed on the rerun.
 That runs `scripts/assess`, then two `claude -p` passes on the branch's whole diff against its
 base: a review under `REVIEW.md`, and a security pass. Each pass is held to a JSON schema of a
 finding's fields ([design 0005 §3.1](design/0005-review-findings.md#schema)). It runs at
 `--effort high` when the diff touches one of `REVIEW.md`'s Deep paths, and at `medium` otherwise.
-The findings go to `.tmp/<n>/review/<commit>.json` and to the terminal. None is posted to the PR or
+The findings go to `.tmp/<n>/review/<commit>.json` and to the terminal, with the rules proposed
+and the findings dropped. None is posted to the PR or
 written to Redmine. The review runs after the replies are sent, so one that fails or times out is
 named, and `pr` still succeeds.
 

@@ -659,12 +659,13 @@ The issues already open change to fit:
 
 | Issue | Change |
 |---|---|
-| #104 | `REVIEW.md` gives each finding a severity and a visibility as well as a tag and a rule, and the reviewer returns them; `gh pc` stops requesting Copilot |
+| #104 | `REVIEW.md` gives each finding a severity and a visibility as well as a tag and a rule, and the reviewer returns them |
 | #106 | The outcome line gains a third part, `visibility/severity`, and is a line in `outcomes.md`, never a PR reply (§3.4) |
 | #107 | The no-repeat rule reads fingerprints from the store; each round reviews a pushed commit once its `pytest` check passes; the step-back is round 3, in the report and the PR body, and rounds stop on the open-to-fix count (§3.5) |
 | #108 | `findings` reads `rules.json`, not PR threads (§3.7) |
 | #110 | The round report shows the round's findings and outcome lines; at the end of the reviewer's turn Claude runs `findings.py send` and updates the PR body, the two Boundaries exceptions (§3.3) |
 | #111 | The Done table is the plugin's second table, after W1, and convergence adds its Done rows to the open-to-fix count (§3.5) |
 
-`CLAUDE.md`'s review line, `docs/failure-modes.md`'s weighting, and architecture §6.1, §6.2, §9 and
-§10 change with W1 and W4, when the plugin and the writer exist, not in this PR.
+#104 changes `CLAUDE.md`'s review line, `docs/failure-modes.md`'s weighting and review line, and
+architecture §6.1, §6.2 and §7.2, for the reviewer and its review file. Architecture §9 and §10
+change with W1 and W4, when the plugin and the writer exist.

@@ -42,10 +42,10 @@ settings: what this repo needs is here or in `.claude/`.
   a clean error-stop can stay.
 - **Before Go:** `/code-review low` on the uncommitted changes, once `scripts/assess` passes, to
   catch the major issues before they're committed.
-- **A review round:** after each push that moves the branch, `pr` has Claude review its whole diff
-  under `REVIEW.md`, once `scripts/assess` passes, into `.tmp/<n>/review/<commit>.json`. Claude
-  answers it in `.tmp/<n>/report.html`, which opens as the `Review #<n>` tab with Go and Ship, and
-  the PR body says it ran.
+- **A review round:** after each push, `pr` has Claude review the branch's whole diff under
+  `REVIEW.md`, once `scripts/assess` passes, into `.tmp/<n>/review/<commit>.json`, unless that
+  commit has one. Claude answers it in `.tmp/<n>/report.html`, which opens as the `Review #<n>` tab
+  with Go and Ship, and the PR body says it ran.
 - **Python:** `python3` on PATH. `/usr/bin/python3` is 3.9 and can't run the skill scripts.
 - **An issue's work:** Start, Go, Ship and Done in the extension's Next up panel
   ([`vscode/README.md`](vscode/README.md)).

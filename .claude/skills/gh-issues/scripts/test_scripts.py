@@ -6,6 +6,7 @@ import json
 import os
 import re
 import shutil
+import signal
 import subprocess
 import tempfile
 import time
@@ -2378,9 +2379,14 @@ class Review(unittest.TestCase):
         self.assertEqual([f["line"] for f in kept], [1, 2, 3, 4][:3] + [4])
         self.assertEqual(notes, ["dropped 2 nits past the first 3"])
 
-    def test_the_security_pass_tags_every_finding_security(self):
-        kept, _ = review.keep([finding(), finding(tag="Nit")], True)
-        self.assertEqual({f["tag"] for f in kept}, {"Security"})
+    def test_each_pass_keeps_only_its_own_tags(self):
+        kept, notes = review.keep([finding(tag="Security"), finding(), finding(tag="Nit")], True)
+        self.assertEqual([f["tag"] for f in kept], ["Security"])
+        self.assertEqual(len(notes), 2)
+        self.assertIn("has tag 'Important'", notes[0])
+        kept, notes = review.keep([finding(tag="Security")], False)
+        self.assertEqual(kept, [])
+        self.assertIn("has tag 'Security'", notes[0])
         self.assertEqual(
             review.schema(True)["properties"]["findings"]["items"]["properties"]["tag"],
             {"enum": ["Security"]},
@@ -2418,6 +2424,8 @@ class Review(unittest.TestCase):
         self.assertEqual(command[at("--tools") + 1], "Read,Grep,Glob")
         self.assertEqual(command[at("--allowedTools") + 1], "Read,Grep,Glob")
         self.assertEqual(command[at("--permission-mode") + 1], "dontAsk")
+        # The file tools read only the repo.
+        self.assertIn("--restricted", command)
         self.assertEqual(command[at("--effort") + 1], "high")
         self.assertEqual(json.loads(command[at("--json-schema") + 1]), review.schema(False))
         self.assertFalse(set(review.BILLED) & set(seen["env"]))
@@ -2427,6 +2435,13 @@ class Review(unittest.TestCase):
         for flag in ("--safe-mode", "--strict-mcp-config", "--disable-slash-commands"):
             self.assertIn(flag, command)
         self.assertEqual(seen["cwd"], Path("/repo"))
+
+    def test_a_finding_missing_a_field_is_dropped_and_named(self):
+        bare = finding()
+        del bare["line"]
+        kept, notes = review.keep([bare, finding()], False)
+        self.assertEqual(kept, [finding()])
+        self.assertEqual(notes, [f"dropped a finding that has no line: {bare['summary']}"])
 
     def test_a_finding_with_a_summary_that_isnt_text_is_dropped_and_named(self):
         kept, notes = review.keep([finding(summary=None), finding(summary=7)], False)
@@ -2469,6 +2484,35 @@ class Review(unittest.TestCase):
             runner.kill()
             self.assertEqual(running.result().returncode, -9)
         self.assertLess(time.monotonic() - started, 10)
+
+    def test_a_pass_that_starts_after_a_kill_never_runs(self):
+        runner = review.Runner()
+        runner.kill()
+        with self.assertRaisesRegex(review.Failed, "stopped before it started"):
+            runner(["sleep", "30"], input=None, env=None, timeout=60)
+        self.assertEqual(runner.running, [])
+
+    def test_a_kill_while_a_pass_starts_stops_it(self):
+        # kill() lands after the stopped check and before p is listed, so it finds nothing to stop.
+        runner = review.Runner()
+        popen = subprocess.Popen
+
+        def late(*a, **kw):
+            p = popen(*a, **kw)
+            runner.kill()
+            return p
+
+        started = time.monotonic()
+        with mock.patch.object(review.subprocess, "Popen", late):
+            done = runner(["sleep", "30"], input=None, env=None, timeout=60)
+        self.assertEqual(done.returncode, -9)
+        self.assertLess(time.monotonic() - started, 10)
+
+    def test_a_hangup_or_term_ends_the_review_as_a_ctrl_c_does(self):
+        for sig in (signal.SIGTERM, signal.SIGHUP):
+            with self.subTest(sig), self.assertRaises(SystemExit) as stop:
+                review.hung_up(sig, None)
+            self.assertEqual(stop.exception.code, 128 + sig)
 
     def test_assess_past_the_timeout_reviews_nothing(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -2564,7 +2608,8 @@ class PrReview(unittest.TestCase):
             f'[ -z "${{ANTHROPIC_API_KEY:-}}" ] || echo "API KEY" >> "{self.asked}"\n'
             "cat > /dev/null\n"
             f'[ ! -f "{self.broken}" ] || {{ echo "claude: not logged in" >&2; exit 1; }}\n'
-            f'cat "{self.answer}"\n'
+            f'case "$*" in *\'["Security"]\'*) sed s/Important/Security/ "{self.answer}" ;;\n'
+            f'  *) cat "{self.answer}" ;;\nesac\n'
         )
         (bin / "claude").chmod(0o755)
         self.env.update(
@@ -2591,6 +2636,7 @@ class PrReview(unittest.TestCase):
         self.assertEqual(data["findings"][1]["tag"], "Security")
         self.assertTrue(all(set(f) == set(review.FIELDS) for f in data["findings"]))
         self.assertTrue(data["summary"].startswith("2 findings, 2 to fix."))
+        self.assertEqual((data["new_rules"], data["dropped"]), ([], []))
         self.assertIn(
             "a.txt:2  Important  unchecked-step-before-destructive-op  commits/silent", run.stdout
         )
@@ -2663,11 +2709,62 @@ class PrReview(unittest.TestCase):
         self.assertIn("0 findings, 0 to fix.", run.stdout)
         self.assertFalse((self.tree / ".tmp" / "9" / "findings").exists())
 
-    def test_a_push_that_doesnt_move_the_branch_runs_no_review(self):
-        self.git(self.tree, "push", "-q", "origin", "HEAD")
+    def test_a_commit_already_reviewed_isnt_reviewed_again(self):
+        self.assertEqual(self.pr().returncode, 0)
+        self.asked.unlink()
         run = self.pr()
         self.assertEqual(run.returncode, 0, run.stderr)
         self.assertFalse(self.asked.exists())
+
+    def test_a_commit_pushed_by_a_pr_that_stopped_is_reviewed_on_the_rerun(self):
+        # As a pr that pushed, then stopped at gh pc or the replies, leaves it.
+        self.git(self.tree, "push", "-q", "origin", "HEAD")
+        run = self.pr()
+        self.assertEqual(run.returncode, 0, run.stderr)
+        self.assertTrue(self.reviewed().exists())
+
+    def test_the_review_file_lists_new_rules_and_dropped_findings(self):
+        self.answer.write_text(answer([finding(rule_id="races-the-fetch"), finding(rule_id="")]))
+        run = self.pr()
+        self.assertEqual(run.returncode, 0, run.stderr)
+        data = json.loads(self.reviewed().read_text())
+        self.assertEqual(data["new_rules"], ["races-the-fetch"])
+        self.assertEqual(len(data["dropped"]), 2)
+        self.assertIn("has no rule", data["dropped"][0])
+
+    def test_a_hangup_stops_both_passes(self):
+        # Ship's terminal closing: SIGHUP reaches pr's process group, never the passes' sessions.
+        pids = Path(self.tmp.name) / "pids"
+        (Path(self.tmp.name) / "bin" / "claude").write_text(
+            f'#!/bin/sh\ncat > /dev/null\necho $$ >> "{pids}"\nsleep 30\n'
+        )
+        pr = subprocess.Popen(
+            ["sh", str(Path(__file__).parent / "pr.sh")],
+            cwd=self.tree,
+            env=self.env,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True,
+        )
+        deadline = time.monotonic() + 30
+        while (not pids.exists() or len(pids.read_text().split()) < 2) and pr.poll() is None:
+            self.assertLess(time.monotonic(), deadline)
+            time.sleep(0.05)
+        os.killpg(pr.pid, signal.SIGHUP)
+        pr.wait(timeout=20)
+
+        def alive(pid):
+            try:
+                os.kill(pid, 0)
+            except ProcessLookupError:
+                return False
+            return True
+
+        # sh exits at once; review.py stops the passes as it ends.
+        left = list(map(int, pids.read_text().split()))
+        while (left := [pid for pid in left if alive(pid)]) and time.monotonic() < deadline:
+            time.sleep(0.05)
+        self.assertEqual(left, [])
 
     def test_a_repo_without_review_md_runs_no_review(self):
         (self.tree / "REVIEW.md").unlink()

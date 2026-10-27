@@ -18,9 +18,9 @@
 #           .tmp/N/pr-body.md, then opens the PR in the GitHub Pull Requests extension
 #   replies when .tmp/N/replies/ holds <comment id>.md files: posts each to its review thread,
 #           resolves the thread and deletes the file (pr_threads.py --post)
-#   review  when the push moved the branch and the repo has REVIEW.md: Claude reviews the branch's
-#           whole diff and writes .tmp/N/review/<commit>.json (review.py). One that fails is named,
-#           and pr still succeeds
+#   review  when HEAD has no .tmp/N/review/<commit>.json and the repo has REVIEW.md: Claude reviews
+#           the branch's whole diff and writes that file (review.py). One that fails is named, and
+#           pr still succeeds; so is a pr stopped after its push, whose rerun reviews what it pushed
 #
 # The issue's Done list is ticked in the PR body's ## Done section, never in Redmine: a
 # .tmp/N/issue.md left from before is named as no longer sent, and left where it is.
@@ -39,11 +39,12 @@ set -eu
 # checks every reply before its first post and deletes each once it is sent, so a stopped pr resumes
 # where it stopped. It needs Python 3.10; /usr/bin/python3 is 3.9.
 scripts=$(dirname "$(realpath "$0")")
+py310() { python3 -c 'import sys; sys.exit(sys.version_info < (3, 10))'; }
 send_round() {
   [ ! -f ".tmp/$n/issue.md" ] ||
     echo "pr: .tmp/$n/issue.md is no longer sent; tick the issue's Done list in the PR body's ## Done section, and delete the file" >&2
   [ -d ".tmp/$n/replies" ] || return 0
-  python3 -c 'import sys; sys.exit(sys.version_info < (3, 10))' ||
+  py310 ||
     { echo "pr: .tmp/$n/ has replies to send, and python3 is older than 3.10" >&2; exit 2; }
   number=$(gh pr view "$branch" --json number --jq .number)
   python3 "$scripts/pr_threads.py" "$number" --post ".tmp/$n/replies"
@@ -217,12 +218,13 @@ git config "branch.$branch.github-pr-owner-number" "$(echo "$pr_path" | sed 's|/
 open "vscode://github.vscode-pull-request-github/open-pull-request-webview?uri=$(python3 -c 'import sys, urllib.parse; print(urllib.parse.quote(sys.argv[1], safe=""))' "$url")"
 
 # The review of what this push brought (review.py), last, so a review that fails or runs long holds
-# up neither the PR nor the replies. Only a push that moved the branch, opening the PR included, has
-# a commit to review; it writes .tmp/N/review/<commit>.json and posts nothing.
-if [ "$(git rev-parse HEAD)" != "$pushed" ]; then
+# up neither the PR nor the replies. A head with no review file has a commit to review: one this push
+# brought, opening the PR included, or one a pr that stopped after its push, or a failed review,
+# left. It writes .tmp/N/review/<commit>.json and posts nothing.
+if [ ! -f ".tmp/$n/review/$(git rev-parse HEAD).json" ]; then
   if [ ! -f REVIEW.md ]; then
     echo "pr: no REVIEW.md, so no review"
-  elif ! python3 -c 'import sys; sys.exit(sys.version_info < (3, 10))'; then
+  elif ! py310; then
     echo "pr: python3 is older than 3.10, so no review" >&2
   elif ! python3 "$scripts/review.py" "$n" --base "origin/$base"; then
     echo "pr: the review didn't finish, so .tmp/$n/review/ has nothing for this commit; retry with: python3 $scripts/review.py $n --base origin/$base" >&2

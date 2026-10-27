@@ -27,8 +27,9 @@ failure.
 
 Each finding points at the line that fails, and its body gives the failure scenario: the steps or
 state, then what goes wrong. Read the code around it, and the callers, before reporting it; a
-guard elsewhere that stops the scenario means there's no finding. Don't report what you can't tie
-to a line of the diff or the code it calls.
+guard elsewhere that stops the scenario means there's no finding. A finding on the design as a
+whole, the approach rather than a line, says so in its body and has an empty `file` and a null
+`line`. Any other finding you can't tie to a line of the diff or the code it calls isn't reported.
 
 ## Tags
 
