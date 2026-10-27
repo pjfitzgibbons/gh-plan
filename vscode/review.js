@@ -20,6 +20,9 @@ function reportRound(html) {
   return round ? Number(round[2]) : null;
 }
 
+// How a report differs from the one Go saw, by its stamp now: deleted, or written again.
+const reportChange = (now) => (now === null ? "was deleted" : "changed");
+
 const escape = (text) =>
   String(text).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
 
@@ -231,7 +234,7 @@ class Reports {
     if (go && go.report !== shown) {
       go.warned = true;
       this.host.disarm();
-      this.host.say("warning", `Plan: #${review.id}'s report ${shown === null ? "is gone" : "changed"} since Go; press Go again to ship it.`);
+      this.host.say("warning", `Plan: #${review.id}'s report ${reportChange(shown)} since Go; press Go again to ship it.`);
     }
     // Staged changes belong to the Go that armed Ship on this report.
     if (staged) review.staged = this.host.armed(review) ? staged : null;
@@ -330,4 +333,4 @@ class Reports {
   }
 }
 
-module.exports = { reportFile, reportRound, stagedDiff, stagedSection, reportPage, linkTarget, Reports };
+module.exports = { reportFile, reportRound, reportChange, stagedDiff, stagedSection, reportPage, linkTarget, Reports };

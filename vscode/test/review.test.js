@@ -568,7 +568,7 @@ test("a redraw reads the report as it is now: one written since Go shows with it
   assert.equal(said.length, 1);
 });
 
-test("a redraw after the report is deleted says it's gone, not changed", () => {
+test("a redraw after the report is deleted says it was deleted, not changed", () => {
   const { root, file, reports, arm, armed, said, write } = fixture();
   write("<p>round 1</p>");
   arm(reports.show(file).shown);
@@ -576,5 +576,5 @@ test("a redraw after the report is deleted says it's gone, not changed", () => {
   fs.unlinkSync(file);
   reports.armedChanged();
   assert.equal(armed(), null);
-  assert.match(said.at(-1)[1], /report is gone since Go/);
+  assert.match(said.at(-1)[1], /report was deleted since Go/);
 });

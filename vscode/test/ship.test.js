@@ -346,6 +346,25 @@ test("the staged changes read the same whatever the diff prefixes, context, blan
   assert.match(diff, /^ one\n \n-two$/m);
 });
 
+test("a submodule bump shows as a diff of its commit line, whatever diff.submodule says", async (t) => {
+  const s = sandbox(t);
+  const sub = path.join(s.root, "..", `${path.basename(s.root)}-sub`);
+  t.after(() => fs.rmSync(sub, { recursive: true, force: true }));
+  const git = (cwd, ...args) => execFileSync("git", ["-c", "user.name=Test", "-c", "user.email=test@example.com", "-c", "protocol.file.allow=always", ...args], { cwd });
+  fs.mkdirSync(sub);
+  git(sub, "init", "--quiet");
+  git(sub, "commit", "--quiet", "--allow-empty", "-m", "one");
+  git(s.root, "submodule", "add", "--quiet", sub, "sub");
+  git(s.root, "commit", "--quiet", "-m", "add sub");
+  git(path.join(s.root, "sub"), "commit", "--quiet", "--allow-empty", "-m", "two");
+  await stage(s.root);
+  git(s.root, "config", "diff.submodule", "log");
+  const diff = await stagedChanges(s.root);
+  assert.match(diff, /^diff --git a\/sub b\/sub$/m);
+  assert.match(diff, /^\+Subproject commit [0-9a-f]{40}$/m);
+  assert.doesNotMatch(diff, /^Submodule /m);
+});
+
 test("a staged diff over execFile's buffer is refused by name", async (t) => {
   const s = sandbox(t);
   s.write("big.txt", ("y".repeat(99) + "\n").repeat(15000));

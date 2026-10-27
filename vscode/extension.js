@@ -10,7 +10,7 @@ const { ACTION, checkId, start, expandHome } = require("./start");
 const { reviewFile, roundFiles, shipTab, stage, stagedChanges, openStaged, check, shipped, keepEdits } = require("./ship");
 const { finish } = require("./done");
 const { handoffFile, issueUrl, writeHandoff, takeHandoffFor } = require("./handoff");
-const { reportFile, reportRound, reportPage, Reports } = require("./review");
+const { reportFile, reportRound, reportChange, reportPage, Reports } = require("./review");
 
 // How soon after a refresh starts a window's focus may refresh Next up again, and how long one still
 // waiting holds focus refreshes off: past that, a refresh stuck on the Keychain or a slow Redmine's
@@ -490,14 +490,22 @@ async function goChecked(uri, issue) {
   // The commit message as Go saved it, stamped before the tab reads it, so Ship commits only the one
   // shown.
   const message = ready && stamp(path.join(ready.root, ".tmp", String(ready.id), "commit.txt"));
-  if (ready && reports.changedSinceGo({ ...ready, report })) {
-    await arm(null);
-    vscode.window.showWarningMessage(`Plan: #${ready.id}'s report changed while Go ran; read it, then press Go again. Nothing was staged.`);
+  // A Go that fails disarms its own issue's Ship, never another's.
+  const own = armed?.root === issue.root && armed?.id === issue.id;
+  if (!ready) {
+    if (own) await arm(null);
     return;
   }
-  await arm(ready && { root: ready.root, id: ready.id, report, message });
+  if (reports.changedSinceGo({ ...ready, report })) {
+    if (own) await arm(null);
+    const now = stamp(path.join(ready.root, ".tmp", String(ready.id), "report.html"));
+    vscode.window.showWarningMessage(`Plan: #${ready.id}'s report ${reportChange(now)} while Go ran; read it, then press Go again. Nothing was staged.`);
+    return;
+  }
+  const taken = { root: ready.root, id: ready.id, report, message };
+  await arm(taken);
   // A report the arm's redraw found changed has disarmed Ship again, and said so.
-  if (!ready || armed?.id !== ready.id) return;
+  if (armed !== taken) return;
   if (ready.dirty) {
     try {
       await stage(ready.root);
@@ -552,7 +560,8 @@ async function ship(refresh) {
     if (!found) return;
     if (reports.changedSinceGo(taken)) {
       // A report shown while the checks ran has disarmed Ship already, and said so.
-      if (!taken.warned) vscode.window.showErrorMessage(`Plan: #${id}'s report changed since Go; pr didn't run. Read it, then press Go again.`);
+      const now = stamp(path.join(root, ".tmp", String(id), "report.html"));
+      if (!taken.warned) vscode.window.showErrorMessage(`Plan: #${id}'s report ${reportChange(now)} since Go; pr didn't run. Read it, then press Go again.`);
       return;
     }
     // Ship's checks save an edit to the commit message; one Go didn't show waits for Go.
