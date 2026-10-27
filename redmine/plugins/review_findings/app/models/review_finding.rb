@@ -53,21 +53,20 @@ class ReviewFinding < ApplicationRecord
   validates :pr_url, format: { with: PR_URL }, allow_nil: true
   validate :visibility_unless_nothing, :round_zero_for_missed, :verified_after_round
 
-  # Open and silent (§3.5): silent, losing something, and no outcome recorded. A drafted outcome
-  # still in the outbox counts as open here until Ship's pr sends it.
+  # Open and silent (§3.5, §3.6): a fingerprint's latest round, silent, losing something, and no
+  # outcome recorded, so one answered in a later round drops off. A drafted outcome still in the
+  # outbox counts as open here until Ship's pr sends it.
   OPEN_SILENT = "review_findings.visibility = 'silent' AND review_findings.severity <> 'nothing' " \
-                'AND review_findings.outcome IS NULL'
+                'AND review_findings.outcome IS NULL ' \
+                'AND review_findings.round = (SELECT MAX(g.round) FROM review_findings g ' \
+                'WHERE g.issue_id = review_findings.issue_id AND g.fingerprint = review_findings.fingerprint)'
   scope :open_silent, -> { where(OPEN_SILENT) }
-  scope :open_silent_first, -> { order(Arel.sql("CASE WHEN #{OPEN_SILENT} THEN 0 ELSE 1 END")) }
 
   # The issue's open silent count, or nil when it has no rows, as before its first review round.
   def self.open_silent_count(issue_id)
-    rows = where(issue_id: issue_id)
-    rows.exists? ? rows.open_silent.count : nil
-  end
-
-  def open_silent?
-    visibility == 'silent' && severity != 'nothing' && outcome.nil?
+    rows, open = where(issue_id: issue_id)
+                 .pick(Arel.sql('COUNT(*)'), Arel.sql("SUM(CASE WHEN #{OPEN_SILENT} THEN 1 ELSE 0 END)"))
+    rows.zero? ? nil : open.to_i
   end
 
   # Upserts a request's rows by (fingerprint, round) in one transaction (§3.1, §3.3). Answers the

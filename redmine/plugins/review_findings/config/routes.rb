@@ -1,4 +1,5 @@
-get 'projects/:project_id/review_findings', to: 'review_findings#tab', as: 'project_review_findings'
+get 'projects/:project_id/review_findings', to: 'review_findings#tab', as: 'project_review_findings',
+    format: false
 
 scope format: true, constraints: { format: 'json' } do
   get 'issues/:id/review_findings', to: 'review_findings#index'

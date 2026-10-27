@@ -9,10 +9,16 @@
     <th>Rule</th><th>Where</th><th>Finding</th></tr></thead>
   <tbody>
   <% @findings.each do |f| %>
-    <tr class="<%= cycle('odd', 'even') %><%= ' open-silent' if f.open_silent? %>">
+    <% open = @open.include?(f.id) %>
+    <% latest = @latest[[f.issue_id, f.fingerprint]] %>
+    <tr class="<%= cycle('odd', 'even') %><%= ' open-silent' if open %>">
       <td><%= link_to_issue f.issue, tracker: false, subject: false %></td>
       <td><%= f.round %></td>
-      <td><%= f.open_silent? ? 'Open, silent' : (f.outcome || 'Open') %></td>
+      <td><%= if open then 'Open, silent'
+              elsif f.outcome then f.outcome
+              elsif f.round < latest then "See round #{latest}"
+              else 'Open'
+              end %></td>
       <td><%= f.visibility %></td>
       <td><%= f.severity %></td>
       <td><%= f.rule_id %></td>

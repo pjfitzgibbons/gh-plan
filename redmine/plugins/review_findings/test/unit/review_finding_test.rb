@@ -113,7 +113,14 @@ class ReviewFindingTest < ActiveSupport::TestCase
     assert_equal 2, ReviewFinding.open_silent_count(1)
     assert_equal 0, ReviewFinding.open_silent_count(2)
     assert_nil ReviewFinding.open_silent_count(3)
-    assert_equal ReviewFinding.where(issue_id: 1).select(&:open_silent?).map(&:id).sort,
+    assert_equal [review_findings(:open_silent).id, review_findings(:repeat_round_3).id].sort,
                  ReviewFinding.where(issue_id: 1).open_silent.ids.sort
+  end
+
+  test 'a finding answered in a later round is no longer open silent' do
+    ReviewFinding.create!(issue_id: 3, **finding_row('finding/v1:00000000000000cc', 1).symbolize_keys)
+    assert_equal 1, ReviewFinding.open_silent_count(3)
+    ReviewFinding.create!(issue_id: 3, outcome: 'fixed', **finding_row('finding/v1:00000000000000cc', 2).symbolize_keys)
+    assert_equal 0, ReviewFinding.open_silent_count(3)
   end
 end

@@ -10,7 +10,7 @@ values and what each field holds are [design 0005 §3.1](../../../docs/design/00
 The project's **Findings** tab, at `/projects/:project_id/review_findings`, lists the findings of
 every issue in the project and its sub-projects that the user can see, each open silent finding
 first. `?issue_id=<n>` shows one issue's, and says "No review yet." when it has no rows. An open
-silent finding is silent, loses something, and has no outcome. It needs View review findings.
+silent finding is silent, loses something, and has no outcome in its fingerprint's latest round. It needs View review findings.
 
 An issue's page shows a **Findings** line, `<k> open silent` or `no review yet`, linking to the
 tab filtered to the issue. It counts the outcomes the store holds, so a drafted outcome counts as

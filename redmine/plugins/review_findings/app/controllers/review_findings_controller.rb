@@ -30,17 +30,21 @@ class ReviewFindingsController < ApplicationController
   end
 
   # The findings of the issues the user may see findings in, or of the one `issue_id` names, each
-  # open silent finding first. An issue outside those is a 404.
+  # open silent finding first. An issue outside those is a 404. @latest is each fingerprint's latest
+  # round, so a row a later round superseded says so.
   def tab
     ids = issue_ids(:view_review_findings)
     if params[:issue_id].present?
-      @issue = Issue.where(id: ids).find_by(id: params[:issue_id].to_i)
+      @issue = Issue.where(id: ids).find_by(id: params[:issue_id].to_s.to_i)
       return render_404 unless @issue
 
       ids = [@issue.id]
     end
-    @findings = ReviewFinding.where(issue_id: ids).includes(issue: :project)
-                             .open_silent_first.order(:issue_id, :round, :id)
+    rows = ReviewFinding.where(issue_id: ids)
+    @open = rows.open_silent.pluck(:id).to_set
+    @findings = rows.includes(issue: %i[project status priority]).order(:issue_id, :round, :id).to_a
+                    .partition { |f| @open.include?(f.id) }.flatten
+    @latest = @findings.group_by { |f| [f.issue_id, f.fingerprint] }.transform_values { |fs| fs.map(&:round).max }
   end
 
   # Over the issues of the project and its sub-projects that the user may see findings in.
