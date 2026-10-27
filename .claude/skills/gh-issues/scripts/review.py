@@ -1,16 +1,25 @@
 #!/usr/bin/env python3
-"""Review a branch with Claude: the step pr runs after a push that moves the branch.
+"""Review a branch with Claude: the step pr runs after a push, for a head with no review file.
 
-    review.py [N] [--base origin/main] [--timeout 900]
+    review.py [N] [--base origin/main] [--timeout 900] [--ci-timeout 1800] [--detach]
 
-It runs scripts/assess first, and reviews nothing when that fails. Then two `claude -p` passes
-read the branch's whole diff against its merge base with --base, with REVIEW.md, the issue's
-description and the docs CLAUDE.md says to read: a review, under REVIEW.md, and a security pass,
-whose findings are all tagged Security. Each is held to a JSON schema of a finding's fields, with
-read-only tools, no API key or other provider in its environment and no settings, hooks or MCP
-servers, so it runs on the claude CLI's own login, and --restricted, so its file tools read only
-the repo. When one pass fails, the other is stopped, and a SIGTERM or SIGHUP, as when Ship's
-terminal closes, stops both.
+Two `claude -p` passes read the branch's whole diff against its merge base with --base, with
+REVIEW.md, the issue's description and the docs CLAUDE.md says to read: a review, under REVIEW.md,
+and a security pass, whose findings are all tagged Security. Each is held to a JSON schema of a
+finding's fields, with read-only tools, no ANTHROPIC_ variable or other provider in its environment
+and no settings, hooks or MCP servers, so it runs on the claude CLI's own login against its own
+endpoint, and --restricted, so its file tools read only the repo. When one pass fails, the other is
+stopped, and a Ctrl-C or SIGTERM stops both.
+
+Beside the passes it waits, up to --ci-timeout, for every GitHub check on the commit to finish, as
+CI's scripts/assess, and records the result under `ci`: success, failure, pending (still running at
+the timeout), none (no check appeared) or unknown (GitHub couldn't be read). A round is complete
+only once `ci` is success.
+
+--detach, as pr runs it, forks the review into a session of its own, logging to
+.tmp/N/review/<commit>.log, with its pid in <commit>.pid while it runs, and returns at once, so pr
+and Ship finish, and closing Ship's terminal doesn't stop it; `kill <pid>` does. A commit already
+being reviewed isn't reviewed twice.
 
 A diff that touches one of REVIEW.md's Deep paths is reviewed at --effort high, any other at
 medium. The findings are written to .tmp/N/review/<commit>.json, with the summary, and printed:
@@ -19,13 +28,13 @@ medium. The findings are written to .tmp/N/review/<commit>.json, with the summar
 A finding with no rule, or a weighting REVIEW.md doesn't allow, isn't kept, and nits past the third
 are dropped; the output says so. A rule REVIEW.md doesn't list is marked *new*, as a proposal. The
 review file lists both, under `new_rules` and `dropped`.
-A failed or timed-out pass, or scripts/assess past --timeout, writes no file and exits 1, naming
-why.
+A failed or timed-out pass writes no file and exits 1, naming why.
 
 N defaults to the issue number in the branch name. It needs REVIEW.md at the repo root.
 """
 
 import argparse
+import atexit
 import concurrent.futures
 import json
 import os
@@ -34,31 +43,30 @@ import signal
 import subprocess
 import sys
 import threading
+import time
 from pathlib import Path
 
 from redmine import Redmine, Refused, fetch
 
 SEVERITIES = ["work", "files", "commits", "tracker", "nothing"]
 TAGS = ["Important", "Nit", "Pre-existing", "Security"]
+VISIBILITIES = ["silent", "seen", ""]
 RULE = "^[a-z0-9]+(-[a-z0-9]+)*$"
-# Left out of the diff, as REVIEW.md's Skipped paths says.
-SKIPPED = [
-    ":(exclude,glob).tmp/**",
-    ":(exclude,glob)**/node_modules/**",
-    ":(exclude,glob)**/package-lock.json",
-    ":(exclude,glob)**/*.lock",
-]
 TOOLS = "Read,Grep,Glob"
 FIELDS = ["file", "line", "rule_id", "tag", "severity", "visibility", "summary", "body"]
 NITS = 3
-# Each would bill the review to an API account, not the claude CLI's own login.
-BILLED = [
-    "ANTHROPIC_API_KEY",
-    "ANTHROPIC_AUTH_TOKEN",
-    "CLAUDE_CODE_USE_BEDROCK",
-    "CLAUDE_CODE_USE_VERTEX",
-    "CLAUDE_CODE_USE_FOUNDRY",
-]
+# A check's conclusions that pass.
+PASSED = {"success", "neutral", "skipped"}
+
+
+def billed(name: str) -> bool:
+    """A variable that would bill the review to an API account, or send it to another endpoint: a
+    key, a token, a base URL or model, or a provider switch."""
+    return name.startswith("ANTHROPIC_") or name.startswith("CLAUDE_CODE_USE_")
+
+
+class Stopped(BaseException):
+    """A SIGTERM, ended as a Ctrl-C is."""
 
 
 class Failed(Exception):
@@ -72,6 +80,8 @@ class Runner:
 
     def __init__(self):
         self.running, self.lock, self.stopped = [], threading.Lock(), False
+        # Set by kill(), for the CI wait, which sleeps between its reads.
+        self.halt = threading.Event()
 
     def __call__(self, command, *, input, env, timeout, cwd=None, **_):
         with self.lock:
@@ -112,11 +122,17 @@ class Runner:
             pass
 
     def kill(self) -> None:
+        self.halt.set()
         with self.lock:
             self.stopped = True
             for p in self.running:
                 if p.poll() is None:
                     self.stop(p)
+
+
+def tags(security: bool) -> list[str]:
+    """The tags a pass may give: Security for the security pass, any other for the review."""
+    return ["Security"] if security else TAGS[:3]
 
 
 def schema(security: bool) -> dict:
@@ -128,9 +144,9 @@ def schema(security: bool) -> dict:
             "file": {"type": "string"},
             "line": {"type": ["integer", "null"], "minimum": 1},
             "rule_id": {"type": "string", "pattern": RULE},
-            "tag": {"enum": ["Security"] if security else TAGS[:3]},
+            "tag": {"enum": tags(security)},
             "severity": {"enum": SEVERITIES},
-            "visibility": {"enum": ["silent", "seen", ""]},
+            "visibility": {"enum": VISIBILITIES},
             "summary": {"type": "string", "maxLength": 255},
             "body": {"type": "string"},
         },
@@ -153,7 +169,7 @@ def section(text: str, heading: str) -> str:
 
 
 def listed(text: str, heading: str) -> list[str]:
-    """Each bullet's leading `code` in a section: the rules, or the Deep paths."""
+    """Each bullet's leading `code` in a section: the rules, the Deep paths or the Skipped paths."""
     return re.findall(r"^- `([^`]+)`", section(text, heading), re.M)
 
 
@@ -245,7 +261,7 @@ def ask(
         "--disable-slash-commands",
     ]
     # Without these, claude runs on its own login, the subscription, never the paid API.
-    env = {k: v for k, v in os.environ.items() if k not in BILLED}
+    env = {k: v for k, v in os.environ.items() if not billed(k)}
     try:
         done = runner(
             command,
@@ -285,11 +301,11 @@ def why_not_kept(f, security: bool) -> str | None:
         return f"has no {', '.join(missing)}"
     if not isinstance(f.get("rule_id"), str) or not re.match(RULE, f["rule_id"]):
         return "has no rule"
-    if f.get("tag") not in (["Security"] if security else TAGS[:3]):
+    if f.get("tag") not in tags(security):
         return f"has tag {f.get('tag')!r}"
     if f.get("severity") not in SEVERITIES:
         return f"has severity {f.get('severity')!r}"
-    if f.get("visibility") not in ("silent", "seen", ""):
+    if f.get("visibility") not in VISIBILITIES:
         return f"has visibility {f.get('visibility')!r}"
     if f["visibility"] == "" and f["severity"] != "nothing":
         return f"loses {f['severity']} and has no visibility"
@@ -350,21 +366,63 @@ def write(path: Path, data: dict) -> None:
     part.replace(path)
 
 
-def assess(root: Path, timeout: int) -> None:
-    script = root / "scripts" / "assess"
-    if not script.exists():
-        print("review: no scripts/assess, so no checks ran first")
-        return
-    print("review: running scripts/assess")
-    try:
-        done = Runner()([str(script)], input=None, env=None, timeout=timeout, cwd=root)
-    except subprocess.TimeoutExpired:
-        raise Failed(f"scripts/assess ran past {timeout}s, so nothing was reviewed") from None
-    if done.returncode != 0:
-        sys.stdout.write(done.stdout + done.stderr)
-        raise Failed("scripts/assess failed, so nothing was reviewed; fix it and push again")
-    said = [line for line in done.stdout.splitlines() if line.startswith("assess:")]
-    print(said[-1] if said else "review: scripts/assess passed")
+def checks(
+    commit: str,
+    root: Path,
+    timeout: int,
+    halt: threading.Event,
+    gh=subprocess.run,
+    every=15,
+    grace=180,
+) -> dict:
+    """GitHub's checks on commit, once every one has finished, or at timeout: CI's scripts/assess
+    among them. A check appears only once GitHub has queued its run, so none after grace is none."""
+    endpoint = f"repos/{{owner}}/{{repo}}/commits/{commit}/check-runs?per_page=100"
+    started, why = time.monotonic(), ""
+    while True:
+        try:
+            done = gh(["gh", "api", endpoint], cwd=root, capture_output=True, text=True, timeout=60)
+            if done.returncode:
+                raise ValueError((done.stderr or done.stdout).strip()[-200:])
+            # A check still queued or running has no conclusion yet.
+            runs = [
+                {
+                    "name": r["name"],
+                    "conclusion": r["conclusion"] if r["status"] == "completed" else None,
+                    "url": r["html_url"],
+                }
+                for r in json.loads(done.stdout)["check_runs"]
+            ]
+            why = ""
+        except OSError as e:
+            # No gh to run: no later read would do better.
+            return {"state": "unknown", "checks": [], "why": str(e)}
+        except (subprocess.TimeoutExpired, ValueError, KeyError, TypeError) as e:
+            runs, why = None, str(e) or type(e).__name__
+        waited = time.monotonic() - started
+        if runs and all(r["conclusion"] for r in runs):
+            state = "success" if all(r["conclusion"] in PASSED for r in runs) else "failure"
+            return {"state": state, "checks": runs}
+        if runs == [] and waited >= grace:
+            return {"state": "none", "checks": []}
+        if waited >= timeout:
+            if runs is None:
+                return {"state": "unknown", "checks": [], "why": why}
+            return {"state": "pending", "checks": runs}
+        if halt.wait(every):
+            raise Failed("the CI wait was stopped")
+
+
+def ci_line(ci: dict) -> str:
+    failed = [r["name"] for r in ci["checks"] if r["conclusion"] not in PASSED | {None}]
+    said = {
+        "success": "CI passed, so the round is complete",
+        "failure": f"CI failed ({', '.join(failed)}), so the round isn't complete; fix it and push again",
+        "pending": "CI was still running at --ci-timeout, so the round isn't complete until it passes",
+        "none": "no CI check appeared on the commit, so the round isn't complete",
+        "unknown": f"GitHub's checks couldn't be read ({ci.get('why')}), so the round isn't complete",
+    }
+    return f"review: {said[ci['state']]}"
 
 
 def description(n: int) -> str:
@@ -376,9 +434,12 @@ def description(n: int) -> str:
         return f"(#{n}'s description couldn't be read from Redmine.)"
 
 
-def review(n: int, base: str, timeout: int, runner=None) -> Path | None:
+def review(
+    n: int, base: str, timeout: int, runner=None, gh=subprocess.run, ci_timeout=1800
+) -> Path | None:
     """Reviews HEAD against base; the review file it wrote, or None for an empty diff."""
     runner = runner or Runner()
+    halt = getattr(runner, "halt", None) or threading.Event()
     root = Path(git("rev-parse", "--show-toplevel").strip())
     review_md = (root / "REVIEW.md").read_text()
     commit = git("rev-parse", "HEAD", cwd=root).strip()
@@ -386,31 +447,33 @@ def review(n: int, base: str, timeout: int, runner=None) -> Path | None:
         fork = git("merge-base", base, "HEAD", cwd=root).strip()
     except subprocess.CalledProcessError:
         raise Failed(f"HEAD has no merge base with {base}, so nothing was reviewed") from None
-    paths = git("diff", "--name-only", "-z", fork, "HEAD", "--", *SKIPPED, cwd=root).split("\0")
+    skipped = [f":(exclude,glob){p}" for p in listed(review_md, "Skipped paths")]
+    paths = git("diff", "--name-only", "-z", fork, "HEAD", "--", *skipped, cwd=root).split("\0")
     paths = [p for p in paths if p]
     if not paths:
         print(f"review: no changes against {base} to review")
         return None
-    assess(root, timeout)
-    diff = git("diff", "--no-ext-diff", fork, "HEAD", "--", *SKIPPED, cwd=root)
+    diff = git("diff", "--no-ext-diff", fork, "HEAD", "--", *skipped, cwd=root)
     level = effort(paths, listed(review_md, "Deep paths"))
     issue = description(n)
     print(f"review: {len(paths)} files against {base}, at --effort {level}, with a security pass")
     passes = [False, True]
-    with concurrent.futures.ThreadPoolExecutor(len(passes)) as pool:
+    with concurrent.futures.ThreadPoolExecutor(len(passes) + 1) as pool:
         asked = {
             pool.submit(
                 ask, prompt(s, review_md, n, issue, diff), s, level, timeout, runner, root
             ): s
             for s in passes
         }
+        asked[pool.submit(checks, commit, root, ci_timeout, halt, gh)] = "ci"
         got = {}
         try:
             for a in concurrent.futures.as_completed(asked):
                 got[asked[a]] = a.result()
         except BaseException:
-            # The first failure, or a Ctrl-C, ends the review: the other pass isn't left to run out
-            # its time.
+            # The first failure, or a Ctrl-C, ends the review: the other pass, and the CI wait,
+            # aren't left to run out their time.
+            halt.set()
             if hasattr(runner, "kill"):
                 runner.kill()
             raise
@@ -431,6 +494,7 @@ def review(n: int, base: str, timeout: int, runner=None) -> Path | None:
         # away: the rules proposed, and why each finding not kept was dropped.
         "new_rules": sorted({f["rule_id"] for f in findings} - set(rules)),
         "dropped": notes,
+        "ci": got["ci"],
     }
     path = root / ".tmp" / str(n) / "review" / f"{commit}.json"
     write(path, data)
@@ -439,12 +503,67 @@ def review(n: int, base: str, timeout: int, runner=None) -> Path | None:
         print(line(f, rules))
     for note in notes:
         print(f"review: {note}")
+    print(ci_line(data["ci"]))
     print(f"review: wrote {path.relative_to(root)}")
     return path
 
 
-def hung_up(signum, _frame):
-    raise SystemExit(128 + signum)
+def terminated(signum, _frame):
+    raise Stopped(signum)
+
+
+def alive(pidfile: Path) -> int | None:
+    """The pid in pidfile, while that process runs; None once it has gone, or there's none."""
+    try:
+        pid = int(pidfile.read_text())
+        os.kill(pid, 0)
+    except (OSError, ValueError):
+        return None
+    return pid
+
+
+def detach(n: int) -> bool:
+    """Forks the review into a session of its own, which Ship's terminal closing doesn't reach,
+    logging to .tmp/N/review/<commit>.log. True in the child, which runs the review; the parent
+    says where, once the child has written its pid, and False tells it to return."""
+    root = Path(git("rev-parse", "--show-toplevel").strip())
+    commit = git("rev-parse", "HEAD", cwd=root).strip()
+    folder = root / ".tmp" / str(n) / "review"
+    pidfile, log = folder / f"{commit}.pid", folder / f"{commit}.log"
+    if pid := alive(pidfile):
+        print(
+            f"review: {commit[:7]} is already being reviewed, by pid {pid}; log in {log.relative_to(root)}"
+        )
+        return False
+    folder.mkdir(parents=True, exist_ok=True)
+    sys.stdout.flush()
+    sys.stderr.flush()
+    ready, told = os.pipe()
+    if child := os.fork():
+        os.close(told)
+        os.read(ready, 1)
+        os.close(ready)
+        print(
+            f"review: reviewing {commit[:7]} in the background, as pid {child}, and waiting for CI;"
+            f" log in {log.relative_to(root)}; stop it with kill {child}"
+        )
+        return False
+    os.close(ready)
+    os.setsid()
+    out = os.open(log, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o644)
+    os.dup2(out, 1)
+    os.dup2(out, 2)
+    os.close(out)
+    blank = os.open(os.devnull, os.O_RDONLY)
+    os.dup2(blank, 0)
+    os.close(blank)
+    sys.stdout.reconfigure(line_buffering=True)
+    sys.stderr.reconfigure(line_buffering=True)
+    pidfile.write_text(f"{os.getpid()}\n")
+    os.write(told, b"x")
+    os.close(told)
+    atexit.register(pidfile.unlink, missing_ok=True)
+    return True
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -452,6 +571,12 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("n", nargs="?", type=int, help="the issue; else the branch name's number")
     p.add_argument("--base", default="origin/main", help="the branch the PR merges into")
     p.add_argument("--timeout", type=int, default=900, help="seconds each pass may take")
+    p.add_argument(
+        "--ci-timeout", type=int, default=1800, help="seconds to wait for the commit's CI checks"
+    )
+    p.add_argument(
+        "--detach", action="store_true", help="review in the background, logging to a file"
+    )
     a = p.parse_args(argv)
     n = a.n
     if n is None:
@@ -464,18 +589,24 @@ def main(argv: list[str] | None = None) -> int:
             )
             return 2
         n = int(found.group(1))
-    # Ship's terminal closing, or its task stopped, ends the review as a Ctrl-C does: each pass and
-    # assess runs in its own session, which neither signal reaches.
-    for sig in (signal.SIGTERM, signal.SIGHUP):
-        signal.signal(sig, hung_up)
+    if a.detach and not detach(n):
+        return 0
+    # kill <pid> ends the review as a Ctrl-C does: each pass runs in its own session, which the
+    # signal doesn't reach.
+    signal.signal(signal.SIGTERM, terminated)
+    again = f"run pr again, or review.py {n} --base {a.base}, to retry"
     try:
-        review(n, a.base, a.timeout)
+        review(n, a.base, a.timeout, ci_timeout=a.ci_timeout)
     except (Failed, OSError) as e:
-        print(f"review: {e}", file=sys.stderr)
+        print(f"review: {e}; nothing written; {again}", file=sys.stderr)
         return 1
     except subprocess.CalledProcessError as e:
-        print(f"review: {' '.join(e.cmd)} failed: {(e.stderr or '').strip()}", file=sys.stderr)
+        why = (e.stderr or "").strip()
+        print(f"review: {' '.join(e.cmd)} failed: {why}; nothing written; {again}", file=sys.stderr)
         return 1
+    except (KeyboardInterrupt, Stopped) as e:
+        print(f"review: stopped, so nothing was written; {again}", file=sys.stderr)
+        return 128 + (e.args[0] if isinstance(e, Stopped) else signal.SIGINT)
     return 0
 
 

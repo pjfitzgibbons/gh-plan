@@ -97,8 +97,12 @@ At most three nits per review. No style findings: formatting, naming and comment
 
 ## Skipped paths
 
-The diff leaves out `.tmp/`, `node_modules/` and lock files (`uv.lock`, `package-lock.json`,
-`*.lock`).
+The diff leaves out each of these git globs, which `review.py` reads from this list:
+
+- `.tmp/**`, the issue's drafts and review files
+- `**/node_modules/**`
+- `**/package-lock.json` and the next, lock files
+- `**/*.lock`, `uv.lock` among them
 
 ## Deep paths
 

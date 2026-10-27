@@ -11,6 +11,7 @@ Fixes #<n>.
 
 - <Each command run, and its result: `npm test` in `vscode/`, `uv run pytest`, a manual run.>
 - <What has no test, and why.>
+- <Claude's review, round <k> of `<commit>`: <N> findings, <M> to fix; CI <passed, failed or running>. Or, before the first push: none yet.>
 
 ## Risk
 
