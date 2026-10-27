@@ -276,6 +276,10 @@ here are gh-plan's, as its `setup.rb` places them (§3.6).
 Relations, subtasks, linked commits, attachments and history stay below the groups, as core
 draws them.
 
+The review findings plugin's `view_issues_show_details_bottom` hook adds its Findings line inside
+`div.attributes`, after the groups. It writes core's attribute markup itself rather than calling
+`issue_fields_rows`, which this plugin overrides.
+
 **Rendering.** Core's `show.html.erb` is untouched, and draws, in order: the heading
 (`render_issue_subject_with_tree`), the attributes (`issue_fields_rows` and
 `render_half_width_custom_fields_rows`, inside `div.attributes`), the description, the

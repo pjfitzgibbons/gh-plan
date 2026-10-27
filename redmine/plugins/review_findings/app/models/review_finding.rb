@@ -53,6 +53,23 @@ class ReviewFinding < ApplicationRecord
   validates :pr_url, format: { with: PR_URL }, allow_nil: true
   validate :visibility_unless_nothing, :round_zero_for_missed, :verified_after_round
 
+  # Open and silent (§3.5): silent, losing something, and no outcome recorded. A drafted outcome
+  # still in the outbox counts as open here until Ship's pr sends it.
+  OPEN_SILENT = "review_findings.visibility = 'silent' AND review_findings.severity <> 'nothing' " \
+                'AND review_findings.outcome IS NULL'
+  scope :open_silent, -> { where(OPEN_SILENT) }
+  scope :open_silent_first, -> { order(Arel.sql("CASE WHEN #{OPEN_SILENT} THEN 0 ELSE 1 END")) }
+
+  # The issue's open silent count, or nil when it has no rows, as before its first review round.
+  def self.open_silent_count(issue_id)
+    rows = where(issue_id: issue_id)
+    rows.exists? ? rows.open_silent.count : nil
+  end
+
+  def open_silent?
+    visibility == 'silent' && severity != 'nothing' && outcome.nil?
+  end
+
   # Upserts a request's rows by (fingerprint, round) in one transaction (§3.1, §3.3). Answers the
   # counts, or raises Refused naming every bad row, having saved nothing. The issue's rows are read
   # once, inside the transaction; the unique index, not a validation, keeps the key unique.

@@ -1,7 +1,8 @@
-# The review findings API (design 0005, §3.1). JSON only; the routes refuse any other format.
+# The review findings API (design 0005, §3.1), JSON only, and the project's Findings tab (§5, L5).
 class ReviewFindingsController < ApplicationController
+  menu_item :review_findings
   before_action :find_issue, only: %i[index update]
-  before_action :find_project_by_project_id, only: %i[rules rule rename]
+  before_action :find_project_by_project_id, only: %i[tab rules rule rename]
   before_action :authorize
   accept_api_auth :index, :update, :rules, :rule, :rename
 
@@ -26,6 +27,20 @@ class ReviewFindingsController < ApplicationController
     render json: counts
   rescue ReviewFinding::Refused => e
     render json: { 'errors' => e.messages }, status: :unprocessable_content
+  end
+
+  # The findings of the issues the user may see findings in, or of the one `issue_id` names, each
+  # open silent finding first. An issue outside those is a 404.
+  def tab
+    ids = issue_ids(:view_review_findings)
+    if params[:issue_id].present?
+      @issue = Issue.where(id: ids).find_by(id: params[:issue_id].to_i)
+      return render_404 unless @issue
+
+      ids = [@issue.id]
+    end
+    @findings = ReviewFinding.where(issue_id: ids).includes(issue: :project)
+                             .open_silent_first.order(:issue_id, :round, :id)
   end
 
   # Over the issues of the project and its sub-projects that the user may see findings in.

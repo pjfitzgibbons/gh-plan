@@ -108,4 +108,12 @@ class ReviewFindingTest < ActiveSupport::TestCase
     assert_equal({ 'created' => 1, 'updated' => 1, 'unchanged' => 0 }, counts)
     assert_equal ['Second'], ReviewFinding.where(fingerprint: 'finding/v1:00000000000000f1').pluck(:summary)
   end
+
+  test 'the open silent count is nil with no rows, and counts only silent rows with no outcome' do
+    assert_equal 2, ReviewFinding.open_silent_count(1)
+    assert_equal 0, ReviewFinding.open_silent_count(2)
+    assert_nil ReviewFinding.open_silent_count(3)
+    assert_equal ReviewFinding.where(issue_id: 1).select(&:open_silent?).map(&:id).sort,
+                 ReviewFinding.where(issue_id: 1).open_silent.ids.sort
+  end
 end

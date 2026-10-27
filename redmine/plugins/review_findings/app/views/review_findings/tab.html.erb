@@ -1,0 +1,30 @@
+<h2>Findings<% if @issue %> for <%= link_to_issue @issue %><% end %></h2>
+<% if @issue %><p><%= link_to 'All issues', project_review_findings_path(@project) %></p><% end %>
+<% if @findings.empty? %>
+<p class="nodata"><%= @issue ? 'No review yet.' : 'No issue has a review yet.' %></p>
+<% else %>
+<div class="autoscroll">
+<table class="list review-findings">
+  <thead><tr><th>Issue</th><th>Round</th><th>Outcome</th><th>Visibility</th><th>Severity</th>
+    <th>Rule</th><th>Where</th><th>Finding</th></tr></thead>
+  <tbody>
+  <% @findings.each do |f| %>
+    <tr class="<%= cycle('odd', 'even') %><%= ' open-silent' if f.open_silent? %>">
+      <td><%= link_to_issue f.issue, tracker: false, subject: false %></td>
+      <td><%= f.round %></td>
+      <td><%= f.open_silent? ? 'Open, silent' : (f.outcome || 'Open') %></td>
+      <td><%= f.visibility %></td>
+      <td><%= f.severity %></td>
+      <td><%= f.rule_id %></td>
+      <td><%= [f.file, f.line].compact.join(':') %></td>
+      <td>
+        <strong><%= f.summary %></strong>
+        <% if f.body.present? %><%= simple_format(h(f.body)) %><% end %>
+        <% if f.justification.present? %><%= simple_format(h(f.justification)) %><% end %>
+      </td>
+    </tr>
+  <% end %>
+  </tbody>
+</table>
+</div>
+<% end %>

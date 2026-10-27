@@ -1,0 +1,11 @@
+<%# Core's attribute markup, written out: Ulysses (design 0004) overrides issue_fields_rows. %>
+<% if User.current.allowed_to?(:view_review_findings, issue.project) %>
+<% n = ReviewFinding.open_silent_count(issue.id) %>
+<div class="splitcontent"><div class="splitcontentleft">
+  <div class="review-findings attribute">
+    <div class="label">Findings:</div>
+    <div class="value"><%= link_to(n.nil? ? 'no review yet' : "#{n} open silent",
+                                   project_review_findings_path(issue.project, issue_id: issue.id)) %></div>
+  </div>
+</div></div>
+<% end %>

@@ -319,10 +319,13 @@ Redmine's own pages are the views:
 | Next up | The open issues in order, in Redmine and in the extension's panel (§7.6) |
 | Lanes tab | The lane board: lanes as rows and statuses as columns, each lane's open points, and a ready mark on each open issue nothing open blocks |
 | Gantt | Each project's issues and versions over time |
-| An issue's page | Its description, relations, sub-tasks, linked commits and journal |
+| Findings tab | Each issue's review findings, the open silent ones first; `?issue_id=<n>` shows one issue's |
+| An issue's page | Its description, relations, sub-tasks, linked commits and journal, and its Findings line: `<k> open silent`, or `no review yet` |
 
 The Lanes tab is at `/projects/<identifier>/lanes`, and has no Icebox column
 ([lane board](../redmine/plugins/lane_board/README.md)).
+The Findings tab is at `/projects/<identifier>/review_findings`
+([review findings](../redmine/plugins/review_findings/README.md#the-findings-tab)).
 
 <a id="invariants"></a>
 ## 10. Invariants

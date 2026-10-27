@@ -2,14 +2,25 @@
 
 A Redmine 7.0 plugin that stores code review findings, one row per finding per review round of an
 issue's branch, and answers per-rule counts of real findings and noise. It adds one table,
-`review_findings`, a project module of the same name, and a JSON API. The schema, the allowed
+`review_findings`, a project module of the same name, a JSON API and a Findings tab. The schema, the allowed
 values and what each field holds are [design 0005 §3.1](../../../docs/design/0005-review-findings.md#schema).
 
-It has no tab yet; the API is the only way in.
+## The Findings tab
+
+The project's **Findings** tab, at `/projects/:project_id/review_findings`, lists the findings of
+every issue in the project and its sub-projects that the user can see, each open silent finding
+first. `?issue_id=<n>` shows one issue's, and says "No review yet." when it has no rows. An open
+silent finding is silent, loses something, and has no outcome. It needs View review findings.
+
+An issue's page shows a **Findings** line, `<k> open silent` or `no review yet`, linking to the
+tab filtered to the issue. It counts the outcomes the store holds, so a drafted outcome counts as
+open until Ship's `pr` sends it.
+
+A finding's text is shown escaped, as text.
 
 ## The API
 
-Every route is JSON only. Redmine never reads the session on a JSON request, so a caller sends the
+Every API route is JSON only. Redmine never reads the session on a JSON request, so a caller sends the
 API key (`X-Redmine-API-Key`) or basic auth, even from a signed-in browser.
 
 | Route | Does | Permission |
