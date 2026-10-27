@@ -50,8 +50,22 @@ def contents(text: str) -> list[str]:
     return out
 
 
+def front_matter(text: str) -> tuple[str, str]:
+    """A skill's leading `---` front matter, and the rest, which opens with the `#` title."""
+    if not text.startswith("---\n"):
+        return "", text
+    end = text.find("\n---\n", 3)
+    if end < 0:
+        return "", text
+    end += len("\n---\n")
+    return text[:end], text[end:].lstrip("\n")
+
+
 def with_contents(text: str) -> str:
     """The file with its contents list right under the `#` title, replacing any list already there."""
+    front, text = front_matter(text)
+    if front:
+        return front + "\n" + with_contents(text)
     lines = text.splitlines(keepends=True)
     rest = lines[1:]
     if "".join(rest).lstrip("\n").startswith("## Contents\n"):
@@ -69,7 +83,7 @@ def with_contents(text: str) -> str:
 
 def listed(text: str) -> list[str] | None:
     """The contents list as written, or None when the file doesn't open with one."""
-    lines = text.splitlines()
+    lines = front_matter(text)[1].splitlines()
     if lines[1:4] != ["", "## Contents", ""]:
         return None
     out = []
@@ -102,6 +116,14 @@ def test_slug_matches_github():
 def test_with_contents_replaces_a_stale_list():
     text = "# T\n\n## Contents\n\n- [Old](#old)\n\n## New\nx\n"
     assert with_contents(text) == "# T\n\n## Contents\n\n- [New](#new)\n\n## New\nx\n"
+
+
+def test_front_matter_comes_before_the_title_and_its_list():
+    text = "---\nname: s\n---\n\n# T\n\n## A\nx\n"
+    fixed = with_contents(text)
+    assert fixed == "---\nname: s\n---\n\n# T\n\n## Contents\n\n- [A](#a)\n\n## A\nx\n"
+    assert listed(fixed) == ["- [A](#a)"]
+    assert listed(text) is None
 
 
 def test_headings_in_code_fences_are_skipped():

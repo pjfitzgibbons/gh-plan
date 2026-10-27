@@ -81,9 +81,17 @@ function shipTab(input, root, id) {
   return false;
 }
 
-// Stages every change, as pr's commit does, so the Changes view's staged list is what Ship commits.
+// Stages every change, as pr's commit does, so what Go shows staged is what Ship commits.
 async function stage(root) {
   await git(root, "add", "-A");
+}
+
+// What Go staged, as git diff prints it, for the Review tab; renames as renames, and paths as they
+// are, unquoted. The prefixes, context, blank context lines, submodule format and textconv filters
+// are set here, so the git config can't change the paths, line numbers or text stagedDiff reads.
+// Output over execFile's 1 MB buffer refuses.
+function stagedChanges(root) {
+  return git(root, "-c", "core.quotepath=false", "-c", "diff.suppressBlankEmpty=false", "diff", "--cached", "--no-color", "--no-ext-diff", "--no-textconv", "--submodule=short", "-U3", "-M", "--src-prefix=a/", "--dst-prefix=b/");
 }
 
 // Opens what Go staged, and returns why not, or null once it's open. VS Code's git extension reads
@@ -187,6 +195,6 @@ async function shipped({ root, id, branch, redmine }) {
 }
 
 module.exports = {
-  reviewFile, isRoundFile, unsent, unsentIn, keepEdits, roundFiles, shipTab, stage, openStaged, check, pullRequest, prLink, linkPullRequest,
+  reviewFile, isRoundFile, unsent, unsentIn, keepEdits, roundFiles, shipTab, stage, stagedChanges, openStaged, check, pullRequest, prLink, linkPullRequest,
   shipped,
 };

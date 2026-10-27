@@ -5,6 +5,18 @@ description: Work Redmine issues and their PRs the way gh-plan expects. Issues a
 
 # gh issues
 
+## Contents
+
+- [Rules](#rules)
+- [Aliases and commands](#aliases-and-commands)
+- [Picking up an issue](#picking-up-an-issue)
+- [Shipping](#shipping)
+- [Reverting a PR](#reverting-a-pr)
+- [Drafting a new issue](#drafting-a-new-issue)
+- [Answering a PR review](#answering-a-pr-review)
+- [Ticking the issue's Done list](#ticking-the-issues-done-list)
+- [Tests](#tests)
+
 Adapted from GitHub's `github-issues` skill ([github/awesome-copilot](https://github.com/github/awesome-copilot/tree/main/skills/github-issues), MIT), rewritten around Redmine issues and the outlines in `~/.claude/agents/technical-writer.md`.
 
 An issue is a Redmine issue, `#<n>`, its description in the issue outline. GitHub Issues are not used. The skill lives in gh-plan at `.claude/skills/gh-issues/`, and `~/.claude/skills/gh-issues` links to the main checkout's copy, so every repo uses the one skill. The scripts are stdlib Python and shell. Claude runs only the ones that read; every commit, push, `gh` write and Redmine write happens on a button in the GH Plan extension's Next up panel, or a `pr`, `new_issue`, `issue_body`, `redmine-set` or `issue_relations` a person runs.
@@ -55,7 +67,11 @@ A person presses **Start** on the issue's row in Next up. It makes the branch an
 
 ## Shipping
 
-When the work is done and tested, write `.tmp/<n>/commit.txt` (rules 4 and 5, ending `Assisted-by: Claude:<model>`) and `.tmp/<n>/pr-body.md`, its `## Done` section ticked as below and followed by Testing, Risk and How to revert as [references/pr-body.md](references/pr-body.md) lays them out, plus any replies. The extension opens them as tabs. A person reviews them and presses **Go**, which checks them, then stages every change and opens the changes. **Ship** refuses any file changed since Go, then runs `pr <n>` and links the PR in the issue's Pull requests field. Go and Ship again run `pr` again, for the next round. After the merge, **Done** cleans up and closes the issue.
+When the work is done and tested, and `/code-review low` has run on the uncommitted changes, write `.tmp/<n>/commit.txt` (rules 4 and 5, ending `Assisted-by: Claude:<model>`) and `.tmp/<n>/pr-body.md`, its `## Done` section ticked as below and followed by Testing, Risk and How to revert as [references/pr-body.md](references/pr-body.md) lays them out, plus any replies. The extension opens them as tabs. A person reviews them and presses **Go**, which checks them, then stages every change and shows the staged diff and commit message in the issue's `Review #<n>` tab (VS Code's Staged Changes only for a diff over 1 MB). **Ship** refuses any file changed since Go, `commit.txt` included, then runs `pr <n>` and links the PR in the issue's Pull requests field. Go and Ship again run `pr` again, for the next round. After the merge, **Done** cleans up and closes the issue.
+
+**The end of the reviewer's turn.** A round reviews the commit Ship pushed, once its `assess` check passes. After the review, record its findings with `findings.py send <n>`, once #124 builds it, then update the PR body with `gh pb`, its Done list as it stands (unticked in round 1). These are Claude's only writes outside a button.
+
+**The round report.** After answering a round, write `.tmp/<n>/report.html` last, after `commit.txt` and `pr-body.md`. The extension shows it in the `Review #<n>` tab, where Go and Ship are. It's one self-contained HTML file. Its head holds `<meta name="plan-round" content="<k>">`. Its body opens with two tables. The first gives the review: the command, the commit it reviewed and the base, where the round's fixes are, the `/code-review low` before Go, as run (with its date and time, and its result) or waiting, and the `assess` and test counts. The second counts the findings: all, New, Fixed and Left (or whatever other outcome a finding has), and the open silent failures. Next comes the findings list, each link labelled with its outcome: New blue, Fixed green, any other amber. Each finding then gives its title with the same label, the fix or the note refuting it, and its drafted outcome line from `outcomes.md`. Under it, each diff hunk the fix touched, test included, sits in its own `<details>`, labelled `file:line +adds −dels`, with old and new line numbers and added and removed lines shaded. A finding left as it is shows the code it names, by `file:line`, the same way. Links to `commit.txt` and `pr-body.md` by name close it. It runs no script and loads nothing: an image is inline SVG or a `data:` URI.
 
 ## Reverting a PR
 

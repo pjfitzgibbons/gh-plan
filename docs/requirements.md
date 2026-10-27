@@ -116,6 +116,7 @@ traded · `COULD`: nice, and no tool gets credit for it over a MUST.
 | **H1** | MUST | **Scriptable from the command line** for lint and generated views | |
 | **H5** | SHOULD | Automatic membership: new items join the tracked set without a manual step | An item file in a repo's `.tracker/items/` or `.tracker/archive/` is in the plan. A Done item lives in `archive/`; a reopened one moves back to `items/`. There is no second list to add it to |
 | **H6** | SHOULD | Validation hooks, so a rule is enforced by a pre-commit hook or a CI check before a change lands, rather than by a lint that runs later | A lint detects; it does not prevent |
+| **H7** | SHOULD | **A review round is answered in one place**: its findings, the fix or refutation for each, and the files to ship, beside the button that ships them | A round answered across PR threads and a session's transcript can't be read back, and a Ship pressed away from the round can send one nobody read |
 
 <a id="cost"></a>
 ## 10. Cost and licence (I)

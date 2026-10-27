@@ -1,0 +1,157 @@
+/* The Review tab: the extension's bar above the report's frame, and what Go staged below it, in VS
+   Code's theme colours. */
+html, body {
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  display: flex;
+  flex-direction: column;
+  color: var(--vscode-foreground);
+  background: var(--vscode-editor-background);
+  font-family: var(--vscode-font-family);
+  font-size: var(--vscode-font-size);
+}
+
+header {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 20px;
+  border-bottom: 1px solid var(--vscode-panel-border, var(--vscode-widget-border, transparent));
+  background: var(--vscode-editorWidget-background);
+}
+
+#label {
+  font-weight: 600;
+}
+
+#hint {
+  flex: 1;
+  color: var(--vscode-descriptionForeground);
+}
+
+button {
+  padding: 4px 14px;
+  border: 1px solid var(--vscode-button-border, transparent);
+  border-radius: 2px;
+  color: var(--vscode-button-foreground);
+  background: var(--vscode-button-background);
+  font: inherit;
+  cursor: pointer;
+}
+
+button:hover:not(:disabled) {
+  background: var(--vscode-button-hoverBackground);
+}
+
+button:focus-visible {
+  outline: 1px solid var(--vscode-focusBorder);
+  outline-offset: 2px;
+}
+
+button:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+#report {
+  flex: 1;
+  width: 100%;
+  border: 0;
+}
+
+#empty {
+  padding: 12px 20px;
+  color: var(--vscode-descriptionForeground);
+}
+
+/* With the staged changes showing, the page scrolls as one and the bar stays on top. */
+body[data-view="staged"] {
+  display: block;
+  height: auto;
+}
+
+body[data-view="staged"] header {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+}
+
+#staged {
+  padding: 12px 20px 24px;
+  border-top: 1px solid var(--vscode-panel-border, var(--vscode-widget-border, transparent));
+}
+
+#staged h2 {
+  font-size: 1.2em;
+}
+
+#staged h3 {
+  font-size: 1em;
+}
+
+#staged pre {
+  margin: 0;
+  font-family: var(--vscode-editor-font-family, monospace);
+  font-size: var(--vscode-editor-font-size);
+}
+
+#staged .message {
+  padding: 8px;
+  white-space: pre-wrap;
+  background: var(--vscode-textCodeBlock-background);
+}
+
+#staged details {
+  margin: 4px 0;
+  border: 1px solid var(--vscode-widget-border, transparent);
+}
+
+#staged summary {
+  padding: 4px 8px;
+  cursor: pointer;
+}
+
+#staged summary:focus-visible {
+  outline: 1px solid var(--vscode-focusBorder);
+}
+
+#staged .count,
+#staged .status,
+#staged .note,
+#staged .ln {
+  color: var(--vscode-descriptionForeground);
+}
+
+
+#staged .diff > div {
+  display: grid;
+  grid-template-columns: 4em 4em 1fr;
+}
+
+#staged .ln {
+  padding-right: 8px;
+  text-align: right;
+  user-select: none;
+}
+
+/* A long line wraps inside its own column, under its text, not the line numbers. */
+#staged .diff span:last-child {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+#staged .add {
+  background: var(--vscode-diffEditor-insertedLineBackground, var(--vscode-diffEditor-insertedTextBackground));
+}
+
+#staged .del {
+  background: var(--vscode-diffEditor-removedLineBackground, var(--vscode-diffEditor-removedTextBackground));
+}
+
+#staged .at {
+  color: var(--vscode-textPreformat-foreground, var(--vscode-descriptionForeground));
+  background: var(--vscode-editorWidget-background);
+}

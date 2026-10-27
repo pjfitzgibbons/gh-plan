@@ -228,15 +228,18 @@ written, the extension opens them all for review.
 
 Go, in the title bar of any of them, saves them and refuses by name a missing PR body, a missing
 commit message while the tree has changes, or a branch that isn't the issue's. It then stages every
-change, as `pr`'s commit will, and opens them, so the staged list is what Ship commits. Only Ship
+change, as `pr`'s commit will, and shows the staged diff and commit message in the issue's Review
+tab, so what it shows is what Ship commits. Only Ship
 runs `pr`: it saves and checks again, refuses by name any file changed since Go staged the tree,
 then runs `pr <n>` in a terminal in the worktree. Under Ship, `pr` commits the index Go staged and
 refuses a change made since, rather than staging again. Go and Ship refuse a worktree file with
 unsaved edits, which neither the stage nor the commit would hold.
 
-Before the commit message is written, `scripts/assess` runs every check, and the agent review runs
-only once it passes. The PR's `assess` check runs it again; `main` requires that check and every
-review thread resolved before a merge.
+Before the commit message is written, `scripts/assess` runs every check. The PR's `assess` check
+runs it again; `main` requires that check and every review thread resolved before a merge. Before
+Go, `/code-review low` runs on the uncommitted changes. Each commit Ship pushes gets a review round
+once its `assess` check passes, and Claude answers the round in the Review tab
+([`vscode/README.md`](../vscode/README.md)).
 
 `pr` commits with `commit.txt`, pushes, and opens the PR or replaces its body. It then posts each
 reply to its thread and resolves the thread. Each reply is deleted once sent, so a second `pr`

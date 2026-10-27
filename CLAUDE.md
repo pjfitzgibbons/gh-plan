@@ -1,5 +1,13 @@
 # gh-plan — repo instructions
 
+## Contents
+
+- [Read before](#read-before)
+- [Commands](#commands)
+- [Done differently](#done-differently)
+- [Boundaries](#boundaries)
+- [Gotchas](#gotchas)
+
 **GH Plan** plans work in Redmine ([ADR 0011](docs/adr/0011-redmine-is-the-tracker.md)), run in
 Docker on localhost (`redmine/`), with a VS Code extension (`vscode/`) that starts, ships and
 finishes each issue. It does not use GitHub Issues; pull requests are its one GitHub integration. Nothing is inherited from a parent directory's `CLAUDE.md` or
@@ -32,8 +40,12 @@ settings: what this repo needs is here or in `.claude/`.
 - **Review findings:** weigh severity, visibility and frequency. Fix silent failures that lose
   work, files, commits or the tracker's state, and hard crashes, even rare ones. A rare warning or
   a clean error-stop can stay.
-- **Before each push:** `/code-review high`, once `scripts/assess` passes, on the branch's whole
-  diff, review fixes included. The PR body says it ran.
+- **Before Go:** `/code-review low` on the uncommitted changes, once `scripts/assess` passes, to
+  catch the major issues before they're committed.
+- **A review round:** `/code-review high` on each commit Ship pushes, once that commit's `assess`
+  check passes, on the branch's whole diff, review fixes included. Claude answers it in
+  `.tmp/<n>/report.html`, which opens as the `Review #<n>` tab with Go and Ship, and the PR body
+  says it ran.
 - **Python:** `python3` on PATH. `/usr/bin/python3` is 3.9 and can't run the skill scripts.
 - **An issue's work:** Start, Go, Ship and Done in the extension's Next up panel
   ([`vscode/README.md`](vscode/README.md)).
@@ -71,6 +83,10 @@ settings: what this repo needs is here or in `.claude/`.
   Start, Ship or Done, or a `pr`, `new_issue`, `issue_body`, `redmine-set` or `issue_relations` a
   person runs. Write `.tmp/<n>/commit.txt`, `pr-body.md`, `replies/` and issue drafts for them to
   review; reads, inspections, the test suite and cleaning up your own mess you run yourself.
+- **The reviewer's two writes** fall outside a button (design 0005 §3.3). When a round's review
+  ends, `findings.py send <n>` records its findings as unconfirmed rows, once #124 builds it, and
+  `gh pb` updates the PR body of the worktree's own issue. Nothing else is written: no push, no
+  comment, no other PR, no outcome.
 - **An agent commits only on its own issue branch,** and only when asked.
 - **Never commit secrets.** The tool authenticates by shelling out to `gh` (requirement `G3`); do
   not add a library that needs a PAT.
