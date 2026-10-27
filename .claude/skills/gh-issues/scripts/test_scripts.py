@@ -1,6 +1,7 @@
 """Offline tests for the gh-issues scripts. Run from scripts/: python3 -m unittest test_scripts"""
 
 import concurrent.futures
+import contextlib
 import io
 import json
 import os
@@ -8,8 +9,8 @@ import re
 import shutil
 import signal
 import subprocess
+import sys
 import tempfile
-import threading
 import time
 import unittest
 import urllib.error
@@ -553,10 +554,13 @@ class PrRebase(unittest.TestCase):
     def test_a_branch_commit_that_says_fixes_is_refused_before_the_push(self):
         pushed = self.on_origin("feat/9-x")
         self.commit(self.tree, "b.txt", "more\n", "More\n\nThis fixes #9 at last")
+        self.commit(self.tree, "c.txt", "c\n", "Clean (refs #9)")
+        self.commit(self.tree, "d.txt", "d\n", "Split\n\nThis Fixes\n#9 too")
         run = self.pr()
         self.assertEqual(run.returncode, 2)
         self.assertIn("branch commits say fixes", run.stderr)
-        self.assertRegex(run.stderr, r"\n  [0-9a-f]{7,} More\n")
+        self.assertRegex(run.stderr, r"\n  [0-9a-f]{7,} Split\n  [0-9a-f]{7,} More\n")
+        self.assertNotIn("Clean", run.stderr)
         self.assertEqual(self.on_origin("feat/9-x"), pushed)
 
     def test_a_branch_behind_main_is_rebased_and_pushed_with_no_merge(self):
@@ -2364,6 +2368,17 @@ def answer(findings, summary="Risky cleanup."):
 REVIEW_MD = (Path(__file__).resolve().parents[4] / "REVIEW.md").read_text()
 
 
+@contextlib.contextmanager
+def reviewing():
+    """A process whose command line names review.py, as a running review's does; its pid."""
+    p = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)", "review.py"])
+    try:
+        yield p.pid
+    finally:
+        p.kill()
+        p.wait()
+
+
 class Review(unittest.TestCase):
     """review.py's checks on what claude returns, and the claude command it runs."""
 
@@ -2566,68 +2581,109 @@ class Review(unittest.TestCase):
                     "review: stopped, so nothing was written; run pr again", err.getvalue()
                 )
 
-    def ci(self, *answers, timeout=60, grace=60, halt=None):
-        """review.checks against a gh that gives each answer in turn, then the last again: a list of
-        check runs, a CompletedProcess, or an exception to raise."""
-        said = list(answers)
+    def assess(self, script, timeout=60):
+        """review.assess on a tree whose scripts/assess is the sh script given; None for none."""
+        tree = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        if script is not None:
+            (tree / "scripts").mkdir()
+            (tree / "scripts" / "assess").write_text("#!/bin/sh\n" + script)
+            (tree / "scripts" / "assess").chmod(0o755)
+        with mock.patch("sys.stdout", new_callable=io.StringIO) as out:
+            got = review.assess(tree, timeout, review.Runner())
+        return got, out.getvalue()
 
-        def gh(command, **_):
-            a = said.pop(0) if len(said) > 1 else said[0]
-            if isinstance(a, BaseException):
-                raise a
-            if isinstance(a, list):
-                return subprocess.CompletedProcess(command, 0, json.dumps({"check_runs": a}), "")
-            return a
+    SAID = (
+        "printf 'PASS  pytest  (1.0s)\\n%s  npm test  (2.0s)\\n\\nassess: %s\\n"
+        "  PASS  pytest  (1.0s)\\n  %s  npm test  (2.0s)\\n'"
+    )
 
-        halt = halt or threading.Event()
-        return review.checks("abc1234", Path("."), timeout, halt, gh, every=0, grace=grace)
-
-    @staticmethod
-    def run_(name="assess", status="completed", conclusion="success"):
-        return {"name": name, "status": status, "conclusion": conclusion, "html_url": f"u/{name}"}
-
-    def test_ci_is_waited_for_until_every_check_finishes(self):
-        got = self.ci(
-            [],
-            [self.run_(status="queued", conclusion=None)],
-            [self.run_(), self.run_("lint", conclusion="skipped")],
-        )
-        self.assertEqual(got["state"], "success")
-        self.assertEqual([c["name"] for c in got["checks"]], ["assess", "lint"])
-        self.assertIn("CI passed, so the round is complete", review.ci_line(got))
-
-    def test_a_failed_check_leaves_the_round_incomplete(self):
-        got = self.ci([self.run_("lint"), self.run_(conclusion="failure")])
-        self.assertEqual(got["state"], "failure")
-        self.assertIn("CI failed (assess), so the round isn't complete", review.ci_line(got))
-
-    def test_ci_still_running_at_the_timeout_is_pending(self):
-        got = self.ci([self.run_(status="in_progress", conclusion=None)], timeout=0)
+    def test_a_passing_assess_is_the_rounds_ci_and_names_each_check(self):
+        got, _ = self.assess(self.SAID % ("PASS", "2 passed, 0 failed", "PASS") + "\n")
         self.assertEqual(
             got,
             {
-                "state": "pending",
-                "checks": [{"name": "assess", "conclusion": None, "url": "u/assess"}],
+                "state": "success",
+                "summary": "assess: 2 passed, 0 failed",
+                "checks": [
+                    {"name": "pytest", "conclusion": "success"},
+                    {"name": "npm test", "conclusion": "success"},
+                ],
             },
         )
-        self.assertIn("still running", review.ci_line(got))
+        self.assertIn(
+            "scripts/assess passed (assess: 2 passed, 0 failed), so the round is complete",
+            review.ci_line(got),
+        )
 
-    def test_no_check_after_the_grace_is_none(self):
-        self.assertEqual(self.ci([], grace=0)["state"], "none")
+    def test_a_failing_assess_leaves_the_round_incomplete_and_logs_its_output(self):
+        got, out = self.assess(
+            "echo 'AssertionError: boom'\n"
+            + self.SAID % ("FAIL", "1 passed, 1 failed", "FAIL")
+            + "\nexit 1\n"
+        )
+        self.assertEqual(got["state"], "failure")
+        self.assertEqual(got["checks"][1], {"name": "npm test", "conclusion": "failure"})
+        self.assertIn("AssertionError: boom", out)
+        self.assertIn(
+            "scripts/assess failed (npm test), so the round isn't complete", review.ci_line(got)
+        )
 
-    def test_checks_github_cant_give_are_unknown(self):
-        got = self.ci(FileNotFoundError("gh"))
-        self.assertEqual(got["state"], "unknown")
-        self.assertIn("gh", review.ci_line(got))
-        failed = subprocess.CompletedProcess([], 1, "", "HTTP 404: Not Found")
-        got = self.ci(failed, timeout=0)
-        self.assertEqual((got["state"], got["why"]), ("unknown", "HTTP 404: Not Found"))
+    def test_an_assess_that_cant_start_or_runs_long_writes_nothing(self):
+        with self.assertRaisesRegex(review.Failed, "scripts/assess ran past 1s"):
+            self.assess("sleep 30\n", timeout=1)
+        tree = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        (tree / "scripts").mkdir()
+        (tree / "scripts" / "assess").write_text("not run")
+        with self.assertRaisesRegex(review.Failed, "scripts/assess couldn't run"):
+            review.assess(tree, 60, review.Runner())
 
-    def test_a_kill_stops_the_ci_wait(self):
-        runner = review.Runner()
-        runner.kill()
-        with self.assertRaisesRegex(review.Failed, "CI wait was stopped"):
-            self.ci([], halt=runner.halt)
+    def test_a_commit_with_no_assess_is_none(self):
+        got, _ = self.assess(None)
+        self.assertEqual(got["state"], "none")
+        self.assertIn("has no scripts/assess, so the round isn't complete", review.ci_line(got))
+
+    def test_assess_runs_without_ships_pr_staged_or_the_repos_venv(self):
+        with mock.patch.dict(os.environ, PR_STAGED="1", VIRTUAL_ENV="/repo/.venv"):
+            got, _ = self.assess('echo "assess: [${PR_STAGED:-}${VIRTUAL_ENV:-}]"\n')
+        self.assertEqual(got["summary"], "assess: []")
+
+    def test_a_diff_that_isnt_utf_8_is_still_read(self):
+        repo = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        subprocess.run(["git", "init", "-q", str(repo)], check=True)
+        (repo / "latin.txt").write_bytes(b"caf\xe9\n")
+        blob = review.git("hash-object", "-w", "latin.txt", cwd=repo).strip()
+        self.assertEqual(review.git("cat-file", "-p", blob, cwd=repo), "caf\ufffd\n")
+
+    def test_a_reused_pid_isnt_taken_for_a_review(self):
+        pidfile = Path(self.enterContext(tempfile.TemporaryDirectory())) / "c.pid"
+        pidfile.write_text(f"{os.getpid()}\n")
+        self.assertIsNone(review.alive(pidfile))
+        with reviewing() as pid:
+            pidfile.write_text(f"{pid}\n")
+            self.assertEqual(review.alive(pidfile), pid)
+
+    def test_a_pidfile_is_claimed_once_and_a_dead_reviews_cleared(self):
+        pidfile = Path(self.enterContext(tempfile.TemporaryDirectory())) / "c.pid"
+        self.assertTrue(review.claim(pidfile))
+        self.assertEqual(pidfile.read_text(), f"{os.getpid()}\n")
+        # This pid is pytest's, not a review's, so the next claim clears it.
+        self.assertTrue(review.claim(pidfile))
+        with reviewing() as pid:
+            pidfile.write_text(f"{pid}\n")
+            self.assertFalse(review.claim(pidfile))
+            self.assertEqual(pidfile.read_text(), f"{pid}\n")
+
+    def test_a_child_that_dies_before_it_starts_is_named_and_its_pidfile_cleared(self):
+        repo = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        # A fork whose child never ran: the pipe closes with nothing written.
+        with (
+            mock.patch.object(review, "git", side_effect=[f"{repo}\n", "abc1234def\n"]),
+            mock.patch.object(review.os, "fork", return_value=4242),
+            mock.patch("sys.stdout", new_callable=io.StringIO) as out,
+        ):
+            self.assertEqual(review.detach(9), 1)
+        self.assertIn("the review of abc1234 didn't start", out.getvalue())
+        self.assertFalse((repo / ".tmp" / "9" / "review" / "abc1234def.pid").exists())
 
     def test_a_failed_or_timed_out_claude_is_named(self):
         def timeout(command, **kw):
@@ -2691,11 +2747,8 @@ class PrReview(unittest.TestCase):
         thread = {"id": "PRRT_1", "isResolved": False, "comments": {"nodes": [comment]}}
         threads = {"reviewThreads": {"nodes": [thread]}}
         self.threads.write_text(json.dumps({"data": {"repository": {"pullRequest": threads}}}))
-        self.ci = top / "ci.json"
-        self.checked(Review.run_())
         (bin / "gh").write_text(
             f'#!/bin/sh\necho "$*" >> "{self.calls}"\ncase "$*" in\n'
-            f'  *check-runs*) cat "{self.ci}" ;;\n'
             '  *nameWithOwner*) echo \'{"nameWithOwner": "o/r"}\' ;;\n'
             '  "repo view"*) echo main ;;\n'
             '  *"--json state"*) echo OPEN ;;\n'
@@ -2709,7 +2762,7 @@ class PrReview(unittest.TestCase):
         self.answer.write_text(answer([finding(file="a.txt", line=2)]))
         self.broken = top / "broken"
         (bin / "claude").write_text(
-            f'#!/bin/sh\necho "$*" >> "{self.asked}"\n'
+            f'#!/bin/sh\necho "$*" >> "{self.asked}"\necho "cwd $(pwd -P)" >> "{self.asked}"\n'
             f'[ -z "${{ANTHROPIC_API_KEY:-}}" ] || echo "API KEY" >> "{self.asked}"\n'
             "cat > /dev/null\n"
             f'[ ! -f "{self.broken}" ] || {{ echo "claude: not logged in" >&2; exit 1; }}\n'
@@ -2723,13 +2776,23 @@ class PrReview(unittest.TestCase):
             REDMINE_URL="http://127.0.0.1:9",
         )
         (self.tree / "REVIEW.md").write_text(REVIEW_MD)
+        # The round's CI, which says where it ran, and fails once assess-fails exists.
+        self.ran = top / "ran"
+        self.fails = top / "assess-fails"
+        assess = self.tree / "scripts" / "assess"
+        assess.parent.mkdir()
+        assess.write_text(
+            f'#!/bin/sh\npwd -P > "{self.ran}"\n'
+            f'if [ -f "{self.fails}" ]; then echo "FAIL  pytest  (1.0s)"; r="0 passed, 1 failed"\n'
+            '  l="FAIL"; else r="1 passed, 0 failed"; l="PASS"; fi\n'
+            'printf "\\nassess: %s\\n  %s  pytest  (1.0s)\\n" "$r" "$l"\n'
+            f'[ ! -f "{self.fails}" ]\n'
+        )
+        assess.chmod(0o755)
         self.head = self.commit(self.tree, "a.txt", "one\nbranch\nmore\n", "More")
         self.reply = self.tree / ".tmp" / "9" / "replies" / "11.md"
         self.reply.parent.mkdir(parents=True)
         self.reply.write_text("Fixed: it's done.\n")
-
-    def checked(self, *runs):
-        self.ci.write_text(json.dumps({"check_runs": list(runs)}))
 
     def reviewed(self):
         return self.tree / ".tmp" / "9" / "review" / f"{self.head}.json"
@@ -2765,8 +2828,17 @@ class PrReview(unittest.TestCase):
             "a.txt:2  Important  unchecked-step-before-destructive-op  commits/silent", log
         )
         self.assertIn("couldn't be read", log)
-        self.assertIn("review: CI passed, so the round is complete", log)
-        self.assertIn(f"commits/{self.head}/check-runs", self.calls.read_text())
+        self.assertIn(
+            "review: scripts/assess passed (assess: 1 passed, 0 failed), so the round is complete",
+            log,
+        )
+        self.assertNotIn("check-runs", self.calls.read_text())
+        # assess and both passes ran in a worktree of the commit outside the repo, now gone.
+        ran = self.ran.read_text().strip()
+        self.assertFalse(ran.startswith(str(self.tree.resolve())))
+        self.assertEqual(self.asked.read_text().count(f"cwd {ran}\n"), 2)
+        self.assertFalse(Path(ran).exists())
+        self.assertEqual(len(self.git(self.tree, "worktree", "list").splitlines()), 1)
         asked = self.asked.read_text()
         self.assertEqual(asked.count("--tools Read,Grep,Glob"), 2)
         self.assertNotIn("API KEY", asked)
@@ -2799,13 +2871,17 @@ class PrReview(unittest.TestCase):
         self.assertIn("the security pass's claude exited 1: claude: overloaded", self.log())
         self.assertFalse(self.reviewed().exists())
 
-    def test_a_diff_of_skipped_paths_starts_no_pass(self):
+    def test_a_diff_of_skipped_paths_starts_no_pass_but_runs_assess(self):
         self.git(self.tree, "push", "-q", "origin", "HEAD:main")
         self.head = self.commit(self.tree, "deps.lock", "x\n", "Only a lock file")
         run = self.pr()
         self.assertEqual(run.returncode, 0, run.stderr)
-        self.assertIn("no changes against origin/main to review", self.log())
+        self.assertIn("no changes against origin/main but skipped paths, so no pass", self.log())
         self.assertFalse(self.asked.exists())
+        data = json.loads(self.reviewed().read_text())
+        self.assertEqual(data["findings"], [])
+        self.assertEqual(data["summary"], "0 findings, 0 to fix. Only skipped paths changed.")
+        self.assertEqual(data["ci"]["state"], "success")
 
     def test_the_push_that_opens_the_pr_is_reviewed(self):
         self.git(self.tree, "push", "-q", "origin", "--delete", "feat/9-x")
@@ -2883,14 +2959,22 @@ class PrReview(unittest.TestCase):
     def test_a_commit_already_being_reviewed_isnt_reviewed_twice(self):
         pidfile = self.reviewed().with_suffix(".pid")
         pidfile.parent.mkdir(parents=True)
-        pidfile.write_text(f"{os.getpid()}\n")
-        run = PrRebase.pr(self)
+        with reviewing() as pid:
+            pidfile.write_text(f"{pid}\n")
+            run = PrRebase.pr(self)
         pidfile.unlink()
         self.assertEqual(run.returncode, 0, run.stderr)
-        self.assertIn(
-            f"{self.head[:7]} is already being reviewed, by pid {os.getpid()}", run.stdout
-        )
+        self.assertIn(f"{self.head[:7]} is already being reviewed, by pid {pid}", run.stdout)
         self.assertFalse(self.asked.exists())
+
+    def test_a_pidfile_left_by_a_review_that_died_doesnt_stop_the_next(self):
+        pidfile = self.reviewed().with_suffix(".pid")
+        pidfile.parent.mkdir(parents=True)
+        # pytest's pid, which isn't a review.
+        pidfile.write_text(f"{os.getpid()}\n")
+        run = self.pr()
+        self.assertEqual(run.returncode, 0, run.stderr)
+        self.assertTrue(self.reviewed().exists())
 
     def test_a_repo_without_review_md_runs_no_review(self):
         (self.tree / "REVIEW.md").unlink()
@@ -2909,14 +2993,15 @@ class PrReview(unittest.TestCase):
         self.assertEqual(json.loads(self.reviewed().read_text())["effort"], "high")
         self.assertIn("--effort high", self.asked.read_text())
 
-    def test_failed_ci_is_recorded_and_the_round_left_incomplete(self):
-        self.checked(Review.run_(conclusion="failure"))
+    def test_a_failed_assess_is_recorded_and_the_round_left_incomplete(self):
+        self.fails.touch()
         run = self.pr()
         self.assertEqual(run.returncode, 0, run.stderr)
         data = json.loads(self.reviewed().read_text())
         self.assertEqual(data["ci"]["state"], "failure")
+        self.assertEqual(data["ci"]["checks"], [{"name": "pytest", "conclusion": "failure"}])
         self.assertEqual(len(data["findings"]), 2)
-        self.assertIn("CI failed (assess), so the round isn't complete", self.log())
+        self.assertIn("scripts/assess failed (pytest), so the round isn't complete", self.log())
 
 
 if __name__ == "__main__":

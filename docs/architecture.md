@@ -164,8 +164,9 @@ network or a repo.
 `gh` is already authenticated, so nothing holds a GitHub token ([`G3`](requirements.md)); a library
 such as Octokit would need one. Outside the repo, `pr` writes to GitHub through `gh` and to Redmine
 through the REST API, with the same Keychain keys, and starts the review, which runs `claude -p`
-with read-only tools confined to the repo (`--restricted`) and no `ANTHROPIC_` variable, so it
-runs on the CLI's own login and endpoint, and reads the commit's checks with `gh api`.
+with read-only tools confined to a worktree of the commit (`--restricted`) and no `ANTHROPIC_`
+variable, so it uses the CLI's own login and endpoint; `scripts/assess` runs in that worktree
+too.
 
 <a id="platform"></a>
 ### 6.3 Platform
@@ -179,7 +180,7 @@ runs on the CLI's own login and endpoint, and reads the commit's checks with `gh
 | Editor integration | A VS Code extension in JavaScript, tested with `node --test` | [`vscode/README.md`](../vscode/README.md) |
 | Pull requests | Subprocess to `gh` | Requirement [`G3`](requirements.md) |
 | Keys | The macOS Keychain | Requirement [`G3`](requirements.md) |
-| Checks | `scripts/assess`, run by GitHub Actions as `main`'s one required check | [`checks/README.md`](../checks/README.md) |
+| Checks | `scripts/assess`, run by each review round as its CI, and by GitHub Actions for Dependabot's PRs and pushes to `main` | [`checks/README.md`](../checks/README.md) |
 
 <a id="operations"></a>
 ## 7. Operations
@@ -240,11 +241,12 @@ refuses a change made since, rather than staging again. Go and Ship refuse a wor
 unsaved edits, which neither the stage nor the commit would hold.
 
 Before the commit message is written, `scripts/assess` runs every check. The PR's `assess` check
-runs it again; `main` requires that check and every review thread resolved before a merge. Before
+runs it again on GitHub, for Dependabot's PRs and pushes to `main`; a round doesn't read it.
+`main` requires every review thread resolved before a merge. Before
 Go, `/code-review low` runs on the uncommitted changes, and before the first Go Claude writes the
 submission report, its fixes, the whole diff, `commit.txt` and `pr-body.md`, for the Review tab.
-Each commit Ship pushes gets a review round from `pr`'s `review.py`, which waits for the PR's
-`assess` check, and Claude answers the round in the Review tab
+Each commit Ship pushes gets a review round from `pr`'s `review.py`, which runs `scripts/assess`
+itself, and Claude answers the round in the Review tab
 ([`vscode/README.md`](../vscode/README.md)).
 
 `pr` commits with `commit.txt`, pushes, and opens the PR or replaces its body. It then posts each
@@ -262,13 +264,16 @@ the rerun. It runs in a session of its own, logging to `.tmp/<n>/review/<commit>
 exits at once, Ship links the PR in Redmine without waiting, and closing Ship's terminal doesn't
 stop it; `kill` on the pid it prints does. It runs two `claude -p` passes on the branch's whole
 diff against its base, less `REVIEW.md`'s Skipped paths: a review under `REVIEW.md`, and a
-security pass. Beside them it waits for every GitHub check on the commit to finish, CI's `assess`
-among them, and records the result under `ci`; the round is complete only once that's `success`. Each pass is held to a JSON schema of a
+security pass. Beside them it runs `scripts/assess`, the round's CI, and records its result under
+`ci`; the round is complete only once that's `success`. Assess and both passes run in a worktree
+of the commit outside the repo, removed when the review ends, so they see the commit as pushed and
+the passes' file tools read only that. Each pass is held to a JSON schema of a
 finding's fields ([design 0005 §3.1](design/0005-review-findings.md#schema)). It runs at
 `--effort high` when the diff touches one of `REVIEW.md`'s Deep paths, and at `medium` otherwise.
 The findings go to `.tmp/<n>/review/<commit>.json` and to the terminal, with the rules proposed
 and the findings dropped, in the log. None is posted to the PR or
-written to Redmine. A review that fails or times out says so in its log and writes no review file,
+written to Redmine. A review that fails or times out, or an assess that times out, says so in its log and writes no
+review file,
 and `pr` has already succeeded.
 
 <a id="finish"></a>

@@ -1,20 +1,20 @@
 #!/usr/bin/env python3
 """Review a branch with Claude: the step pr runs after a push, for a head with no review file.
 
-    review.py [N] [--base origin/main] [--timeout 900] [--ci-timeout 1800] [--detach]
+    review.py [N] [--base origin/main] [--timeout 900] [--assess-timeout 1200] [--detach]
 
 Two `claude -p` passes read the branch's whole diff against its merge base with --base, with
 REVIEW.md, the issue's description and the docs CLAUDE.md says to read: a review, under REVIEW.md,
 and a security pass, whose findings are all tagged Security. Each is held to a JSON schema of a
 finding's fields, with read-only tools, no ANTHROPIC_ variable or other provider in its environment
 and no settings, hooks or MCP servers, so it runs on the claude CLI's own login against its own
-endpoint, and --restricted, so its file tools read only the repo. When one pass fails, the other is
-stopped, and a Ctrl-C or SIGTERM stops both.
+endpoint, and --restricted, so its file tools read only the commit's tree. When one pass fails,
+the others are stopped, and a Ctrl-C or SIGTERM stops them all.
 
-Beside the passes it waits, up to --ci-timeout, for every GitHub check on the commit to finish, as
-CI's scripts/assess, and records the result under `ci`: success, failure, pending (still running at
-the timeout), none (no check appeared) or unknown (GitHub couldn't be read). A round is complete
-only once `ci` is success.
+The round's CI is scripts/assess, run beside the passes, up to --assess-timeout, in a worktree of
+the commit outside the repo, which the passes read too and which is removed after. Its result is
+recorded under `ci`: success, failure, or none when the commit has no scripts/assess. A round is
+complete only once `ci` is success. GitHub's checks aren't read.
 
 --detach, as pr runs it, forks the review into a session of its own, logging to
 .tmp/N/review/<commit>.log, with its pid in <commit>.pid while it runs, and returns at once, so pr
@@ -28,7 +28,9 @@ medium. The findings are written to .tmp/N/review/<commit>.json, with the summar
 A finding with no rule, or a weighting REVIEW.md doesn't allow, isn't kept, and nits past the third
 are dropped; the output says so. A rule REVIEW.md doesn't list is marked *new*, as a proposal. The
 review file lists both, under `new_rules` and `dropped`.
-A failed or timed-out pass writes no file and exits 1, naming why.
+A failed or timed-out pass, or an assess that times out or can't start, writes no file and exits 1,
+naming why. A diff of only Skipped paths starts no pass, but assess still runs and the file is
+written, with no findings.
 
 N defaults to the issue number in the branch name. It needs REVIEW.md at the repo root.
 """
@@ -39,11 +41,12 @@ import concurrent.futures
 import json
 import os
 import re
+import shutil
 import signal
 import subprocess
 import sys
+import tempfile
 import threading
-import time
 from pathlib import Path
 
 from redmine import Redmine, Refused, fetch
@@ -55,8 +58,9 @@ RULE = "^[a-z0-9]+(-[a-z0-9]+)*$"
 TOOLS = "Read,Grep,Glob"
 FIELDS = ["file", "line", "rule_id", "tag", "severity", "visibility", "summary", "body"]
 NITS = 3
-# A check's conclusions that pass.
-PASSED = {"success", "neutral", "skipped"}
+# Left out of assess's environment: Ship's PR_STAGED, which pr.sh's tests mustn't inherit, and the
+# repo's venv, which uv would warn about and not use.
+UNSET = {"PR_STAGED", "VIRTUAL_ENV"}
 
 
 def billed(name: str) -> bool:
@@ -80,8 +84,6 @@ class Runner:
 
     def __init__(self):
         self.running, self.lock, self.stopped = [], threading.Lock(), False
-        # Set by kill(), for the CI wait, which sleeps between its reads.
-        self.halt = threading.Event()
 
     def __call__(self, command, *, input, env, timeout, cwd=None, **_):
         with self.lock:
@@ -122,7 +124,6 @@ class Runner:
             pass
 
     def kill(self) -> None:
-        self.halt.set()
         with self.lock:
             self.stopped = True
             for p in self.running:
@@ -179,8 +180,9 @@ def effort(paths: list[str], deep: list[str]) -> str:
 
 
 def git(*args: str, cwd: Path | None = None) -> str:
+    # A diff of a file that isn't UTF-8 is still reviewed, its odd bytes replaced.
     return subprocess.run(
-        ["git", *args], cwd=cwd, capture_output=True, text=True, check=True
+        ["git", *args], cwd=cwd, capture_output=True, text=True, errors="replace", check=True
     ).stdout
 
 
@@ -366,61 +368,73 @@ def write(path: Path, data: dict) -> None:
     part.replace(path)
 
 
-def checks(
-    commit: str,
-    root: Path,
-    timeout: int,
-    halt: threading.Event,
-    gh=subprocess.run,
-    every=15,
-    grace=180,
-) -> dict:
-    """GitHub's checks on commit, once every one has finished, or at timeout: CI's scripts/assess
-    among them. A check appears only once GitHub has queued its run, so none after grace is none."""
-    endpoint = f"repos/{{owner}}/{{repo}}/commits/{commit}/check-runs?per_page=100"
-    started, why = time.monotonic(), ""
-    while True:
+def checkout(root: Path, commit: str, n: int) -> Path:
+    """A worktree of commit outside the repo, for assess and the passes: the commit as pushed,
+    without the tree's uncommitted changes or .tmp. The extension's node_modules is linked from
+    the repo, since npm ci there would fetch."""
+    tree = Path(tempfile.mkdtemp(prefix=f"review-{n}-"))
+    try:
+        git("worktree", "add", "-q", "--detach", str(tree), commit, cwd=root)
+    except BaseException:
+        shutil.rmtree(tree, ignore_errors=True)
+        raise
+    modules = root / "vscode" / "node_modules"
+    if modules.is_dir() and (tree / "vscode").is_dir():
+        (tree / "vscode" / "node_modules").symlink_to(modules)
+    return tree
+
+
+def remove(root: Path, tree: Path) -> None:
+    """The worktree gone from disk and from git's list, whatever assess left in it."""
+    try:
+        git("worktree", "remove", "--force", str(tree), cwd=root)
+    except (subprocess.CalledProcessError, OSError):
+        shutil.rmtree(tree, ignore_errors=True)
         try:
-            done = gh(["gh", "api", endpoint], cwd=root, capture_output=True, text=True, timeout=60)
-            if done.returncode:
-                raise ValueError((done.stderr or done.stdout).strip()[-200:])
-            # A check still queued or running has no conclusion yet.
-            runs = [
-                {
-                    "name": r["name"],
-                    "conclusion": r["conclusion"] if r["status"] == "completed" else None,
-                    "url": r["html_url"],
-                }
-                for r in json.loads(done.stdout)["check_runs"]
-            ]
-            why = ""
-        except OSError as e:
-            # No gh to run: no later read would do better.
-            return {"state": "unknown", "checks": [], "why": str(e)}
-        except (subprocess.TimeoutExpired, ValueError, KeyError, TypeError) as e:
-            runs, why = None, str(e) or type(e).__name__
-        waited = time.monotonic() - started
-        if runs and all(r["conclusion"] for r in runs):
-            state = "success" if all(r["conclusion"] in PASSED for r in runs) else "failure"
-            return {"state": state, "checks": runs}
-        if runs == [] and waited >= grace:
-            return {"state": "none", "checks": []}
-        if waited >= timeout:
-            if runs is None:
-                return {"state": "unknown", "checks": [], "why": why}
-            return {"state": "pending", "checks": runs}
-        if halt.wait(every):
-            raise Failed("the CI wait was stopped")
+            git("worktree", "prune", cwd=root)
+        except (subprocess.CalledProcessError, OSError):
+            print(f"review: couldn't remove the worktree {tree}; git worktree prune clears it")
+
+
+def assess(tree: Path, timeout: int, runner) -> dict:
+    """scripts/assess in tree, as the round's CI: its state, its summary line and each check's
+    result, from the PASS and FAIL lines under it. A timeout, or an assess that can't start, is
+    Failed, so nothing is written and the next pr runs it again."""
+    script = tree / "scripts" / "assess"
+    if not script.exists():
+        return {"state": "none", "summary": "", "checks": []}
+    print("review: running scripts/assess")
+    env = {k: v for k, v in os.environ.items() if k not in UNSET}
+    try:
+        done = runner([str(script)], input=None, env=env, timeout=timeout, cwd=tree)
+    except subprocess.TimeoutExpired:
+        raise Failed(f"scripts/assess ran past {timeout}s") from None
+    except OSError as e:
+        raise Failed(f"scripts/assess couldn't run: {e}") from None
+    out = done.stdout.splitlines()
+    said = [i for i, line in enumerate(out) if line.startswith("assess:")]
+    results = []
+    for line in out[said[-1] + 1 :] if said else []:
+        found = re.match(r"^  (PASS|FAIL)  (.+?)  \(", line)
+        if found:
+            results.append(
+                {"name": found[2], "conclusion": "success" if found[1] == "PASS" else "failure"}
+            )
+    state = "success" if done.returncode == 0 else "failure"
+    if state == "failure":
+        # What failed, in the log, as assess printed it.
+        sys.stdout.write(done.stdout + done.stderr)
+    summary = out[said[-1]] if said else (done.stdout + done.stderr).strip()[-200:]
+    return {"state": state, "summary": summary, "checks": results}
 
 
 def ci_line(ci: dict) -> str:
-    failed = [r["name"] for r in ci["checks"] if r["conclusion"] not in PASSED | {None}]
+    failed = [r["name"] for r in ci["checks"] if r["conclusion"] == "failure"]
     said = {
-        "success": "CI passed, so the round is complete",
-        "failure": f"CI failed ({', '.join(failed)}), so the round isn't complete; fix it and push again",
-        "pending": "CI was still running at --ci-timeout, so the round isn't complete until it passes",
-        "none": "no CI check appeared on the commit, so the round isn't complete",
-        "unknown": f"GitHub's checks couldn't be read ({ci.get('why')}), so the round isn't complete",
+        "success": f"scripts/assess passed ({ci['summary']}), so the round is complete",
+        "failure": f"scripts/assess failed ({', '.join(failed) or ci['summary']}), so the round"
+        " isn't complete; fix it and push again",
+        "none": "the commit has no scripts/assess, so the round isn't complete",
     }
     return f"review: {said[ci['state']]}"
 
@@ -434,12 +448,9 @@ def description(n: int) -> str:
         return f"(#{n}'s description couldn't be read from Redmine.)"
 
 
-def review(
-    n: int, base: str, timeout: int, runner=None, gh=subprocess.run, ci_timeout=1800
-) -> Path | None:
-    """Reviews HEAD against base; the review file it wrote, or None for an empty diff."""
+def review(n: int, base: str, timeout: int, runner=None, assess_timeout=1200) -> Path:
+    """Reviews HEAD against base, and runs its scripts/assess; the review file it wrote."""
     runner = runner or Runner()
-    halt = getattr(runner, "halt", None) or threading.Event()
     root = Path(git("rev-parse", "--show-toplevel").strip())
     review_md = (root / "REVIEW.md").read_text()
     commit = git("rev-parse", "HEAD", cwd=root).strip()
@@ -450,45 +461,52 @@ def review(
     skipped = [f":(exclude,glob){p}" for p in listed(review_md, "Skipped paths")]
     paths = git("diff", "--name-only", "-z", fork, "HEAD", "--", *skipped, cwd=root).split("\0")
     paths = [p for p in paths if p]
-    if not paths:
-        print(f"review: no changes against {base} to review")
-        return None
-    diff = git("diff", "--no-ext-diff", fork, "HEAD", "--", *skipped, cwd=root)
     level = effort(paths, listed(review_md, "Deep paths"))
-    issue = description(n)
-    print(f"review: {len(paths)} files against {base}, at --effort {level}, with a security pass")
-    passes = [False, True]
-    with concurrent.futures.ThreadPoolExecutor(len(passes) + 1) as pool:
-        asked = {
-            pool.submit(
-                ask, prompt(s, review_md, n, issue, diff), s, level, timeout, runner, root
-            ): s
-            for s in passes
-        }
-        asked[pool.submit(checks, commit, root, ci_timeout, halt, gh)] = "ci"
-        got = {}
-        try:
-            for a in concurrent.futures.as_completed(asked):
-                got[asked[a]] = a.result()
-        except BaseException:
-            # The first failure, or a Ctrl-C, ends the review: the other pass, and the CI wait,
-            # aren't left to run out their time.
-            halt.set()
-            if hasattr(runner, "kill"):
-                runner.kill()
-            raise
+    # Only skipped paths changed: no pass, but assess still runs, and the file says so.
+    passes = [False, True] if paths else []
+    if paths:
+        diff = git("diff", "--no-ext-diff", fork, "HEAD", "--", *skipped, cwd=root)
+        issue = description(n)
+        print(
+            f"review: {len(paths)} files against {base}, at --effort {level}, with a security pass"
+        )
+    else:
+        print(f"review: no changes against {base} but skipped paths, so no pass; assess still runs")
+    tree = checkout(root, commit, n)
+    try:
+        with concurrent.futures.ThreadPoolExecutor(len(passes) + 1) as pool:
+            asked = {
+                pool.submit(
+                    ask, prompt(s, review_md, n, issue, diff), s, level, timeout, runner, tree
+                ): s
+                for s in passes
+            }
+            asked[pool.submit(assess, tree, assess_timeout, runner)] = "ci"
+            got = {}
+            try:
+                for a in concurrent.futures.as_completed(asked):
+                    got[asked[a]] = a.result()
+            except BaseException:
+                # The first failure, or a Ctrl-C, ends the review: the other passes aren't left to
+                # run out their time.
+                if hasattr(runner, "kill"):
+                    runner.kill()
+                raise
+    finally:
+        remove(root, tree)
     outs = [got[s] for s in passes]
     findings, notes = [], []
     for security, out in zip(passes, outs, strict=True):
         kept, dropped = keep(out["findings"], security)
         findings += kept
         notes += dropped
+    said = [o.get("summary", "") for o in outs] or ["Only skipped paths changed."]
     rules = listed(review_md, "Rules")
     data = {
         "commit": commit,
         "base": fork,
         "effort": level,
-        "summary": summary(findings, [o.get("summary", "") for o in outs]),
+        "summary": summary(findings, said),
         "findings": findings,
         # What the terminal shows beside the findings, kept for add-round once it has scrolled
         # away: the rules proposed, and why each finding not kept was dropped.
@@ -513,41 +531,67 @@ def terminated(signum, _frame):
 
 
 def alive(pidfile: Path) -> int | None:
-    """The pid in pidfile, while that process runs; None once it has gone, or there's none."""
+    """The pid in pidfile, while a review.py runs as it; None once it has gone, or there's none. A
+    pid the system has since given another process isn't a review."""
     try:
         pid = int(pidfile.read_text())
-        os.kill(pid, 0)
+        command = subprocess.run(
+            ["ps", "-o", "command=", "-p", str(pid)], capture_output=True, text=True
+        ).stdout
     except (OSError, ValueError):
         return None
-    return pid
+    return pid if "review.py" in command else None
 
 
-def detach(n: int) -> bool:
+def claim(pidfile: Path) -> bool:
+    """pidfile made, holding this pid, unless a live review holds it: two prs at once can't both
+    start one. A pidfile left by a review that died is cleared, once."""
+    for _ in range(2):
+        try:
+            made = os.open(pidfile, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o644)
+        except FileExistsError:
+            if alive(pidfile):
+                return False
+            pidfile.unlink(missing_ok=True)
+            continue
+        os.write(made, f"{os.getpid()}\n".encode())
+        os.close(made)
+        return True
+    return False
+
+
+def detach(n: int) -> int | None:
     """Forks the review into a session of its own, which Ship's terminal closing doesn't reach,
-    logging to .tmp/N/review/<commit>.log. True in the child, which runs the review; the parent
-    says where, once the child has written its pid, and False tells it to return."""
+    logging to .tmp/N/review/<commit>.log. None in the child, which runs the review; in the
+    parent, once the child has written its pid, the exit code to return."""
     root = Path(git("rev-parse", "--show-toplevel").strip())
     commit = git("rev-parse", "HEAD", cwd=root).strip()
     folder = root / ".tmp" / str(n) / "review"
     pidfile, log = folder / f"{commit}.pid", folder / f"{commit}.log"
-    if pid := alive(pidfile):
-        print(
-            f"review: {commit[:7]} is already being reviewed, by pid {pid}; log in {log.relative_to(root)}"
-        )
-        return False
     folder.mkdir(parents=True, exist_ok=True)
+    if not claim(pidfile):
+        print(
+            f"review: {commit[:7]} is already being reviewed, by pid {alive(pidfile) or '?'};"
+            f" log in {log.relative_to(root)}"
+        )
+        return 0
     sys.stdout.flush()
     sys.stderr.flush()
     ready, told = os.pipe()
     if child := os.fork():
         os.close(told)
-        os.read(ready, 1)
+        said = os.read(ready, 1)
         os.close(ready)
+        if said != b"x":
+            # The child died before it took the pidfile over: nothing runs, and nothing holds it.
+            pidfile.unlink(missing_ok=True)
+            print(f"review: the review of {commit[:7]} didn't start; see {log.relative_to(root)}")
+            return 1
         print(
-            f"review: reviewing {commit[:7]} in the background, as pid {child}, and waiting for CI;"
+            f"review: reviewing {commit[:7]} in the background, as pid {child}, with scripts/assess;"
             f" log in {log.relative_to(root)}; stop it with kill {child}"
         )
-        return False
+        return 0
     os.close(ready)
     os.setsid()
     out = os.open(log, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o644)
@@ -559,11 +603,14 @@ def detach(n: int) -> bool:
     os.close(blank)
     sys.stdout.reconfigure(line_buffering=True)
     sys.stderr.reconfigure(line_buffering=True)
-    pidfile.write_text(f"{os.getpid()}\n")
+    # The parent's pid, replaced whole by the child's: a reader sees one or the other.
+    part = pidfile.with_name(f".{pidfile.name}.part")
+    part.write_text(f"{os.getpid()}\n")
+    part.replace(pidfile)
+    atexit.register(pidfile.unlink, missing_ok=True)
     os.write(told, b"x")
     os.close(told)
-    atexit.register(pidfile.unlink, missing_ok=True)
-    return True
+    return None
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -572,7 +619,7 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--base", default="origin/main", help="the branch the PR merges into")
     p.add_argument("--timeout", type=int, default=900, help="seconds each pass may take")
     p.add_argument(
-        "--ci-timeout", type=int, default=1800, help="seconds to wait for the commit's CI checks"
+        "--assess-timeout", type=int, default=1200, help="seconds scripts/assess may take"
     )
     p.add_argument(
         "--detach", action="store_true", help="review in the background, logging to a file"
@@ -589,14 +636,14 @@ def main(argv: list[str] | None = None) -> int:
             )
             return 2
         n = int(found.group(1))
-    if a.detach and not detach(n):
-        return 0
+    if a.detach and (code := detach(n)) is not None:
+        return code
     # kill <pid> ends the review as a Ctrl-C does: each pass runs in its own session, which the
     # signal doesn't reach.
     signal.signal(signal.SIGTERM, terminated)
     again = f"run pr again, or review.py {n} --base {a.base}, to retry"
     try:
-        review(n, a.base, a.timeout, ci_timeout=a.ci_timeout)
+        review(n, a.base, a.timeout, assess_timeout=a.assess_timeout)
     except (Failed, OSError) as e:
         print(f"review: {e}; nothing written; {again}", file=sys.stderr)
         return 1

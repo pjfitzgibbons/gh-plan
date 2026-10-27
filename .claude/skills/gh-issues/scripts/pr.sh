@@ -20,8 +20,8 @@
 #   replies when .tmp/N/replies/ holds <comment id>.md files: posts each to its review thread,
 #           resolves the thread and deletes the file (pr_threads.py --post)
 #   review  when HEAD has no .tmp/N/review/<commit>.json and the repo has REVIEW.md: starts Claude's
-#           review of the branch's whole diff in the background, which waits for CI and writes that
-#           file (review.py --detach), and logs to .tmp/N/review/<commit>.log. pr doesn't wait for
+#           review of the branch's whole diff in the background, which runs scripts/assess and writes
+#           that file (review.py --detach), and logs to .tmp/N/review/<commit>.log. pr doesn't wait for
 #           it, so Ship links the PR at once. One that fails says so in its log, and the next pr,
 #           like the rerun of a pr stopped after its push, reviews the commit again
 #
@@ -191,9 +191,10 @@ else
 fi
 # A commit made by hand, or before pr checked commit.txt, is held to the same rule: once pushed,
 # every clone's fetch carries it to Redmine too.
-said=$(git log --format=%H "$onto..HEAD" | while read -r c; do
-  ! git log -1 --format=%B "$c" | tr '\n' ' ' | grep -qiE "$says_fixes" || git log -1 --format='  %h %s' "$c"
-done)
+# One git log for the lot, each message ended by a \036 record separator and read whole by awk.
+said=$(git log --format='%h %s%n%B%x1e' "$onto..HEAD" | awk -v re="$says_fixes" 'BEGIN { RS = "\036" }
+  { sub(/^\n+/, ""); first = $0; sub(/\n.*/, "", first); all = tolower($0); gsub(/\n/, " ", all)
+    if (first != "" && all ~ re) print "  " first }')
 if [ -n "$said" ]; then
   echo "pr: branch commits say fixes, which closes the issue when Redmine fetches the branch, so nothing is pushed; reword each to refs #$n:" >&2
   printf '%s\n' "$said" >&2
@@ -232,7 +233,7 @@ git config "branch.$branch.github-pr-owner-number" "$(echo "$pr_path" | sed 's|/
 open "vscode://github.vscode-pull-request-github/open-pull-request-webview?uri=$(python3 -c 'import sys, urllib.parse; print(urllib.parse.quote(sys.argv[1], safe=""))' "$url")"
 
 # The review of what this push brought (review.py), last, and in the background, so a review that
-# fails or runs long, or CI it waits for, holds up neither the PR, the replies nor Ship's link in
+# fails or runs long, or the assess it runs, holds up neither the PR, the replies nor Ship's link in
 # Redmine. A head with no review file has a commit to review: one this push brought, opening the PR
 # included, or one a pr that stopped after its push, or a failed review, left. It writes
 # .tmp/N/review/<commit>.json and posts nothing.
