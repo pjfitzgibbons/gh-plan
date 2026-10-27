@@ -1,5 +1,13 @@
 # gh-plan — repo instructions
 
+## Contents
+
+- [Read before](#read-before)
+- [Commands](#commands)
+- [Done differently](#done-differently)
+- [Boundaries](#boundaries)
+- [Gotchas](#gotchas)
+
 **GH Plan** plans work in Redmine ([ADR 0011](docs/adr/0011-redmine-is-the-tracker.md)), run in
 Docker on localhost (`redmine/`), with a VS Code extension (`vscode/`) that starts, ships and
 finishes each issue. It does not use GitHub Issues; pull requests are its one GitHub integration. Nothing is inherited from a parent directory's `CLAUDE.md` or
