@@ -19,7 +19,7 @@
 #           .tmp/N/pr-body.md, then opens the PR in the GitHub Pull Requests extension
 #   replies when .tmp/N/replies/ holds <comment id>.md files: posts each to its review thread,
 #           resolves the thread and deletes the file (pr_threads.py --post)
-#   review  when HEAD has no .tmp/N/review/<commit>.json and the repo has REVIEW.md: starts Claude's
+#   review  when HEAD has no .tmp/N/review/<commit>.json and origin's base or HEAD has REVIEW.md: starts Claude's
 #           review of the branch's whole diff in the background, which runs scripts/assess and writes
 #           that file (review.py --detach), and logs to .tmp/N/review/<commit>.log. pr doesn't wait for
 #           it, so Ship links the PR at once. One that fails says so in its log, and the next pr,
@@ -238,11 +238,13 @@ open "vscode://github.vscode-pull-request-github/open-pull-request-webview?uri=$
 # included, or one a pr that stopped after its push, or a failed review, left. It writes
 # .tmp/N/review/<commit>.json and posts nothing.
 if [ ! -f ".tmp/$n/review/$(git rev-parse HEAD).json" ]; then
-  if [ ! -f REVIEW.md ]; then
-    echo "pr: no REVIEW.md, so no review"
+  # REVIEW.md as the base has it, or the commit's until the base has one, as review.py reads it:
+  # never the working tree's, so deleting it on the branch doesn't turn the review off.
+  if ! git cat-file -e "refs/remotes/origin/$base:REVIEW.md" 2>/dev/null && ! git cat-file -e HEAD:REVIEW.md 2>/dev/null; then
+    echo "pr: no REVIEW.md on origin/$base or at HEAD, so no review"
   elif ! py310; then
     echo "pr: python3 is older than 3.10, so no review" >&2
-  elif ! python3 "$scripts/review.py" "$n" --base "origin/$base" --detach; then
-    echo "pr: the review didn't start, so .tmp/$n/review/ has nothing for this commit; retry with: python3 $scripts/review.py $n --base origin/$base" >&2
+  elif ! python3 "$scripts/review.py" "$n" --base "refs/remotes/origin/$base" --detach; then
+    echo "pr: the review didn't start, so .tmp/$n/review/ has nothing for this commit; retry with: python3 $scripts/review.py $n --base refs/remotes/origin/$base" >&2
   fi
 fi

@@ -1,8 +1,10 @@
 # Review
 
 How the reviewer `pr` runs after each push reviews a branch (`review.py` in the gh-issues skill).
-It reviews the branch's whole diff against its base, with this file, the issue's description and
-the docs `CLAUDE.md` says to read before the change.
+It reviews the branch's whole diff against its base, with this file as the base has it, the
+issue's description and the docs `CLAUDE.md` says to read before the change. A branch's edit to
+this file is reviewed like any other change, and governs reviews only once it's merged. Until the
+base has this file, the commit's copy is used, and the review's summary says so.
 
 ## Contents
 
@@ -14,6 +16,7 @@ the docs `CLAUDE.md` says to read before the change.
 - [Nits and style](#nits-and-style)
 - [Skipped paths](#skipped-paths)
 - [Deep paths](#deep-paths)
+- [Controls](#controls)
 - [Summary](#summary)
 
 ## What counts as a failure
@@ -114,6 +117,22 @@ Each is a path, or a folder that holds them.
 - `vscode/start.js`
 - `vscode/redmine.js`
 - `redmine/backup.py`
+
+## Controls
+
+The checks a round runs under. A diff that touches any of these is reviewed at `--effort high`,
+and the review file lists the ones it changes under `controls`, after the counts in its summary
+and in the round report's first table: a change here can weaken the checks that pass it. Each is a
+path, or a folder that holds them.
+
+- `REVIEW.md`
+- `scripts/assess`
+- `checks/`
+- `.claude/hooks/`
+- `.claude/settings.json`
+- `.claude/skills/gh-issues/scripts/review.py`
+- `.claude/skills/gh-issues/scripts/pr.sh`
+- `.github/workflows/`
 
 ## Summary
 

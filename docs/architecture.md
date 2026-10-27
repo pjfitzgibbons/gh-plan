@@ -264,12 +264,16 @@ the rerun. It runs in a session of its own, logging to `.tmp/<n>/review/<commit>
 exits at once, Ship links the PR in Redmine without waiting, and closing Ship's terminal doesn't
 stop it; `kill` on the pid it prints does. It runs two `claude -p` passes on the branch's whole
 diff against its base, less `REVIEW.md`'s Skipped paths: a review under `REVIEW.md`, and a
-security pass. Beside them it runs `scripts/assess`, the round's CI, and records its result under
+security pass. `REVIEW.md` is read from the base, so a branch can't rewrite the rules it's
+reviewed under; until the base has one, the commit's copy is used and the summary says so. Beside them it runs `scripts/assess`, the round's CI, and records its result under
 `ci`; the round is complete only once that's `success`. Assess and both passes run in a worktree
 of the commit outside the repo, removed when the review ends, so they see the commit as pushed and
 the passes' file tools read only that. Each pass is held to a JSON schema of a
 finding's fields ([design 0005 §3.1](design/0005-review-findings.md#schema)). It runs at
-`--effort high` when the diff touches one of `REVIEW.md`'s Deep paths, and at `medium` otherwise.
+`--effort high` when the diff touches one of `REVIEW.md`'s Deep paths or Controls, and at
+`medium` otherwise. The Controls are the checks a round runs under, such as `REVIEW.md`,
+`scripts/assess`, `checks/` and the hooks; the ones a diff changes are named to both passes,
+listed under `controls` and in the summary.
 The findings go to `.tmp/<n>/review/<commit>.json` and to the terminal, with the rules proposed
 and the findings dropped, in the log. None is posted to the PR or
 written to Redmine. A review that fails or times out, or an assess that times out, says so in its log and writes no

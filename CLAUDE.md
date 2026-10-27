@@ -45,7 +45,7 @@ settings: what this repo needs is here or in `.claude/`.
   `.tmp/<n>/report.html`, shows its fixes, the whole diff, `commit.txt` and `pr-body.md` in the
   `Review #<n>` tab.
 - **A review round:** after each push, `pr` starts Claude's review of the branch's whole diff
-  under `REVIEW.md` in the background, unless that commit has a review file. Beside the passes it
+  under the base's `REVIEW.md` in the background, unless that commit has a review file. Beside the passes it
   runs `scripts/assess`, the round's CI, in a worktree of the commit, and writes
   `.tmp/<n>/review/<commit>.json`, with assess's result under `ci`. Claude
   answers it in `.tmp/<n>/report.html`, which opens as the `Review #<n>` tab with Go and Ship. The

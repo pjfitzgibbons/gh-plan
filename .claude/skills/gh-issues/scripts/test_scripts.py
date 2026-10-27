@@ -2368,10 +2368,26 @@ def answer(findings, summary="Risky cleanup."):
 REVIEW_MD = (Path(__file__).resolve().parents[4] / "REVIEW.md").read_text()
 
 
+# Sleeps, holding the flock on argv[2] when there is one.
+HOLD = (
+    "import fcntl, sys, time\n"
+    "if len(sys.argv) > 2:\n"
+    "    f = open(sys.argv[2], 'a')\n"
+    "    fcntl.flock(f, fcntl.LOCK_EX)\n"
+    "print('ready', flush=True)\n"
+    "time.sleep(60)\n"
+)
+
+
 @contextlib.contextmanager
-def reviewing():
-    """A process whose command line names review.py, as a running review's does; its pid."""
-    p = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)", "review.py"])
+def reviewing(lock: Path | None = None):
+    """A process whose command line names review.py, as a running review's does, holding lock's
+    flock as a running review does; its pid."""
+    lock_arg = [str(lock)] if lock else []
+    p = subprocess.Popen(
+        [sys.executable, "-c", HOLD, "review.py", *lock_arg], stdout=subprocess.PIPE, text=True
+    )
+    p.stdout.readline()
     try:
         yield p.pid
     finally:
@@ -2654,6 +2670,60 @@ class Review(unittest.TestCase):
         blob = review.git("hash-object", "-w", "latin.txt", cwd=repo).strip()
         self.assertEqual(review.git("cat-file", "-p", blob, cwd=repo), "caf\ufffd\n")
 
+    def test_review_md_is_the_bases_and_the_commits_only_until_the_base_has_one(self):
+        repo = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        env = {
+            **os.environ,
+            "GIT_CONFIG_GLOBAL": "/dev/null",
+            "GIT_AUTHOR_NAME": "T",
+            "GIT_AUTHOR_EMAIL": "t@example.com",
+            "GIT_COMMITTER_NAME": "T",
+            "GIT_COMMITTER_EMAIL": "t@example.com",
+        }
+
+        def commit(text, message):
+            (repo / "REVIEW.md").write_text(text)
+            subprocess.run(["git", "add", "-A"], cwd=repo, env=env, check=True)
+            subprocess.run(["git", "commit", "-qm", message], cwd=repo, env=env, check=True)
+
+        subprocess.run(["git", "init", "-q", "-b", "main", str(repo)], check=True)
+        with mock.patch.dict(os.environ, env):
+            with self.assertRaisesRegex(review.Failed, "no REVIEW.md on main or at HEAD"):
+                review.instructions("main", repo)
+            (repo / "a.txt").write_text("a\n")
+            commit("committed\n", "Start")
+            subprocess.run(["git", "branch", "-q", "base", "HEAD~0"], cwd=repo, check=True)
+            subprocess.run(["git", "rm", "-q", "REVIEW.md"], cwd=repo, env=env, check=True)
+            subprocess.run(["git", "commit", "-qm", "Drop"], cwd=repo, env=env, check=True)
+            subprocess.run(["git", "checkout", "-q", "base"], cwd=repo, env=env, check=True)
+            subprocess.run(["git", "checkout", "-q", "-b", "feat"], cwd=repo, env=env, check=True)
+            # The branch rewrites REVIEW.md, and edits it again without committing: the base wins.
+            commit("the branch's\n", "Weaken")
+            (repo / "REVIEW.md").write_text("uncommitted\n")
+            self.assertEqual(review.instructions("base", repo), ("committed\n", "base"))
+            # A base without one: the commit's, never the working tree's.
+            self.assertEqual(review.instructions("main", repo), ("the branch's\n", "commit"))
+
+    def test_the_controls_a_diff_changes_are_named_to_the_passes_and_in_the_summary(self):
+        controls = review.touches(
+            ["REVIEW.md", "checks/new", "checksum.py", "a.txt"], ["REVIEW.md", "checks/"]
+        )
+        self.assertEqual(controls, ["REVIEW.md", "checks/new"])
+        for security in (False, True):
+            asked = review.prompt(security, REVIEW_MD, 9, "", "diff", controls)
+            self.assertIn("This diff changes these Controls from REVIEW.md", asked)
+            self.assertIn("REVIEW.md, checks/new. Report each change that weakens", asked)
+        self.assertNotIn("Controls from REVIEW.md", review.prompt(False, REVIEW_MD, 9, "", "d"))
+        self.assertEqual(review.warnings("base", "refs/remotes/origin/main", []), [])
+        self.assertEqual(
+            review.warnings("commit", "refs/remotes/origin/main", controls),
+            [
+                "REVIEW.md isn't on origin/main, so this round ran under the branch's own.",
+                "This diff changes the checks it ran under: REVIEW.md, checks/new.",
+            ],
+        )
+        self.assertIn("`.claude/hooks/`", review.section(REVIEW_MD, "Controls"))
+
     def test_a_reused_pid_isnt_taken_for_a_review(self):
         pidfile = Path(self.enterContext(tempfile.TemporaryDirectory())) / "c.pid"
         pidfile.write_text(f"{os.getpid()}\n")
@@ -2662,16 +2732,18 @@ class Review(unittest.TestCase):
             pidfile.write_text(f"{pid}\n")
             self.assertEqual(review.alive(pidfile), pid)
 
-    def test_a_pidfile_is_claimed_once_and_a_dead_reviews_cleared(self):
-        pidfile = Path(self.enterContext(tempfile.TemporaryDirectory())) / "c.pid"
-        self.assertTrue(review.claim(pidfile))
-        self.assertEqual(pidfile.read_text(), f"{os.getpid()}\n")
-        # This pid is pytest's, not a review's, so the next claim clears it.
-        self.assertTrue(review.claim(pidfile))
-        with reviewing() as pid:
-            pidfile.write_text(f"{pid}\n")
-            self.assertFalse(review.claim(pidfile))
-            self.assertEqual(pidfile.read_text(), f"{pid}\n")
+    def test_a_review_is_claimed_once_and_freed_when_it_ends_or_dies(self):
+        lock = Path(self.enterContext(tempfile.TemporaryDirectory())) / "c.lock"
+        held = review.claim(lock)
+        self.assertIsNotNone(held)
+        # A second pr, even in this process, can't take it while the first holds it.
+        self.assertIsNone(review.claim(lock))
+        os.close(held)
+        os.close(review.claim(lock))
+        # A review that's killed frees it: the kernel drops a dead process's flock.
+        with reviewing(lock):
+            self.assertIsNone(review.claim(lock))
+        os.close(review.claim(lock))
 
     def test_a_child_that_dies_before_it_starts_is_named_and_its_pidfile_cleared(self):
         repo = Path(self.enterContext(tempfile.TemporaryDirectory()))
@@ -2723,11 +2795,12 @@ class PrReview(unittest.TestCase):
     """pr.sh's review step, against PrRebase's origin and clone, with a fake claude and a gh that
     answers pr_threads.py, so a reply is sent beside the review."""
 
-    repo, tearDown, git, commit = (
+    repo, tearDown, git, commit, advance_main = (
         PrRebase.setUp,
         PrRebase.tearDown,
         PrRebase.git,
         PrRebase.commit,
+        PrRebase.advance_main,
     )
 
     def setUp(self):
@@ -2816,7 +2889,15 @@ class PrReview(unittest.TestCase):
         self.assertIn(f"log in .tmp/9/review/{self.head}.log", run.stdout)
         data = json.loads(self.reviewed().read_text())
         self.assertEqual(data["commit"], self.head)
-        self.assertEqual(data["effort"], "medium")
+        # The branch adds REVIEW.md and scripts/assess, two Controls, and main has no REVIEW.md.
+        self.assertEqual(data["effort"], "high")
+        self.assertEqual(data["controls"], ["REVIEW.md", "scripts/assess"])
+        self.assertEqual(data["review_md"], "commit")
+        self.assertIn(
+            "REVIEW.md isn't on origin/main, so this round ran under the branch's own. This diff "
+            "changes the checks it ran under: REVIEW.md, scripts/assess.",
+            data["summary"],
+        )
         self.assertEqual(data["findings"][0]["tag"], "Important")
         self.assertEqual(data["findings"][1]["tag"], "Security")
         self.assertTrue(all(set(f) == set(review.FIELDS) for f in data["findings"]))
@@ -2852,7 +2933,9 @@ class PrReview(unittest.TestCase):
         self.assertEqual(run.returncode, 0, run.stderr)
         log = self.log()
         self.assertRegex(log, "the (review|security pass)'s claude exited 1: claude: not logged")
-        self.assertIn("nothing written; run pr again, or review.py 9 --base origin/main", log)
+        self.assertIn(
+            "nothing written; run pr again, or review.py 9 --base refs/remotes/origin/main", log
+        )
         self.assertFalse(self.reviewed().exists())
         self.assertFalse(self.reply.exists())
         self.assertIn("api repos/o/r/pulls/1/comments/11/replies", self.calls.read_text())
@@ -2876,7 +2959,9 @@ class PrReview(unittest.TestCase):
         self.head = self.commit(self.tree, "deps.lock", "x\n", "Only a lock file")
         run = self.pr()
         self.assertEqual(run.returncode, 0, run.stderr)
-        self.assertIn("no changes against origin/main but skipped paths, so no pass", self.log())
+        self.assertIn(
+            "no changes against refs/remotes/origin/main but skipped paths, so no pass", self.log()
+        )
         self.assertFalse(self.asked.exists())
         data = json.loads(self.reviewed().read_text())
         self.assertEqual(data["findings"], [])
@@ -2959,7 +3044,7 @@ class PrReview(unittest.TestCase):
     def test_a_commit_already_being_reviewed_isnt_reviewed_twice(self):
         pidfile = self.reviewed().with_suffix(".pid")
         pidfile.parent.mkdir(parents=True)
-        with reviewing() as pid:
+        with reviewing(self.reviewed().with_suffix(".lock")) as pid:
             pidfile.write_text(f"{pid}\n")
             run = PrRebase.pr(self)
         pidfile.unlink()
@@ -2976,12 +3061,29 @@ class PrReview(unittest.TestCase):
         self.assertEqual(run.returncode, 0, run.stderr)
         self.assertTrue(self.reviewed().exists())
 
+    def test_a_branch_that_deletes_review_md_is_reviewed_under_the_bases(self):
+        # main gets the branch's REVIEW.md, the same text, so the rebase is clean; then the branch
+        # deletes it, which neither turns the review off nor changes what it runs under.
+        self.advance_main("REVIEW.md", REVIEW_MD)
+        self.git(self.tree, "rm", "-q", "REVIEW.md")
+        self.head = self.commit(self.tree, "b.txt", "b\n", "Drop REVIEW.md")
+        run = self.pr()
+        self.assertEqual(run.returncode, 0, run.stderr)
+        self.head = self.git(self.tree, "rev-parse", "HEAD")
+        data = json.loads(self.reviewed().read_text())
+        self.assertEqual(data["review_md"], "base")
+        self.assertEqual(data["controls"], ["REVIEW.md", "scripts/assess"])
+        self.assertNotIn("isn't on origin/main", data["summary"])
+        self.assertIn(
+            "changes the checks it ran under: REVIEW.md, scripts/assess.", data["summary"]
+        )
+
     def test_a_repo_without_review_md_runs_no_review(self):
         (self.tree / "REVIEW.md").unlink()
         self.git(self.tree, "commit", "-q", "-am", "No review")
         run = self.pr()
         self.assertEqual(run.returncode, 0, run.stderr)
-        self.assertIn("no REVIEW.md, so no review", run.stdout)
+        self.assertIn("no REVIEW.md on origin/main or at HEAD, so no review", run.stdout)
         self.assertFalse(self.asked.exists())
 
     def test_a_deep_path_is_reviewed_at_high(self):
