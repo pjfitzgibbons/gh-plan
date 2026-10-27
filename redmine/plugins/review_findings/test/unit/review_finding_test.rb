@@ -118,9 +118,13 @@ class ReviewFindingTest < ActiveSupport::TestCase
   end
 
   test 'a finding answered in a later round is no longer open silent' do
-    ReviewFinding.create!(issue_id: 3, **finding_row('finding/v1:00000000000000cc', 1).symbolize_keys)
+    fingerprint = 'finding/v1:00000000000000cc'
+    ReviewFinding.record(Issue.find(3), [finding_row(fingerprint, 1)], User.find(2))
     assert_equal 1, ReviewFinding.open_silent_count(3)
-    ReviewFinding.create!(issue_id: 3, outcome: 'fixed', **finding_row('finding/v1:00000000000000cc', 2).symbolize_keys)
+    ReviewFinding.record(Issue.find(3), [finding_row(fingerprint, 2)], User.find(2))
+    assert_equal 1, ReviewFinding.open_silent_count(3)
+    ReviewFinding.record(Issue.find(3), [{ 'fingerprint' => fingerprint, 'round' => 2, 'confirm' => true,
+                                           'outcome' => 'fixed' }], User.find(2))
     assert_equal 0, ReviewFinding.open_silent_count(3)
   end
 end

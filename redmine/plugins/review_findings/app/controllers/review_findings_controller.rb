@@ -35,7 +35,7 @@ class ReviewFindingsController < ApplicationController
   def tab
     ids = issue_ids(:view_review_findings)
     if params[:issue_id].present?
-      @issue = Issue.where(id: ids).find_by(id: params[:issue_id].to_s.to_i)
+      @issue = Issue.where(id: ids).find_by(id: Integer(params[:issue_id].to_s, 10, exception: false))
       return render_404 unless @issue
 
       ids = [@issue.id]

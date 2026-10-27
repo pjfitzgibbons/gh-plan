@@ -37,8 +37,13 @@ class ReviewFindingsViewsTest < Redmine::IntegrationTest
   end
 
   test 'a row a later round answered points to that round' do
-    ReviewFinding.create!(issue_id: 3, **finding_row('finding/v1:00000000000000dd', 1).symbolize_keys)
-    ReviewFinding.create!(issue_id: 3, outcome: 'fixed', **finding_row('finding/v1:00000000000000dd', 2).symbolize_keys)
+    fingerprint = 'finding/v1:00000000000000dd'
+    ReviewFinding.record(Issue.find(3), [finding_row(fingerprint, 1), finding_row(fingerprint, 2)], User.find(2))
+    get '/projects/ecookbook/review_findings', params: { issue_id: 3 }
+    assert_select 'tr.open-silent', 1
+    assert_select 'table.list.review-findings tbody tr td', text: 'See round 2'
+    ReviewFinding.record(Issue.find(3), [{ 'fingerprint' => fingerprint, 'round' => 2, 'confirm' => true,
+                                           'outcome' => 'fixed' }], User.find(2))
     get '/projects/ecookbook/review_findings', params: { issue_id: 3 }
     assert_select 'tr.open-silent', 0
     assert_select 'table.list.review-findings tbody tr td', text: 'See round 2'
@@ -51,11 +56,16 @@ class ReviewFindingsViewsTest < Redmine::IntegrationTest
     assert_response :not_found
     get '/projects/ecookbook/review_findings', params: { issue_id: { 'x' => '1' } }
     assert_response :not_found
+    get '/projects/ecookbook/review_findings', params: { issue_id: '1abc' }
+    assert_response :not_found
   end
 
   test 'the tab answers HTML only' do
     get '/projects/ecookbook/review_findings.json'
     assert_response :not_found
+    # Redmine takes ?format=json for an API call, which tab doesn't accept, so authorize refuses it.
+    get '/projects/ecookbook/review_findings', params: { format: 'json' }
+    assert_response :forbidden
   end
 
   test "an issue outside the project's tree is a 404" do

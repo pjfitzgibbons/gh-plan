@@ -53,13 +53,18 @@ class ReviewFinding < ApplicationRecord
   validates :pr_url, format: { with: PR_URL }, allow_nil: true
   validate :visibility_unless_nothing, :round_zero_for_missed, :verified_after_round
 
+  # A row in its fingerprint's latest round (§3.6), or its latest confirmed round with `confirmed`.
+  def self.latest_round(confirmed: false)
+    'review_findings.round = (SELECT MAX(g.round) FROM review_findings g ' \
+      'WHERE g.issue_id = review_findings.issue_id AND g.fingerprint = review_findings.fingerprint' \
+      "#{' AND g.confirmed_by_id IS NOT NULL' if confirmed})"
+  end
+
   # Open and silent (§3.5, §3.6): a fingerprint's latest round, silent, losing something, and no
   # outcome recorded, so one answered in a later round drops off. A drafted outcome still in the
   # outbox counts as open here until Ship's pr sends it.
   OPEN_SILENT = "review_findings.visibility = 'silent' AND review_findings.severity <> 'nothing' " \
-                'AND review_findings.outcome IS NULL ' \
-                'AND review_findings.round = (SELECT MAX(g.round) FROM review_findings g ' \
-                'WHERE g.issue_id = review_findings.issue_id AND g.fingerprint = review_findings.fingerprint)'
+                "AND review_findings.outcome IS NULL AND #{latest_round}".freeze
   scope :open_silent, -> { where(OPEN_SILENT) }
 
   # The issue's open silent count, or nil when it has no rows, as before its first review round.
@@ -159,13 +164,8 @@ class ReviewFinding < ApplicationRecord
   # Per rule, over confirmed rows of the given issues, each fingerprint counted once by its latest
   # confirmed round (§3.6, §3.7): how many were real and how many were noise.
   def self.rule_counts(issue_ids)
-    latest = <<~SQL.squish
-      review_findings.round = (SELECT MAX(g.round) FROM review_findings g
-        WHERE g.issue_id = review_findings.issue_id AND g.fingerprint = review_findings.fingerprint
-          AND g.confirmed_by_id IS NOT NULL)
-    SQL
     counts = where(issue_id: issue_ids).where.not(confirmed_by_id: nil).where.not(rule_id: nil)
-                                       .where(latest).group(:rule_id, :outcome).count
+                                       .where(latest_round(confirmed: true)).group(:rule_id, :outcome).count
     counts.each_with_object({}) do |((rule, outcome), n), rules|
       rule_row = rules[rule] ||= { 'rule_id' => rule, 'real' => 0, 'noise' => 0 }
       rule_row['real'] += n if REAL.include?(outcome)
