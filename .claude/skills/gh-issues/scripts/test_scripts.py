@@ -458,7 +458,7 @@ class PrRebase(unittest.TestCase):
             '  *"--json url"*) echo https://github.com/o/r/pull/1 ;;\nesac\n'
         )
         (bin / "open").write_text("#!/bin/sh\n")
-        # A race script, when present, runs just before pr's push: after its fetch, before the lease.
+        # A race script, when present, runs just before pr's push, after its fetch.
         self.race = top / "race"
         self.real_git = shutil.which("git")
         # A race that fails makes the push fail.
@@ -576,7 +576,7 @@ class PrRebase(unittest.TestCase):
         self.assertEqual(self.on_origin("feat/9-x"), before)
         self.assertNotIn("pb 9", self.calls.read_text().splitlines())
         # Rebased by hand as the message says: the copy's context differs, so pr refuses it by patch and
-        # names the push that replaces GitHub's, leased on its head.
+        # names the push that replaces GitHub's.
         subprocess.run(
             ["git", "rebase", "origin/main"], cwd=self.tree, env=self.env, capture_output=True
         )
@@ -589,9 +589,8 @@ class PrRebase(unittest.TestCase):
         run = self.pr()
         self.assertEqual(run.returncode, 2)
         self.assertEqual(self.on_origin("feat/9-x"), before)
-        lease = f"--force-with-lease=refs/heads/feat/9-x:{before}"
-        self.assertIn(lease, run.stderr)
-        self.git(self.tree, "push", "-q", lease, "origin", "HEAD")
+        self.assertIn("git push --force origin HEAD", run.stderr)
+        self.git(self.tree, "push", "-q", "--force", "origin", "HEAD")
         run = self.pr()
         self.assertEqual(run.returncode, 0, run.stderr)
         self.assertIn("already on main", run.stdout)
@@ -621,23 +620,6 @@ class PrRebase(unittest.TestCase):
         self.assertEqual(self.on_origin("feat/9-x"), theirs)
         self.assertEqual(self.git(self.tree, "rev-parse", "HEAD"), before)
 
-    def test_a_push_from_elsewhere_after_the_fetch_fails_the_lease(self):
-        self.advance_main()
-        self.git(self.other, "fetch", "-q", "origin")
-        self.git(self.other, "checkout", "-q", "-b", "feat/9-x", "origin/feat/9-x")
-        theirs = self.commit(self.other, "d.txt", "theirs\n", "From elsewhere")
-        # After pr's fetch and check, before its push: only the lease can catch it, and a bare
-        # --force would overwrite it.
-        self.race.write_text(
-            f"#!/bin/sh\n'{self.real_git}' -C '{self.other}' push -q origin HEAD:feat/9-x\n"
-        )
-        self.race.chmod(0o755)
-        run = self.pr()
-        self.assertNotEqual(run.returncode, 0)
-        self.assertIn("rebased onto", run.stdout)
-        self.assertIn("stale info", run.stderr)
-        self.assertEqual(self.on_origin("feat/9-x"), theirs)
-
     def test_a_pushed_commit_dropped_by_a_reset_is_refused(self):
         self.advance_main()
         pushed = self.on_origin("feat/9-x")
@@ -645,9 +627,7 @@ class PrRebase(unittest.TestCase):
         run = self.pr()
         self.assertEqual(run.returncode, 2)
         self.assertIn("Work (fixes #9)", run.stderr)
-        self.assertIn(
-            f"git push --force-with-lease=refs/heads/feat/9-x:{pushed} origin HEAD", run.stderr
-        )
+        self.assertIn("git push --force origin HEAD", run.stderr)
         self.assertEqual(self.on_origin("feat/9-x"), pushed)
 
     def test_a_rebase_that_fails_without_a_conflict_says_why(self):
@@ -662,7 +642,7 @@ class PrRebase(unittest.TestCase):
         self.assertEqual(self.git(self.tree, "rev-parse", "HEAD"), before)
         self.assertEqual(self.on_origin("feat/9-x"), before)
 
-    def test_a_rebase_whose_push_failed_is_refused_with_a_leased_push(self):
+    def test_a_rebase_whose_push_failed_is_refused_with_a_force_push(self):
         # Main edits a line beside the branch's, so the rebased copy's patch-id differs.
         lines = "".join(f"{i}\n" for i in range(1, 10))
         self.advance_main("g.txt", lines)
@@ -688,14 +668,13 @@ class PrRebase(unittest.TestCase):
 
         self.assertNotEqual(patch_id("HEAD"), patch_id(original))
         # The next pr can't tell the copy from a commit that replaced GitHub's, so it refuses, and names
-        # a push leased on GitHub's head, which a fetch since can't widen.
+        # the force push.
         self.race.unlink()
         run = self.pr()
         self.assertEqual(run.returncode, 2)
         self.assertEqual(self.on_origin("feat/9-x"), original)
-        lease = f"--force-with-lease=refs/heads/feat/9-x:{original}"
-        self.assertIn(lease, run.stderr)
-        self.git(self.tree, "push", "-q", lease, "origin", "HEAD")
+        self.assertIn("git push --force origin HEAD", run.stderr)
+        self.git(self.tree, "push", "-q", "--force", "origin", "HEAD")
         run = self.pr()
         self.assertEqual(run.returncode, 0, run.stderr)
         self.assertEqual(self.on_origin("feat/9-x"), self.git(self.tree, "rev-parse", "HEAD"))

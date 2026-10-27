@@ -188,7 +188,7 @@ checkout, or that it was started outside. Paths in a card are relative to the ch
 |---|---|---|---|
 | `worktask-start` | main | the item is Todo on `origin/<default>`, or In Progress there to reopen it; it has no worktree, and no branch locally or on `origin` | `worktask start <id>`, which pushes `plan: start <id>` and opens the worktree's window. A reopen pushes nothing, because the item was started already |
 | `commit` | worktree | on the item's branch; every file matches its hash; nothing outside `paths` is staged; `message` ends with an `Assisted-by:` trailer and names no AI as author | `git add -- <paths>`, `git commit -F <message>` |
-| `rebase` | worktree | on the item's branch; no rebase already in progress; after `git fetch origin`, the branch's tip on `origin` is an ancestor of `HEAD` | `git fetch origin`, `git rebase --autostash origin/<default>`; when the branch is already on `origin`, `git push --force-with-lease=<branch>:<sha>`, `<sha>` being that tip |
+| `rebase` | worktree | on the item's branch; no rebase already in progress; after `git fetch origin`, the branch's tip on `origin` is an ancestor of `HEAD` | `git fetch origin`, `git rebase --autostash origin/<default>`; when the branch is already on `origin`, `git push --force` |
 | `ship` | worktree | `commit`'s checks; `body` starts with `Closes:` and carries no attribution; reads the PR's state with `gh pr view`; when the PR is open, its body on GitHub is the one the runner last posted, or the one `live_sha256` names | no PR: commit, `git push -u origin HEAD`, `gh pc`, then `gh pr edit --add-reviewer @copilot`. Open: commit, `git push`, and `gh pb` when the body differs from the one last posted. Merged or closed: refused |
 | `pr-body` | worktree | the PR is open; `body`'s checks; its body on GitHub is the one the runner last posted, or the one `live_sha256` names | `gh pb` |
 | `review` | main | the PR is open; Copilot's review was requested | `gh pr view <n> --json state,reviews`, once a poll, until a review by Copilot is posted or the PR closes; then `gh api --paginate repos/<owner>/<repo>/pulls/<n>/reviews/<review>/comments` for that review's comments; no ▶ (§3.6) |
@@ -220,10 +220,7 @@ checkout, or that it was started outside. Paths in a card are relative to the ch
   fold-in as a diff against `pr-body-live.md` (§3.6).
 - **A force-push never drops a commit.** After the fetch, `rebase` refuses before it rebases when
   the branch's tip on `origin` isn't an ancestor of `HEAD`: `origin` has a commit the worktree
-  doesn't, and the push would lose it. Claude reconciles the branch first. The push's lease names
-  that tip, `--force-with-lease=<branch>:<sha>`, so a push someone makes after the check is refused
-  too. The card's `steps` carry the SHA Claude saw, so if the tip moves after planting the steps
-  differ, and the card is refused.
+  doesn't, and the push would lose it. Claude reconciles the branch first.
 - **Conflicts stop.** A `rebase` that conflicts runs `git rebase --abort`, records the conflicting
   files, and stops. The branch is as it was.
 - **On the default branch, nothing runs.** Every worktree recipe refuses when `HEAD` is the default
@@ -522,7 +519,7 @@ edits, `outline.py`, the test suite) need no card, because Claude runs them itse
 | — | — | — | Claude rewrote the item, ran `outline.py` and `uv run pytest`. No cards |
 | 02 | `ship` | `gh-plan.worktrees/pl-zupak/` | post-pr planted the message and body and handed over a line. Peter ran it while Claude was still editing the message, and Claude found out only from `git log`. Now the edit changes the message's hash, so ▶ refuses with that reason, and the result tells Claude |
 | 03 | `ship` | worktree | Claude plants it again with the new hash. No PR yet, so it commits the named paths, pushes and runs `gh pc` |
-| 04 | `rebase` | worktree | pl-veles (#95) merged first. Claude's `git rebase --autostash origin/main` was denied twice, and Peter ran it from a chat question. Now it's a card: fetch, rebase, and `--force-with-lease` because the branch was pushed |
+| 04 | `rebase` | worktree | pl-veles (#95) merged first. Claude's `git rebase --autostash origin/main` was denied twice, and Peter ran it from a chat question. Now it's a card: fetch, rebase, and `--force` because the branch was pushed |
 | 05 | `commit` | worktree | Claude fixed `ready.yml`, which #95's merge had duplicated, and commits it locally |
 | 06 | `ship` | worktree | The PR is open, so `ship` commits `ready.yml`'s next fix, pushes and runs `gh pb` |
 | 07 | `pr-body` | worktree | A body-only edit runs `gh pb` alone |
@@ -594,8 +591,7 @@ The runner's tests live beside it, `~/.claude/skills/plan-board/scripts/test_pla
   given makes `ship` fail, with the posted body saved.
 - `commit` and `ship` with an unrelated file already staged: refused before `git add`, naming it.
 - `rebase` when the bare remote's branch has a commit the worktree lacks: refused before the rebase,
-  and the remote unchanged. A push to the remote between planting and ▶ makes the card's lease SHA
-  stale, and the card is refused.
+  and the remote unchanged.
 - A card with `restamped` runs, and the result carries it.
 - `start` plants card 01 with `planted_by: person` and the `person` from `git config user.name`,
   or the `gh` login when that's unset, and runs it. It refuses an item that isn't Todo or already

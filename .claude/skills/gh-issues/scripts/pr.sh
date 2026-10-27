@@ -12,8 +12,7 @@
 #           behind when pr opens or updates it, and needs no merge from it. A failed rebase is aborted, leaving the
 #           branch as it was, and stops before the push
 #   push    git push -u origin HEAD; a no-op when the remote has the branch's commits. After a
-#           rebase, a force push leased against the head just fetched, so a push from elsewhere
-#           since is refused, never overwritten
+#           rebase, a force push
 #   PR      gh pc when the branch has no PR, else gh pb, which replaces the body with
 #           .tmp/N/pr-body.md, then opens the PR in the GitHub Pull Requests extension
 #   replies when .tmp/N/replies/ holds <comment id>.md files: posts each to its review thread,
@@ -119,7 +118,7 @@ fi
 
 # Rebase onto origin's base, on committed work only, so the PR needs no Update branch, whose merge
 # the Linear history ruleset refuses. A failed fetch stops here: nothing is pushed on a stale base.
-# --prune, so a branch deleted on GitHub leaves no stale origin/<branch> to lease against.
+# --prune, so a branch deleted on GitHub leaves no stale origin/<branch> to check against.
 if ! why=$(GIT_TERMINAL_PROMPT=0 git fetch -q --prune origin 2>&1); then
   echo "pr: couldn't fetch origin, so nothing is pushed; check the network and run pr again:" >&2
   printf '%s\n' "$why" | sed 's/^/  /' >&2
@@ -131,15 +130,14 @@ pushed=$(git rev-parse -q --verify "refs/remotes/origin/$branch" || true)
 # GitHub's commits that HEAD lacks, by patch, leaving out main's: a push would drop them, whether
 # another clone pushed them or they were dropped or rewritten here. A merge has no patch, and may
 # carry edits of its own, so one HEAD lacks is refused too. A patch-id counts context lines,
-# so a copy rebased past nearby edits doesn't match its original, and is refused too: the printed
-# push leases on the SHA, so a fetch since, such as VS Code's autofetch, can't widen it.
+# so a copy rebased past nearby edits doesn't match its original, and is refused too.
 if [ -n "$pushed" ]; then
   lost=$(git log --oneline --cherry-pick --right-only "HEAD...$pushed" "^$onto")
   if [ -n "$lost" ]; then
     echo "pr: GitHub's $branch has commits $branch lacks, by patch, so nothing is pushed:" >&2
     printf '%s\n' "$lost" | sed 's/^/  /' >&2
     echo "pr: pushed from another clone: git pull --rebase origin $branch, then pr $n" >&2
-    echo "pr: rewritten or dropped here: git push --force-with-lease=refs/heads/$branch:$pushed origin HEAD, then pr $n" >&2
+    echo "pr: rewritten or dropped here: git push --force origin HEAD, then pr $n" >&2
     exit 2
   fi
 fi
@@ -175,23 +173,23 @@ else
     echo "pr: rebasing $branch onto origin/$base ($short) failed, so it is aborted, $branch is as it was, and nothing is pushed:" >&2
     printf '%s\n' "${conflicts:-$why}" | sed 's/^/  /' >&2
     echo "pr: to rebase by hand: git rebase origin/$base, fix and git add each file, git rebase --continue," >&2
-    echo "pr: ${pushed:+git push --force-with-lease=refs/heads/$branch:$pushed origin HEAD, }then pr $n" >&2
+    echo "pr: ${pushed:+git push --force origin HEAD, }then pr $n" >&2
     exit 2
   fi
   [ -z "$why" ] || printf '%s\n' "$why"
   echo "pr: rebased onto $short (origin/$base)"
 fi
 # A branch rewritten without dropping GitHub's commits, by this run's rebase or one by hand, replaces
-# GitHub's, leased against the head just fetched, so a push from elsewhere since is refused too.
-lease=""
+# GitHub's.
+force=""
 if [ -n "$pushed" ] && ! git merge-base --is-ancestor "$pushed" HEAD; then
-  lease="--force-with-lease=refs/heads/$branch:$pushed"
+  force="--force"
 fi
 
 # No -q: a slow push shows its progress. A credential prompt fails at once rather than waiting.
-echo "pr: pushing $branch${lease:+, replacing the rewritten branch on GitHub}"
-# shellcheck disable=SC2086 # $lease is one word, or none
-GIT_TERMINAL_PROMPT=0 git push -u $lease origin HEAD
+echo "pr: pushing $branch${force:+, replacing the rewritten branch on GitHub}"
+# shellcheck disable=SC2086 # $force is one word, or none
+GIT_TERMINAL_PROMPT=0 git push -u $force origin HEAD
 
 if [ -n "$state" ]; then
   echo "pr: updating the PR body"
