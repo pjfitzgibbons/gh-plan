@@ -178,7 +178,13 @@ class Redmine:
             with urllib.request.urlopen(req, timeout=TIMEOUT) as r:
                 raw = r.read()
         except TimeoutError:
-            raise Refused(f"Redmine {method} {path}: no answer in {TIMEOUT}s") from None
+            # A write Redmine is slow to answer may still have landed: running it again repeats it.
+            maybe = (
+                ""
+                if method == "GET"
+                else "; it may have been applied, so check Redmine before running it again"
+            )
+            raise Refused(f"Redmine {method} {path}: no answer in {TIMEOUT}s{maybe}") from None
         except urllib.error.HTTPError as e:
             raise Refused(f"Redmine {method} {path}: HTTP {e.code}{reasons(e)}", e.code) from None
         except urllib.error.URLError as e:

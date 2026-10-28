@@ -524,9 +524,10 @@ the rules or the model change, never on a schedule.
   key costs paid tokens, against I1.
 - Each round already reviews every commit Ship pushes and runs `scripts/assess` on it (§3.3). A CI
   run would review the same diff again.
-- CI keeps the checks that need no model, `assess` with `checks/`, for Dependabot's PRs and pushes
-  to `main`. A round runs the same assess locally. The codify rule (§3.7) moves real findings
-  there, so assess gains a check each time a rule earns one.
+- CI keeps the checks that need no model, `assess` with `checks/`, on every PR and push to `main`,
+  which is what Dependabot's PRs rely on. A round runs the same assess locally and doesn't read
+  CI's. The codify rule (§3.7) moves real findings there, so assess gains a check each time a rule
+  earns one.
 
 <a id="failure-modes"></a>
 ### 3.10 Failure modes

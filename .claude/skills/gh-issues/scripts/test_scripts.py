@@ -11,6 +11,7 @@ import signal
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import unittest
 import urllib.error
@@ -21,6 +22,7 @@ from unittest import mock
 import issue_body
 import issue_relations
 import new_issue
+import redmine
 import redmine_set
 import review
 from outline import check, expected
@@ -1944,6 +1946,18 @@ class RedmineErrors(unittest.TestCase):
             with self.subTest(body):
                 self.assertEqual(reasons(self.error(body)), "")
 
+    def test_a_write_with_no_answer_may_have_landed_and_says_so(self):
+        tracker = redmine.Redmine.__new__(redmine.Redmine)
+        tracker.url, tracker.key = "http://127.0.0.1:9", "k"
+        with mock.patch.object(redmine.urllib.request, "urlopen", side_effect=TimeoutError):
+            for method, said in (("GET", False), ("PUT", True), ("POST", True)):
+                with self.subTest(method), self.assertRaises(Refused) as got:
+                    tracker.send(method, "/issues/9.json", None if method == "GET" else {})
+                self.assertIn("no answer in 30s", str(got.exception))
+                self.assertEqual(
+                    "check Redmine before running it again" in str(got.exception), said
+                )
+
 
 class Every(unittest.TestCase):
     """redmine.every: each page of a listing, its query kept."""
@@ -2547,6 +2561,23 @@ class Review(unittest.TestCase):
             review.Runner()(["sh", "-c", "sleep 30; echo"], input=None, env=None, timeout=1)
         self.assertLess(time.monotonic() - started, 10)
 
+    def test_kill_stops_the_grandchildren_of_a_pass_whose_leader_has_exited(self):
+        # sh exits at once; the sleep it left in the group holds the pipe open, as pytest under
+        # assess would. kill() still takes the group.
+        runner = review.Runner()
+        with concurrent.futures.ThreadPoolExecutor(1) as pool:
+            running = pool.submit(
+                runner, ["sh", "-c", "sleep 30 & exit 0"], input=None, env=None, timeout=60
+            )
+            while not runner.running:
+                time.sleep(0.05)
+            time.sleep(0.5)
+            started = time.monotonic()
+            runner.kill()
+            self.assertEqual(running.result().returncode, 0)
+        self.assertLess(time.monotonic() - started, 10)
+        self.assertEqual(runner.running, [])
+
     def test_kill_stops_a_running_pass(self):
         runner = review.Runner()
         with concurrent.futures.ThreadPoolExecutor(1) as pool:
@@ -2581,18 +2612,22 @@ class Review(unittest.TestCase):
         self.assertEqual(done.returncode, -9)
         self.assertLess(time.monotonic() - started, 10)
 
-    def test_a_ctrl_c_or_kill_ends_the_review_with_a_line_not_a_traceback(self):
-        before = signal.getsignal(signal.SIGTERM)
-        self.addCleanup(signal.signal, signal.SIGTERM, before)
+    def test_a_ctrl_c_kill_or_hangup_ends_the_review_with_a_line_not_a_traceback(self):
+        for sig in (signal.SIGTERM, signal.SIGHUP):
+            self.addCleanup(signal.signal, sig, signal.getsignal(sig))
         with self.assertRaises(review.Stopped) as stop:
             review.terminated(signal.SIGTERM, None)
         for why, code in ((KeyboardInterrupt(), 130), (stop.exception, 143)):
             with (
                 self.subTest(code),
-                mock.patch.object(review, "review", side_effect=why),
+                mock.patch.object(review, "start", return_value=(None, "abc1234def")),
+                mock.patch.object(review, "review", side_effect=why) as reviewed,
                 mock.patch("sys.stderr", new_callable=io.StringIO) as err,
             ):
                 self.assertEqual(review.main(["9"]), code)
+                # A run by hand whose terminal closes is stopped as kill stops it.
+                self.assertIs(signal.getsignal(signal.SIGHUP), review.terminated)
+                self.assertEqual(reviewed.call_args.kwargs["commit"], "abc1234def")
                 self.assertIn(
                     "review: stopped, so nothing was written; run pr again", err.getvalue()
                 )
@@ -2652,6 +2687,12 @@ class Review(unittest.TestCase):
         (tree / "scripts" / "assess").write_text("not run")
         with self.assertRaisesRegex(review.Failed, "scripts/assess couldn't run"):
             review.assess(tree, 60, review.Runner())
+
+    def test_an_assess_that_cant_run_its_checks_here_writes_nothing(self):
+        with self.assertRaisesRegex(
+            review.Failed, "couldn't run its checks: assess: needs Python 3.14; this is 3.9"
+        ):
+            self.assess("echo 'assess: needs Python 3.14; this is 3.9'\nexit 2\n")
 
     def test_a_commit_with_no_assess_is_none(self):
         got, _ = self.assess(None)
@@ -2753,9 +2794,35 @@ class Review(unittest.TestCase):
             mock.patch.object(review.os, "fork", return_value=4242),
             mock.patch("sys.stdout", new_callable=io.StringIO) as out,
         ):
-            self.assertEqual(review.detach(9), 1)
+            self.assertEqual(review.start(9, True), (1, "abc1234def"))
         self.assertIn("the review of abc1234 didn't start", out.getvalue())
         self.assertFalse((repo / ".tmp" / "9" / "review" / "abc1234def.pid").exists())
+
+    def test_a_review_run_by_hand_takes_the_lock_too(self):
+        repo = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        folder = repo / ".tmp" / "9" / "review"
+        folder.mkdir(parents=True)
+        lock, pidfile = folder / "abc1234def.lock", folder / "abc1234def.pid"
+        heads = [f"{repo}\n", "abc1234def\n"]
+        with reviewing(lock) as pid:
+            pidfile.write_text(f"{pid}\n")
+            with (
+                mock.patch.object(review, "git", side_effect=heads),
+                mock.patch("sys.stdout", new_callable=io.StringIO) as out,
+            ):
+                self.assertEqual(review.start(9, False), (0, "abc1234def"))
+        self.assertIn(f"abc1234 is already being reviewed, by pid {pid}", out.getvalue())
+        with (
+            mock.patch.object(review, "git", side_effect=heads),
+            mock.patch.object(review.atexit, "register") as registered,
+        ):
+            self.assertEqual(review.start(9, False), (None, "abc1234def"))
+        self.assertEqual(pidfile.read_text(), f"{os.getpid()}\n")
+        self.assertIsNone(review.claim(lock))
+        (unlink,), kw = registered.call_args
+        self.assertEqual(
+            (unlink.__self__, unlink.__name__, kw), (pidfile, "unlink", {"missing_ok": True})
+        )
 
     def test_a_failed_or_timed_out_claude_is_named(self):
         def timeout(command, **kw):
@@ -2939,6 +3006,13 @@ class PrReview(unittest.TestCase):
         self.assertFalse(self.reviewed().exists())
         self.assertFalse(self.reply.exists())
         self.assertIn("api repos/o/r/pulls/1/comments/11/replies", self.calls.read_text())
+        # The retry adds to the log, so the first try's reason is still there.
+        self.broken.unlink()
+        run = self.pr()
+        self.assertEqual(run.returncode, 0, run.stderr)
+        self.assertTrue(self.reviewed().exists())
+        self.assertIn("claude: not logged", self.log())
+        self.assertEqual(self.log().count(f"review: {self.head[:7]}, started "), 2)
 
     def test_a_failed_pass_stops_the_other_at_once(self):
         # The security pass fails; the review pass would run 30s.
@@ -3077,6 +3151,46 @@ class PrReview(unittest.TestCase):
         self.assertIn(
             "changes the checks it ran under: REVIEW.md, scripts/assess.", data["summary"]
         )
+
+    def test_a_file_moved_out_of_a_control_is_a_control_change(self):
+        (self.other / ".claude" / "hooks").mkdir(parents=True)
+        self.advance_main(".claude/hooks/attr.py", "hook\n")
+        self.git(self.tree, "pull", "-q", "--rebase", "origin", "main")
+        (self.tree / "tools").mkdir()
+        self.git(self.tree, "mv", ".claude/hooks/attr.py", "tools/attr.py")
+        self.head = self.commit(self.tree, "b.txt", "b\n", "Move the hook")
+        run = self.pr()
+        self.assertEqual(run.returncode, 0, run.stderr)
+        self.head = self.git(self.tree, "rev-parse", "HEAD")
+        data = json.loads(self.reviewed().read_text())
+        self.assertIn(".claude/hooks/attr.py", data["controls"])
+        self.assertIn(".claude/hooks/attr.py", data["summary"])
+
+    def test_a_kill_between_the_passes_starting_stops_the_one_started(self):
+        killed = threading.Event()
+
+        class Held:
+            """A pass that runs until it's killed, or 10s."""
+
+            def __call__(self, command, **kw):
+                killed.wait(10)
+                return subprocess.CompletedProcess(command, -9, "", "")
+
+            def kill(self):
+                killed.set()
+
+        started = time.monotonic()
+        with (
+            contextlib.chdir(self.tree),
+            mock.patch.object(review, "description", return_value=""),
+            mock.patch.object(review, "prompt", side_effect=["p", review.Stopped(15)]),
+            mock.patch("sys.stdout", new_callable=io.StringIO),
+            self.assertRaises(review.Stopped),
+        ):
+            review.review(9, "refs/remotes/origin/main", 60, runner=Held())
+        self.assertTrue(killed.is_set())
+        self.assertLess(time.monotonic() - started, 8)
+        self.assertNotIn("review-9-", self.git(self.tree, "worktree", "list"))
 
     def test_a_repo_without_review_md_runs_no_review(self):
         (self.tree / "REVIEW.md").unlink()

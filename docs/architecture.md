@@ -180,7 +180,7 @@ too.
 | Editor integration | A VS Code extension in JavaScript, tested with `node --test` | [`vscode/README.md`](../vscode/README.md) |
 | Pull requests | Subprocess to `gh` | Requirement [`G3`](requirements.md) |
 | Keys | The macOS Keychain | Requirement [`G3`](requirements.md) |
-| Checks | `scripts/assess`, run by each review round as its CI, and by GitHub Actions for Dependabot's PRs and pushes to `main` | [`checks/README.md`](../checks/README.md) |
+| Checks | `scripts/assess`, run by each review round as its CI, and by GitHub Actions on every PR and push to `main` | [`checks/README.md`](../checks/README.md) |
 
 <a id="operations"></a>
 ## 7. Operations
@@ -241,10 +241,10 @@ refuses a change made since, rather than staging again. Go and Ship refuse a wor
 unsaved edits, which neither the stage nor the commit would hold.
 
 Before the commit message is written, `scripts/assess` runs every check. The PR's `assess` check
-runs it again on GitHub, for Dependabot's PRs and pushes to `main`; a round doesn't read it.
-`main` requires every review thread resolved before a merge. Before
-Go, `/code-review low` runs on the uncommitted changes, and before the first Go Claude writes the
-submission report, its fixes, the whole diff, `commit.txt` and `pr-body.md`, for the Review tab.
+runs it again on GitHub on every PR and push to `main`, which is what Dependabot's PRs rely on; a
+round doesn't read it. Before Go, `/code-review low` runs on the uncommitted changes, and before
+the first Go Claude writes the submission report, its fixes, the whole diff, `commit.txt` and
+`pr-body.md`, for the Review tab.
 Each commit Ship pushes gets a review round from `pr`'s `review.py`, which runs `scripts/assess`
 itself, and Claude answers the round in the Review tab
 ([`vscode/README.md`](../vscode/README.md)).
