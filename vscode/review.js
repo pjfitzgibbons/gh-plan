@@ -13,10 +13,11 @@ function reportFile(file) {
   return match ? { root: match[1], id: Number(match[2]) } : null;
 }
 
-// The round the report says it is, from <meta name="plan-round" content="<k>">; null without one.
+// The round the report says it is, from <meta name="plan-round" content="<k>">: 0 for the
+// submission, the report before the first Go; null without one.
 function reportRound(html) {
   const meta = /<meta\s(?:[^>]*\s)?name=(["']?)plan-round\1(?=[\s/>])[^>]*>/i.exec(html);
-  const round = meta && /\scontent=(["']?)([1-9][0-9]*)\1(?=[\s/>])/i.exec(meta[0]);
+  const round = meta && /\scontent=(["']?)(0|[1-9][0-9]*)\1(?=[\s/>])/i.exec(meta[0]);
   return round ? Number(round[2]) : null;
 }
 
@@ -115,9 +116,10 @@ ${items.join("\n")}
 // path, which the page keeps so the tab comes back after a window reload. html is null with no
 // report yet. staged is what Go staged, below the report, which the page shows while Ship is armed.
 function reportPage({ id, file, html, round, written, shown, ship, busy, doing, staged, nonce, cspSource, css, js }) {
-  const label = html === null ? `Review #${id} · no report yet` : `Review #${id}${round ? ` · round ${round}` : ""} · written ${written}`;
+  const named = round === 0 ? " · submission" : round ? ` · round ${round}` : "";
+  const label = html === null ? `Review #${id} · no report yet` : `Review #${id}${named} · written ${written}`;
   const report = html === null
-    ? '<p id="empty">No round report yet: Claude writes one after a review round.</p>'
+    ? '<p id="empty">No report yet: Claude writes one before the first Go, and after each review round.</p>'
     : `<iframe id="report" title="${escape(`#${id}'s round report`)}" sandbox="allow-same-origin" srcdoc="${escape(html)}"></iframe>`;
   return `<!doctype html>
 <html lang="en">

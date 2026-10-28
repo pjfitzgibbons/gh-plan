@@ -11,13 +11,19 @@
 #   rebase  when the branch lacks origin's tip of the default branch: rebases onto it, so the PR isn't
 #           behind when pr opens or updates it, and needs no merge from it. A failed rebase is aborted, leaving the
 #           branch as it was, and stops before the push
-#   push    git push -u origin HEAD; a no-op when the remote has the branch's commits. After a
+#   push    git push -u origin HEAD; a no-op when the remote has the branch's commits. Refuses a
+#           branch commit that says fixes #<n>, as for commit.txt. After a
 #           rebase, a force push leased against the head just fetched, so a push from elsewhere
 #           since is refused, never overwritten
 #   PR      gh pc when the branch has no PR, else gh pb, which replaces the body with
 #           .tmp/N/pr-body.md, then opens the PR in the GitHub Pull Requests extension
 #   replies when .tmp/N/replies/ holds <comment id>.md files: posts each to its review thread,
 #           resolves the thread and deletes the file (pr_threads.py --post)
+#   review  when HEAD has no .tmp/N/review/<commit>.json and origin's base or HEAD has REVIEW.md: starts Claude's
+#           review of the branch's whole diff in the background, which runs scripts/assess and writes
+#           that file (review.py --detach), and logs to .tmp/N/review/<commit>.log. pr doesn't wait for
+#           it, so Ship links the PR at once. One that fails says so in its log, and the next pr,
+#           like the rerun of a pr stopped after its push, reviews the commit again
 #
 # The issue's Done list is ticked in the PR body's ## Done section, never in Redmine: a
 # .tmp/N/issue.md left from before is named as no longer sent, and left where it is.
@@ -36,11 +42,14 @@ set -eu
 # checks every reply before its first post and deletes each once it is sent, so a stopped pr resumes
 # where it stopped. It needs Python 3.10; /usr/bin/python3 is 3.9.
 scripts=$(dirname "$(realpath "$0")")
+py310() { python3 -c 'import sys; sys.exit(sys.version_info < (3, 10))'; }
+# The review runs scripts/assess, which needs the repo's Python, 3.14.
+py314() { python3 -c 'import sys; sys.exit(sys.version_info < (3, 14))'; }
 send_round() {
   [ ! -f ".tmp/$n/issue.md" ] ||
     echo "pr: .tmp/$n/issue.md is no longer sent; tick the issue's Done list in the PR body's ## Done section, and delete the file" >&2
   [ -d ".tmp/$n/replies" ] || return 0
-  python3 -c 'import sys; sys.exit(sys.version_info < (3, 10))' ||
+  py310 ||
     { echo "pr: .tmp/$n/ has replies to send, and python3 is older than 3.10" >&2; exit 2; }
   number=$(gh pr view "$branch" --json number --jq .number)
   python3 "$scripts/pr_threads.py" "$number" --post ".tmp/$n/replies"
@@ -89,14 +98,15 @@ case $state in
     exit 0 ;;
 esac
 
+# Redmine scans every branch of the shared .git, so a branch commit's fixes #<n> closes the issue
+# at the next fetch, before the PR merges. Only the squash commit, titled by gh pc, says fixes.
+# The pattern is Redmine's: any case, after a space, ( [ , - or the start, then : or spaces, which
+# may be line breaks, so a message is checked whole as well as line by line.
+says_fixes='(^|[[:space:]([,-])fixes[[:space:]:]+#[0-9]'
+
 if [ -n "$(git status --porcelain)" ]; then
   message=".tmp/$n/commit.txt"
   [ -f "$message" ] || { echo "pr: the tree has changes and $message is missing" >&2; git status --short >&2; exit 2; }
-  # Redmine scans every branch of the shared .git, so a branch commit's fixes #<n> closes the issue
-  # at the next fetch, before the PR merges. Only the squash commit, titled by gh pc, says fixes.
-  # The pattern is Redmine's: any case, after a space, ( [ , - or the start, then : or spaces, which
-  # may be line breaks, so the message is checked whole as well as line by line.
-  says_fixes='(^|[[:space:]([,-])fixes[[:space:]:]+#[0-9]'
   if tr '\n' ' ' <"$message" | grep -qiE "$says_fixes"; then
     fixes=$(grep -niE "$says_fixes" "$message" || echo "fixes and #<n> on separate lines")
     echo "pr: $message says fixes, which closes the issue when Redmine fetches the branch; say refs #$n, and the PR title says fixes:" >&2
@@ -181,6 +191,17 @@ else
   [ -z "$why" ] || printf '%s\n' "$why"
   echo "pr: rebased onto $short (origin/$base)"
 fi
+# A commit made by hand, or before pr checked commit.txt, is held to the same rule: once pushed,
+# every clone's fetch carries it to Redmine too.
+# One git log for the lot, each message ended by a \036 record separator and read whole by awk.
+said=$(git log --format='%h %s%n%B%x1e' "$onto..HEAD" | awk -v re="$says_fixes" 'BEGIN { RS = "\036" }
+  { sub(/^\n+/, ""); first = $0; sub(/\n.*/, "", first); all = tolower($0); gsub(/\n/, " ", all)
+    if (first != "" && all ~ re) print "  " first }')
+if [ -n "$said" ]; then
+  echo "pr: branch commits say fixes, which closes the issue when Redmine fetches the branch, so nothing is pushed; reword each to refs #$n:" >&2
+  printf '%s\n' "$said" >&2
+  exit 2
+fi
 # A branch rewritten without dropping GitHub's commits, by this run's rebase or one by hand, replaces
 # GitHub's, leased against the head just fetched, so a push from elsewhere since is refused too.
 lease=""
@@ -212,3 +233,20 @@ echo "$url"
 pr_path=${url#https://github.com/}
 git config "branch.$branch.github-pr-owner-number" "$(echo "$pr_path" | sed 's|/pull/|#|; s|/|#|')"
 open "vscode://github.vscode-pull-request-github/open-pull-request-webview?uri=$(python3 -c 'import sys, urllib.parse; print(urllib.parse.quote(sys.argv[1], safe=""))' "$url")"
+
+# The review of what this push brought (review.py), last, and in the background, so a review that
+# fails or runs long, or the assess it runs, holds up neither the PR, the replies nor Ship's link in
+# Redmine. A head with no review file has a commit to review: one this push brought, opening the PR
+# included, or one a pr that stopped after its push, or a failed review, left. It writes
+# .tmp/N/review/<commit>.json and posts nothing.
+if [ ! -f ".tmp/$n/review/$(git rev-parse HEAD).json" ]; then
+  # REVIEW.md as the base has it, or the commit's until the base has one, as review.py reads it:
+  # never the working tree's, so deleting it on the branch doesn't turn the review off.
+  if ! git cat-file -e "refs/remotes/origin/$base:REVIEW.md" 2>/dev/null && ! git cat-file -e HEAD:REVIEW.md 2>/dev/null; then
+    echo "pr: no REVIEW.md on origin/$base or at HEAD, so no review"
+  elif ! py314; then
+    echo "pr: python3 is older than 3.14, so no review" >&2
+  elif ! python3 "$scripts/review.py" "$n" --base "refs/remotes/origin/$base" --detach; then
+    echo "pr: the review didn't start, so .tmp/$n/review/ has nothing for this commit; retry with: python3 $scripts/review.py $n --base refs/remotes/origin/$base" >&2
+  fi
+fi

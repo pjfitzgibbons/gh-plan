@@ -41,11 +41,15 @@ settings: what this repo needs is here or in `.claude/`.
   work, files, commits or the tracker's state, and hard crashes, even rare ones. A rare warning or
   a clean error-stop can stay.
 - **Before Go:** `/code-review low` on the uncommitted changes, once `scripts/assess` passes, to
-  catch the major issues before they're committed.
-- **A review round:** `/code-review high` on each commit Ship pushes, once that commit's `assess`
-  check passes, on the branch's whole diff, review fixes included. Claude answers it in
-  `.tmp/<n>/report.html`, which opens as the `Review #<n>` tab with Go and Ship, and the PR body
-  says it ran.
+  catch the major issues before they're committed. Before the first Go, the submission report,
+  `.tmp/<n>/report.html`, shows its fixes, the whole diff, `commit.txt` and `pr-body.md` in the
+  `Review #<n>` tab.
+- **A review round:** after each push, `pr` starts Claude's review of the branch's whole diff
+  under the base's `REVIEW.md` in the background, unless that commit has a review file. Beside the passes it
+  runs `scripts/assess`, the round's CI, in a worktree of the commit, and writes
+  `.tmp/<n>/review/<commit>.json`, with assess's result under `ci`. Claude
+  answers it in `.tmp/<n>/report.html`, which opens as the `Review #<n>` tab with Go and Ship. The
+  round is complete only once assess has passed, and the PR body's Testing names the last round.
 - **Python:** `python3` on PATH. `/usr/bin/python3` is 3.9 and can't run the skill scripts.
 - **An issue's work:** Start, Go, Ship and Done in the extension's Next up panel
   ([`vscode/README.md`](vscode/README.md)).

@@ -20,6 +20,9 @@ test("the round comes from the report's plan-round meta", () => {
   assert.equal(reportRound("<p>round 3</p>"), null);
   assert.equal(reportRound('<meta name="plan-round" content="x">'), null);
   assert.equal(reportRound('<meta name=plan-round content=4 />'), 4);
+  // The submission, before the first Go.
+  assert.equal(reportRound('<meta name="plan-round" content="0">'), 0);
+  assert.equal(reportRound('<meta name="plan-round" content="01">'), null);
   for (const html of ['<meta name="plan-rounds" content="3">', '<meta name="plan-round" data-content="3">', '<meta data-name="plan-round" content="3">', '<meta name="plan-round" content="3x">']) {
     assert.equal(reportRound(html), null, html);
   }
@@ -59,6 +62,7 @@ test("L5: the bar names the issue, the round and when the report was written", (
   const page = reportPage({ ...PAGE, html: "" });
   assert.match(page, /<span id="label">Review #110 · round 2 · written 24 Oct 2026, 14:32<\/span>/);
   assert.match(reportPage({ ...PAGE, round: null, html: "" }), /<span id="label">Review #110 · written /);
+  assert.match(reportPage({ ...PAGE, round: 0, html: "" }), /<span id="label">Review #110 · submission · written /);
   assert.match(page, /data-shown="1:2" data-ship="" data-busy=""/);
   assert.match(reportPage({ ...PAGE, ship: true, busy: true, html: "" }), /data-ship="1" data-busy="1"/);
   assert.match(reportPage({ ...PAGE, file: '/w/"x"/.tmp/110/report.html', html: "" }), /data-file="\/w\/&quot;x&quot;\/.tmp\/110\/report.html"/);

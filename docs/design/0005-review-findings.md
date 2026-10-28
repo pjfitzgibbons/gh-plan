@@ -51,8 +51,8 @@ Goals:
 - Every finding, its rule and its outcome are rows that SQL can query across every review.
 - The PR carries nothing of the review that has to last: no finding is a PR comment, and its body
   is rendered from the store.
-- Only a silent finding that loses something has to be fixed, and the store shows each one that's
-  still open.
+- Only a silent finding that loses something, or a crash, has to be fixed, and the store shows
+  each one that's still open.
 - Nothing Claude drafts is recorded as an outcome, a rule, a severity or a visibility until a person
   has accepted it.
 - Rounds end on a rule, and a later round never repeats a finding.
@@ -177,9 +177,13 @@ A finding gets two values. `severity` is what the failure loses: the user's work
 the tracker's state, or nothing. `visibility` is whether the user is shown that it failed: `silent`
 if nothing says so, `seen` if an error, a refusal or a wrong result is in front of them.
 
-**Only a finding that is `silent` and loses something has to be fixed.** A seen failure is already
-mitigated, since the user knows to look. This is the rule `CLAUDE.md` and `docs/failure-modes.md`
-already give, written as two fields so the store can count it.
+**A finding has to be fixed when it's `silent` and loses something, or when it's a crash.** A seen
+failure is already mitigated, since the user knows to look. A crash isn't. It's loud, but an
+unhandled error that stops the command with a traceback, not a message, doesn't tell the user what
+it left behind or whether running it again is safe. Every crash gets the rule `crash`, however rare,
+and is weighted by what it leaves: a crash part way through a write by what it loses, and one before
+any write as `nothing` and `seen`. This is the rule `CLAUDE.md` gives, written as two fields and a
+rule so the store can count it. A finding that has to be fixed is a *finding to fix*.
 
 #82's 38 findings, from rounds three to six, sorted this way. The labels are the session's, R and
 the round and the finding's number. This is Claude's draft; a person confirms each silent row before
@@ -229,23 +233,25 @@ which Ship's `pr` sends after a person reviews it at Go. Both pass through an ou
   outcomes.md         one line per finding: its fingerprint, then its outcome line (§3.4)
 ```
 
-Every round reviews a commit Ship has pushed, so the round's `commit` is on GitHub, and CI's
-required `pytest` check throttles the rounds. There's no review before a push: round 1 reviews the
+Every round reviews a commit Ship has pushed, so the round's `commit` is on GitHub, and `scripts/assess`, which
+`review.py` runs on that commit, throttles the rounds. There's no review before a push: round 1 reviews the
 commit the first Ship pushed when it opened the PR. The steps:
 
-1. **The reviewer's turn.** Ship has pushed commit `C`, and the round starts only once `C`'s
-   `pytest` check has passed: `findings.py add-round <n>` reads the check with `gh pr checks` and
-   refuses a commit whose check is pending or failed. The review, `/code-review high` in the
-   session or `claude -p` from `pr` once #104 lands, reads what §3.5 lists at `C` and returns its
-   findings. `add-round` gives each one a fingerprint at `C`, applies the no-repeat rule (§3.5),
+1. **The reviewer's turn.** Ship has pushed commit `C`, and `pr` starts `review.py`, which runs
+   the two passes and `scripts/assess` in a worktree of `C` and writes `.tmp/<n>/review/<C>.json`
+   with assess's result under `ci`. The round counts only once assess has passed at `C`:
+   `findings.py add-round <n>` reads `ci` from the review file, or runs `scripts/assess` in a
+   worktree of `C` itself when there's no review file, and refuses a commit whose assess failed.
+   The review, `review.py`'s passes or `/code-review high` in the session, reads what §3.5 lists
+   at `C` and returns its findings. `add-round` gives each one a fingerprint at `C`, applies the no-repeat rule (§3.5),
    and writes `round-<k>.jsonl` with `commit` set to `C`. For each earlier `fixed` finding the
    reviewer found gone, it adds a line with only that row's `fingerprint`, `round` and
    `verified_round`. Then `findings.py send <n>` records the round, and Claude updates the PR body
    with `gh pb`, its Done list rendered as it stands (#111). The `send` and the `gh pb` are the two
    writes outside a button that #110 adds to `CLAUDE.md`'s Boundaries, and both wait for it.
-2. **The author's turn.** Claude fixes the silent findings that lose something, drafts an outcome
-   line for every finding in `outcomes.md`, and writes the round report (#110): each finding with
-   its fix or the note refuting it, the open silent count, `commit.txt` and `pr-body.md`.
+2. **The author's turn.** Claude fixes the findings to fix (§3.2), drafts an outcome line
+   for every finding in `outcomes.md`, and writes the round report (#110): each finding with
+   its fix or the note refuting it, the open-to-fix count, `commit.txt` and `pr-body.md`.
 3. **A person reviews the report and presses Go.** The Review tab links
    `.tmp/<n>/findings/outcomes.md`, as it links `commit.txt` and `pr-body.md`, and shows the staged
    diff after Go. Ship refuses an `outcomes.md`, `commit.txt` or `pr-body.md` changed since Go.
@@ -307,7 +313,7 @@ A person accepts the lot by pressing Go, after changing any line they disagree w
 exactly what they saw. A line they delete isn't recorded: the finding stays open, and a silent one
 keeps the next round coming, up to round 3 (§3.5). `confirmed_by_id` is set only from these lines, so a row with
 it empty was never accepted. Only accepted rows count in §3.6's counts and in §3.7; §3.6's list of
-open silent findings is the unaccepted ones waiting for an answer.
+open findings to fix is the unaccepted ones waiting for an answer.
 
 `Fixed` isn't taken on trust: the next round checks it (§3.5). Its rule, severity and visibility
 are still a person's to accept, since those decide what counts.
@@ -345,21 +351,21 @@ matched: `add-round` records the new finding, and its body says which earlier on
 finding whose code changed has a new fingerprint, so it's new. A `fixed` finding the reviewer
 says is gone gets `verified_round` set to the new round.
 
-**The stop rule.** A finding is *open and silent* when its `visibility` is `silent`, its
-`severity` isn't `nothing`, and it has no outcome, recorded or drafted. `findings.py` counts it over
-the store and the outbox, so the count includes a round or outcome that hasn't been sent yet. After each round it prints
-the count, and the PR body's review line gives it: "`/code-review high`: round 2, 0 open silent".
+**The stop rule.** A finding is *open to fix* when it's a finding to fix (§3.2) and has no
+outcome, recorded or drafted. That's a `silent` finding whose `severity` isn't `nothing`, or one
+with the rule `crash`. `findings.py` counts it over the store and the outbox, so the count includes
+a round or outcome that hasn't been sent yet. After each round it prints the count, and the PR body's review line gives it: "Claude review: round 2, 0 open to fix".
 
-- Another round runs while the open silent count is above zero, while a fingerprint's latest row
-  is a silent `fixed` finding that loses something with no `verified_round`, or while the PR's head
-  is a commit no round has reviewed: an open one needs an answer, and a `fixed` one needs
+- Another round runs while the open-to-fix count is above zero, while a fingerprint's latest row
+  is a `fixed` finding to fix with no `verified_round`, or while the PR's head is a commit no
+  round has reviewed: an open one needs an answer, and a `fixed` one needs
   checking. The count is over every round, so an open finding the no-repeat rule dropped from a
   later round still keeps the rounds going. The last check means a Ship after the final round,
 carrying its answers, gets a round of its own. When all three are clear, the round just run is the
 last.
 - Round 3 reviews the diff since round 2 and checks round 2's fixes like any round. Its report,
   and the PR body it renders, also ask the author to step back: the rules with findings in rounds 1 to 3, which
-  findings came from an earlier round's fix, and whether the approach is wrong. A silent finding
+  findings came from an earlier round's fix, and whether the approach is wrong. A finding to fix
   still open after round 3 stays in the count `pr` prints and the PR body shows. #82 is the case for it: about 14 of its 38 findings came from an
   earlier round's fix, and rounds five and six needed forks, a tag named `main` and ssh aliases to
   reach.
@@ -419,7 +425,7 @@ GROUP BY week, outcome
 ORDER BY week, outcome;
 ```
 
-The open silent findings, across every issue. Each finding is listed once, by its latest round, and only while that round has no answer, so one answered in a later round drops off:
+The open findings to fix, across every issue. Each finding is listed once, by its latest round, and only while that round has no answer, so one answered in a later round drops off:
 
 ```sql
 SELECT i.id AS issue, i.subject, f.round, f.file, f.line, f.severity, f.summary
@@ -427,7 +433,8 @@ FROM review_findings f
 JOIN issues i ON i.id = f.issue_id
 WHERE f.round = (SELECT MAX(g.round) FROM review_findings g
                  WHERE g.issue_id = f.issue_id AND g.fingerprint = f.fingerprint)
-  AND f.visibility = 'silent' AND f.severity <> 'nothing' AND f.outcome IS NULL
+  AND ((f.visibility = 'silent' AND f.severity <> 'nothing') OR f.rule_id = 'crash')
+  AND f.outcome IS NULL
 ORDER BY i.id, f.round, f.id;
 ```
 
@@ -467,7 +474,7 @@ falls back to a partial count from threads.
   fingerprint `missed/v1:…`, so the store holds it with the rest. `findings.py add-missed <n>
   <file> <line>` writes it to the outbox of the issue whose work found it, against the issue it
   escaped, and it's answered by an outcome line like any finding, `Fixed` once its fix ships. Until
-  then it's in the open silent query, as it should be: the bug is still in the code.
+  then it's in the open-to-fix query, as it should be: the bug is still in the code.
 - **A clean change.** A merged PR whose code nothing has since found a silent failure in. The
   expected answer is no silent finding; one counts as a false alarm.
 
@@ -515,10 +522,11 @@ the rules or the model change, never on a schedule.
 - It would need a token in the repo's secrets, `CLAUDE_CODE_OAUTH_TOKEN` or an API key. Under G3
   that token would have to be listed in architecture §6.2 with what it reads and writes, and an API
   key costs paid tokens, against I1.
-- Each round already reviews every commit Ship pushes, once its `pytest` check passes (§3.3). A CI
+- Each round already reviews every commit Ship pushes and runs `scripts/assess` on it (§3.3). A CI
   run would review the same diff again.
-- CI keeps the checks that need no model: `pytest` now, and `assess` with `checks/` once #105
-  lands. The codify rule (§3.7) moves real findings there, so CI gains a check each time a rule
+- CI keeps the checks that need no model, `assess` with `checks/`, on every PR and push to `main`,
+  which is what Dependabot's PRs rely on. A round runs the same assess locally and doesn't read
+  CI's. The codify rule (§3.7) moves real findings there, so assess gains a check each time a rule
   earns one.
 
 <a id="failure-modes"></a>
@@ -527,7 +535,7 @@ the rules or the model change, never on a schedule.
 | Failure | What happens |
 |---|---|
 | Redmine is down when a round runs | The review runs. `add-round` drops repeats by the outbox only, says the store wasn't read, and marks the round file. The reviewer's `send` fails and leaves the file in the outbox, and the next `send` applies the no-repeat rule against the store before it records a marked round |
-| The pushed commit's `pytest` check is pending or failed | `add-round` refuses and says which. A failed check is on the PR for anyone to see, and the next round waits for a commit that passes |
+| The pushed commit's assess failed | `add-round` refuses and names the failed checks, which are also in the review file and the round report. The next round waits for a commit that passes |
 | Redmine is down when Ship runs | `pr` pushes and says the findings weren't sent. The outbox stays, and the next `pr` sends it |
 | Redmine is down when Done runs | Done refuses while the outbox has a file (§3.3), so nothing is lost with the worktree |
 | `pr` stops part way through a send | Each file stays until it reads back; the next `pr` sends it again, idempotently (§3.3) |
@@ -580,13 +588,13 @@ the rules or the model change, never on a schedule.
 | L2 Privacy and data | Not ticked for #84, and lightly affected: a row holds a summary and a few lines of the repo's code, all public, and the id of the user who confirmed it. A change to a confirmed row adds a journal note to its issue, with who changed it and the old and new values, so the history stays in Redmine's journal. Fixtures are invented |
 | L3 Reliability and failure | §3.3: the upsert by `(issue_id, fingerprint, round)` and the read-back before each delete mean recording a round twice leaves the same rows. §3.10 for the rest |
 | L4 Performance and limits | Not ticked for #84, and not affected, because a round is tens of rows: one `PUT` and one `GET` per round, and the Findings tab lists one issue's rows |
-| L5 Observability | The issue page shows "Findings: 2 open silent" through the `view_issues_show_details_bottom` hook, linking to the project's Findings tab at `/projects/plan/review_findings?issue_id=<n>`, which lists each open silent finding first. `findings.py` prints the count after each round, the round report (#110) and the PR body's review line give it, so a PR isn't called reviewed while one is open. Done refuses while the outbox holds an unsent round |
+| L5 Observability | The issue page shows "Findings: 2 open to fix" through the `view_issues_show_details_bottom` hook, linking to the project's Findings tab at `/projects/plan/review_findings?issue_id=<n>`, which lists each open finding to fix first. `findings.py` prints the count after each round, the round report (#110) and the PR body's review line give it, so a PR isn't called reviewed while one is open. Done refuses while the outbox holds an unsent round |
 | L6 Compatibility and migration | One `change` migration creates the table and its unique index, so `rake redmine:plugins:migrate NAME=review_findings VERSION=0` drops both. The image's entrypoint runs `rake redmine:plugins:migrate` on start only when `REDMINE_PLUGINS_MIGRATE` is set, and `compose.yml` doesn't set it today, so W1 adds `REDMINE_PLUGINS_MIGRATE: "1"` to its `environment`; a Redmine upgrade then migrates the plugin with the rest. The fingerprint is versioned (`finding/v1`, `seed/v1`, `missed/v1`). #82's findings are imported by `redmine/import_findings.rb`, through `rails runner`, from an uncommitted JSON file in `.tmp/`, with the fields §3.2 lists and the rest empty |
 | L7 Usability and accessibility | Not ticked for #84, and lightly affected: the Findings tab and the issue page's count use core's list and link markup, so they keep Redmine's keyboard and screen-reader behaviour |
 | L8 Testability | §6: the plugin's model and controller on Redmine's fixtures, and `findings.py` against recorded Redmine responses, without the network |
 | L9 Operations and cost | §3.8: one review is about 89 s and $0.49 at list price on the subscription; an eval of fourteen cases is about 62 minutes and $21, run only when the reviewer changes. The plugin is mounted read-only like `lane_board` and adds nothing to run. W8 adds the findings to the nightly export |
 | L10 Docs impact | Design 0004, since Ulysses rebuilds the issue page and W2's hook renders inside `div.attributes`, after the groups. Architecture §6.1 (the plugin and `findings.py`), §6.2 (the writer), §9 (the Findings tab) and §10 (invariant 6). `redmine/README.md` (the mount, the upgrade check, the backup). `redmine/compose.yml`. `CLAUDE.md`, for the review rule (a round on each pushed commit, replacing "Before each push"), the stop rule, and the reviewer's `send` in Boundaries (#110). `docs/failure-modes.md`, for the weighting as two fields. `REVIEW.md` (#104). The gh-issues skill's `SKILL.md`, for the outbox and the reply's first line |
-| L11 Invariants | 2 holds because only the plugin's code and `findings.py` are committed, and reach `main` by PR; the rows live in Redmine, not on the default branch. 6 holds because the extension's only new code here is Go and Ship checking `outcomes.md`, the Review tab linking it, and Done checking the outbox, all file reads. `add-round` reads the commit's check through `gh`, a read like those `pr` already makes. The one new writer, `findings.py`, is named in §6.2 and in invariant 6's added clause: "Outside the extension, review findings are written only by `findings.py`, and once by `import_findings.rb` for the seeds". Its `send` runs in the session at the end of the reviewer's turn, writing unconfirmed finding rows only, and from Ship's `pr`, which alone sends outcomes. `add-round` and `add-missed` only read, and write the outbox |
+| L11 Invariants | 2 holds because only the plugin's code and `findings.py` are committed, and reach `main` by PR; the rows live in Redmine, not on the default branch. 6 holds because the extension's only new code here is Go and Ship checking `outcomes.md`, the Review tab linking it, and Done checking the outbox, all file reads. `add-round` reads assess's result from the review file, a file read, or runs `scripts/assess` in a worktree of the commit when there's none, as `review.py` does. The one new writer, `findings.py`, is named in §6.2 and in invariant 6's added clause: "Outside the extension, review findings are written only by `findings.py`, and once by `import_findings.rb` for the seeds". Its `send` runs in the session at the end of the reviewer's turn, writing unconfirmed finding rows only, and from Ship's `pr`, which alone sends outcomes. `add-round` and `add-missed` only read, and write the outbox |
 | L12 Offline and concurrency | A round when Redmine is down keeps its findings in `.tmp/<n>/findings/`, and the next `pr` records them once Redmine is back; Done won't remove the worktree while they're there (§3.10). Two sends of one round meet at the unique index |
 
 <a id="testing"></a>
@@ -611,8 +619,8 @@ The fixtures, all invented:
   - the fingerprint of a known snippet, and that moving it keeps the fingerprint;
   - `add-round` dropping a repeat from the store and, with Redmine down, from the outbox, and
     `send` dropping it against the store later;
-  - `add-round` refusing a commit whose `pytest` check is pending or failed, against a recorded
-    `gh pr checks` answer;
+  - `add-round` refusing a commit whose review file's `ci.state` is `failure` or `none`, and
+    running a fake `scripts/assess` when there's no review file;
   - `send` deleting a file only after the read-back, and keeping it on a refused connection;
   - sending a round twice making the same requests and leaving the outbox empty;
   - parsing each `outcomes.md` line form in §3.4, and refusing one that names an unknown outcome.
@@ -631,7 +639,7 @@ The fixtures, all invented:
 | G3 | No credential in a repo | `findings.py` uses the Keychain key; no CI reviewer, so no CI secret (§3.9) |
 | G4 | Low operational burden | A table in the Redmine we already run |
 | H1 | Scriptable from the command line | `findings.py`, `sql.rb` and `scripts/eval` |
-| H6 | Validation hooks | The codify rule turns real findings into checkers `assess` runs in CI |
+| H6 | Validation hooks | The codify rule turns real findings into checkers `assess` runs in each round |
 | I1, I3 | Free; nothing behind a paid tier | The reviewer and the eval run on the subscription; no paid API tokens |
 
 <a id="work-breakdown"></a>
@@ -654,12 +662,13 @@ The issues already open change to fit:
 
 | Issue | Change |
 |---|---|
-| #104 | `REVIEW.md` gives each finding a severity and a visibility as well as a tag and a rule, and the reviewer returns them; `gh pc` stops requesting Copilot |
+| #104 | `REVIEW.md` gives each finding a severity and a visibility as well as a tag and a rule, and the reviewer returns them |
 | #106 | The outcome line gains a third part, `visibility/severity`, and is a line in `outcomes.md`, never a PR reply (§3.4) |
-| #107 | The no-repeat rule reads fingerprints from the store; each round reviews a pushed commit once its `pytest` check passes; the step-back is round 3, in the report and the PR body, and rounds stop on the open-silent count (§3.5) |
+| #107 | The no-repeat rule reads fingerprints from the store; each round reviews a pushed commit and counts once its assess passes; the step-back is round 3, in the report and the PR body, and rounds stop on the open-to-fix count (§3.5) |
 | #108 | `findings` reads `rules.json`, not PR threads (§3.7) |
 | #110 | The round report shows the round's findings and outcome lines; at the end of the reviewer's turn Claude runs `findings.py send` and updates the PR body, the two Boundaries exceptions (§3.3) |
-| #111 | The Done table is the plugin's second table, after W1, and convergence adds its Done rows to the open-silent count (§3.5) |
+| #111 | The Done table is the plugin's second table, after W1, and convergence adds its Done rows to the open-to-fix count (§3.5) |
 
-`CLAUDE.md`'s review line, `docs/failure-modes.md`'s weighting, and architecture §6.1, §6.2, §9 and
-§10 change with W1 and W4, when the plugin and the writer exist, not in this PR.
+#104 changes `CLAUDE.md`'s review line, `docs/failure-modes.md`'s weighting and review line, and
+architecture §6.1, §6.2 and §7.2, for the reviewer and its review file. Architecture §9 and §10
+change with W1 and W4, when the plugin and the writer exist.

@@ -23,9 +23,9 @@ A cell names the line or test that answers it, or says "open" for Peter to decid
 
 A review fix re-reads the whole table. Five of PR #110's findings came from fixes that broke another row. Prefer a refusal that names its fix to automatic recovery: recovery code is new surface, and three findings came from it.
 
-Only a silent failure needs a fix or an *Open* row. That means one that leaves no trace and loses work, files, commits or the tracker's state. A refusal or an error the user sees is already handled.
+Only a silent failure or a crash needs a fix or an *Open* row. A silent failure is one that leaves no trace and loses work, files, commits or the tracker's state. A refusal or an error message the user sees is already handled. A crash, an unhandled error with a traceback, isn't: it doesn't say what it left behind or whether a rerun is safe, so it needs a fix even when it's rare.
 
-Before Go, `/code-review low` runs on the uncommitted changes. Each commit Ship pushes then gets a review round, `/code-review high` on the branch's whole diff once its `assess` check passes, and the PR body says it ran.
+Before Go, `/code-review low` runs on the uncommitted changes, and before the first Go the submission report shows its fixes, the whole diff, `commit.txt` and `pr-body.md` in the Review tab. After each push, `pr` starts Claude's review of the branch's whole diff under `REVIEW.md`, review fixes included, in the background, unless that commit has a review file already; so a `pr` that stopped after its push, or a review that failed, is reviewed by the next `pr`. Beside its two passes it runs `scripts/assess`, the round's CI, in a worktree of the commit, and writes `.tmp/<n>/review/<commit>.json`, with assess's result under `ci`. That's the commit's review round. It's complete only once assess has passed, and the PR body's Testing names the last round.
 
 ## Redmine drops a status it won't allow
 

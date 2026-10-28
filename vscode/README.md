@@ -62,9 +62,9 @@ Source Control's does on a Git refresh.
   again run `pr` again, which updates the PR body, and leave Redmine as it is once the PR is linked.
 - **The Review tab:** when an issue's `.tmp/<n>/report.html` is saved, it opens as a
   `Review #<n>` tab in the leftmost group, or refreshes the one already open, so every round of an
-  issue shows in the same tab. Close the tab and **Plan: Show report**, in report.html's title
-  bar, opens it again. The bar above the report names the round and
-  when the report was written. Its one button is Go, which runs Go on the issue's round files, and
+  issue shows in the same tab, the submission before the first Go included. Close the tab and
+  **Plan: Show report**, in report.html's title bar, opens it again. The bar above the report
+  names the round, or *submission* for `plan-round` 0, and when the report was written. Its one button is Go, which runs Go on the issue's round files, and
   then Ship, which runs Ship. While the button is Ship, what Go staged shows below the report: the
   commit message, then each file's diff in a section of its own that opens on a click. A click on a report that was rewritten after it was shown runs
   nothing and shows the new report. A new report after Go puts the button back to Go. Claude

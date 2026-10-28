@@ -127,7 +127,9 @@ client of one of them:
 
 - **The extension** shows Next up in a panel, and holds the Start, Open, Go, Ship and Done
   buttons ([`vscode/README.md`](../vscode/README.md)).
-- **`pr`** commits, pushes, opens or updates the PR, and posts review replies. After a merge it
+- **`pr`** commits, pushes, opens or updates the PR, and posts review replies. After a push, it
+  has Claude review the branch under `REVIEW.md` (`review.py`), and writes the findings to
+  `.tmp/<n>/review/<commit>.json`, unless that commit has one already. Nothing is posted. After a merge it
   sends only the replies and the PR body, and leaves the cleanup to Done. It and its Python scripts live in
   `.claude/skills/gh-issues/scripts/`, with their tests. `~/.claude/skills/gh-issues` links to the
   main checkout's copy, so every repo uses the one skill and `~/.local/bin/pr` reaches it.
@@ -161,7 +163,10 @@ network or a repo.
 
 `gh` is already authenticated, so nothing holds a GitHub token ([`G3`](requirements.md)); a library
 such as Octokit would need one. Outside the repo, `pr` writes to GitHub through `gh` and to Redmine
-through the REST API, with the same Keychain keys.
+through the REST API, with the same Keychain keys, and starts the review, which runs `claude -p`
+with read-only tools confined to a worktree of the commit (`--restricted`) and no `ANTHROPIC_`
+variable, so it uses the CLI's own login and endpoint; `scripts/assess` runs in that worktree
+too.
 
 <a id="platform"></a>
 ### 6.3 Platform
@@ -175,7 +180,7 @@ through the REST API, with the same Keychain keys.
 | Editor integration | A VS Code extension in JavaScript, tested with `node --test` | [`vscode/README.md`](../vscode/README.md) |
 | Pull requests | Subprocess to `gh` | Requirement [`G3`](requirements.md) |
 | Keys | The macOS Keychain | Requirement [`G3`](requirements.md) |
-| Checks | `scripts/assess`, run by GitHub Actions as `main`'s one required check | [`checks/README.md`](../checks/README.md) |
+| Checks | `scripts/assess`, run by each review round as its CI, and by GitHub Actions on every PR and push to `main` | [`checks/README.md`](../checks/README.md) |
 
 <a id="operations"></a>
 ## 7. Operations
@@ -236,9 +241,13 @@ refuses a change made since, rather than staging again. Go and Ship refuse a wor
 unsaved edits, which neither the stage nor the commit would hold.
 
 Before the commit message is written, `scripts/assess` runs every check. The PR's `assess` check
-runs it again; `main` requires that check and every review thread resolved before a merge. Before
-Go, `/code-review low` runs on the uncommitted changes. Each commit Ship pushes gets a review round
-once its `assess` check passes, and Claude answers the round in the Review tab
+runs it again on GitHub on every PR and push to `main`, which is what Dependabot's PRs rely on; a
+round doesn't read it. `main`'s branch protection requires every review thread resolved before a
+merge. Before Go, `/code-review low` runs on the uncommitted changes, and before the first Go
+Claude writes the submission report, its fixes, the whole diff, `commit.txt` and `pr-body.md`,
+for the Review tab.
+Each commit Ship pushes gets a review round from `pr`'s `review.py`, which runs `scripts/assess`
+itself, and Claude answers the round in the Review tab
 ([`vscode/README.md`](../vscode/README.md)).
 
 `pr` commits with `commit.txt`, pushes, and opens the PR or replaces its body. It then posts each
@@ -249,6 +258,28 @@ PR held the Done ticks is named as no longer sent, and left where it is. After t
 issue's `Pull requests` field links the PR, with a journal note. A `pr` whose push adds commits
 to an open PR also asks Copilot to review it again, for the commits that answer a review; `gh pc` asks for a new PR.
 `gh pr edit --help` (2.102.0) says `--add-reviewer` adds or re-requests a reviewer.
+
+After each push, including the one that opens the PR, `pr` starts `review.py --detach` when the
+head has no review file yet, so a `pr` stopped after its push, or a failed review, is reviewed on
+the rerun. It runs in a session of its own, logging to `.tmp/<n>/review/<commit>.log`, so `pr`
+exits at once, Ship links the PR in Redmine without waiting, and closing Ship's terminal doesn't
+stop it; `kill` on the pid it prints does. It runs two `claude -p` passes on the branch's whole
+diff against its base, less `REVIEW.md`'s Skipped paths: a review under `REVIEW.md`, and a
+security pass. `REVIEW.md` is read from the base, so a branch can't rewrite the rules it's
+reviewed under; until the base has one, the commit's copy is used and the summary says so. Beside them it runs `scripts/assess`, the round's CI, and records its result under
+`ci`; the round is complete only once that's `success`. Assess and both passes run in a worktree
+of the commit outside the repo, removed when the review ends, so they see the commit as pushed and
+the passes' file tools read only that. Each pass is held to a JSON schema of a
+finding's fields ([design 0005 §3.1](design/0005-review-findings.md#schema)). It runs at
+`--effort high` when the diff touches one of `REVIEW.md`'s Deep paths or Controls, and at
+`medium` otherwise. The Controls are the checks a round runs under, such as `REVIEW.md`,
+`scripts/assess`, `checks/` and the hooks; the ones a diff changes are named to both passes,
+listed under `controls` and in the summary.
+The findings go to `.tmp/<n>/review/<commit>.json` and to the terminal, with the rules proposed
+and the findings dropped, in the log. None is posted to the PR or
+written to Redmine. A review that fails or times out, or an assess that times out, says so in its log and writes no
+review file,
+and `pr` has already succeeded.
 
 <a id="finish"></a>
 ### 7.3 Finish
