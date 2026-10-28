@@ -4,6 +4,7 @@ The suites here are stubs, `python -c` one-liners, so the test never runs the re
 itself; the checkers are stub executables in a temporary `checks/`.
 """
 
+import ast
 import importlib.machinery
 import importlib.util
 import os
@@ -194,6 +195,10 @@ def test_refuses_a_python_older_than_3_14(tmp_path, capsys, monkeypatch):
     out = capsys.readouterr().out
     assert out.startswith("assess: needs Python 3.14; this is ")
     assert "PASS" not in out
+
+
+def test_an_older_python_can_parse_it_and_reach_that_refusal():
+    ast.parse(SCRIPT.read_text(encoding="utf-8"), feature_version=(3, 10))
 
 
 def test_script_is_executable_and_lists_repo_rules():

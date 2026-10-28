@@ -50,7 +50,7 @@ def rule(checker: Path) -> str | None:
     """The rule named by the checker's first comment line, `# rule: <name>`, past any shebang."""
     try:
         lines = checker.read_text(encoding="utf-8").splitlines()
-    except OSError, UnicodeDecodeError:
+    except (OSError, UnicodeDecodeError):
         return None
     if lines and lines[0].startswith("#!"):
         lines = lines[1:]

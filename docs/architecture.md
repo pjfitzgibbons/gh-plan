@@ -242,9 +242,10 @@ unsaved edits, which neither the stage nor the commit would hold.
 
 Before the commit message is written, `scripts/assess` runs every check. The PR's `assess` check
 runs it again on GitHub on every PR and push to `main`, which is what Dependabot's PRs rely on; a
-round doesn't read it. Before Go, `/code-review low` runs on the uncommitted changes, and before
-the first Go Claude writes the submission report, its fixes, the whole diff, `commit.txt` and
-`pr-body.md`, for the Review tab.
+round doesn't read it. `main`'s branch protection requires every review thread resolved before a
+merge. Before Go, `/code-review low` runs on the uncommitted changes, and before the first Go
+Claude writes the submission report, its fixes, the whole diff, `commit.txt` and `pr-body.md`,
+for the Review tab.
 Each commit Ship pushes gets a review round from `pr`'s `review.py`, which runs `scripts/assess`
 itself, and Claude answers the round in the Review tab
 ([`vscode/README.md`](../vscode/README.md)).

@@ -2569,8 +2569,10 @@ class Review(unittest.TestCase):
             running = pool.submit(
                 runner, ["sh", "-c", "sleep 30 & exit 0"], input=None, env=None, timeout=60
             )
-            while not runner.running:
+            deadline = time.monotonic() + 10
+            while not runner.running and not running.done() and time.monotonic() < deadline:
                 time.sleep(0.05)
+            self.assertTrue(runner.running, running.exception() if running.done() else "no start")
             time.sleep(0.5)
             started = time.monotonic()
             runner.kill()
@@ -2582,8 +2584,10 @@ class Review(unittest.TestCase):
         runner = review.Runner()
         with concurrent.futures.ThreadPoolExecutor(1) as pool:
             running = pool.submit(runner, ["sleep", "30"], input=None, env=None, timeout=60)
-            while not runner.running:
+            deadline = time.monotonic() + 10
+            while not runner.running and not running.done() and time.monotonic() < deadline:
                 time.sleep(0.05)
+            self.assertTrue(runner.running, running.exception() if running.done() else "no start")
             started = time.monotonic()
             runner.kill()
             self.assertEqual(running.result().returncode, -9)
@@ -2631,6 +2635,28 @@ class Review(unittest.TestCase):
                 self.assertIn(
                     "review: stopped, so nothing was written; run pr again", err.getvalue()
                 )
+
+    def test_a_python_older_than_assess_needs_starts_nothing(self):
+        with (
+            mock.patch.object(review.sys, "version_info", (3, 13, 9)),
+            mock.patch.object(review, "start") as started,
+            mock.patch("sys.stderr", new_callable=io.StringIO) as err,
+        ):
+            self.assertEqual(review.main(["9"]), 2)
+        started.assert_not_called()
+        self.assertIn("review: needs Python 3.14, as scripts/assess does", err.getvalue())
+
+    def test_a_start_that_fails_ends_with_the_retry_line_not_a_traceback(self):
+        failed = subprocess.CalledProcessError(128, ["git", "rev-parse"], stderr="not a repo\n")
+        with (
+            mock.patch.object(review, "git", side_effect=failed),
+            mock.patch("sys.stderr", new_callable=io.StringIO) as err,
+        ):
+            self.assertEqual(review.main(["9"]), 1)
+        self.assertIn(
+            "review: git rev-parse failed: not a repo; nothing written; run pr again",
+            err.getvalue(),
+        )
 
     def assess(self, script, timeout=60):
         """review.assess on a tree whose scripts/assess is the sh script given; None for none."""
@@ -2689,10 +2715,16 @@ class Review(unittest.TestCase):
             review.assess(tree, 60, review.Runner())
 
     def test_an_assess_that_cant_run_its_checks_here_writes_nothing(self):
-        with self.assertRaisesRegex(
-            review.Failed, "couldn't run its checks: assess: needs Python 3.14; this is 3.9"
+        for script, why in (
+            (
+                "echo 'assess: needs Python 3.14; this is 3.13.3'\nexit 2\n",
+                "assess: needs Python 3.14",
+            ),
+            ("echo 'no python3' >&2\nexit 2\n", "no python3"),
+            ("exit 2\n", "it said nothing"),
         ):
-            self.assess("echo 'assess: needs Python 3.14; this is 3.9'\nexit 2\n")
+            with self.subTest(why), self.assertRaisesRegex(review.Failed, f"checks: {why}"):
+                self.assess(script)
 
     def test_a_commit_with_no_assess_is_none(self):
         got, _ = self.assess(None)
@@ -2812,9 +2844,18 @@ class Review(unittest.TestCase):
             ):
                 self.assertEqual(review.start(9, False), (0, "abc1234def"))
         self.assertIn(f"abc1234 is already being reviewed, by pid {pid}", out.getvalue())
+        claim = review.claim
+
+        def held(lock):
+            # The lock this process now holds, closed once the test is done with it.
+            fd = claim(lock)
+            self.addCleanup(os.close, fd)
+            return fd
+
         with (
             mock.patch.object(review, "git", side_effect=heads),
             mock.patch.object(review.atexit, "register") as registered,
+            mock.patch.object(review, "claim", held),
         ):
             self.assertEqual(review.start(9, False), (None, "abc1234def"))
         self.assertEqual(pidfile.read_text(), f"{os.getpid()}\n")

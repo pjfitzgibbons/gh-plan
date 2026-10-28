@@ -3,7 +3,7 @@
 
     review.py [N] [--base refs/remotes/origin/main] [--timeout 900] [--assess-timeout 1200] [--detach]
 
-N defaults to the issue number in the branch name.
+N defaults to the issue number in the branch name. It needs Python 3.14, as scripts/assess does.
 
 The review reads the branch's whole diff against its merge base with --base, plus the issue's
 description and the docs CLAUDE.md says to read. Two `claude -p` passes run on it at once: a
@@ -69,6 +69,8 @@ NITS = 3
 # Left out of assess's environment: Ship's PR_STAGED, which pr.sh's tests mustn't inherit, and the
 # repo's venv, which uv would warn about and not use.
 UNSET = {"PR_STAGED", "VIRTUAL_ENV"}
+# scripts/assess's, the repo's pinned Python.
+PYTHON = (3, 14)
 
 
 def billed(name: str) -> bool:
@@ -200,7 +202,7 @@ def instructions(base: str, root: Path, commit: str = "HEAD") -> tuple[str, str]
             return git("show", f"{ref}:REVIEW.md", cwd=root), source
         except subprocess.CalledProcessError:
             continue
-    raise Failed(f"there's no REVIEW.md on {base} or at HEAD, so nothing was reviewed")
+    raise Failed(f"there's no REVIEW.md on {base} or at {commit[:7]}, so nothing was reviewed")
 
 
 def git(*args: str, cwd: Path | None = None) -> str:
@@ -453,7 +455,7 @@ def remove(root: Path, tree: Path) -> None:
 def assess(tree: Path, timeout: int, runner) -> dict:
     """scripts/assess in tree, as the round's CI: its state, its summary line and each check's
     result, from the PASS and FAIL lines under it. A timeout, an assess that can't start, or its
-    exit 2, for a machine it can't run on, is Failed, so nothing is written and the next pr runs
+    exit 2, for a Python it can't run on, is Failed, so nothing is written and the next pr runs
     it again."""
     script = tree / "scripts" / "assess"
     if not script.exists():
@@ -476,10 +478,11 @@ def assess(tree: Path, timeout: int, runner) -> dict:
                 {"name": found[2], "conclusion": "success" if found[1] == "PASS" else "failure"}
             )
     if done.returncode == 2:
-        # assess couldn't run its checks here, such as on too old a Python: nothing about the
-        # commit, so nothing is written and the next pr runs it again.
-        why = done.stdout.strip().splitlines()[-1:] or [done.stderr.strip()]
-        raise Failed(f"scripts/assess couldn't run its checks: {why[0]}")
+        # assess runs under the python3 on PATH, which can be older than the one running this.
+        # Nothing about the commit, so nothing is written and the next pr runs it again.
+        sys.stdout.write(done.stdout + done.stderr)
+        why = (done.stdout.strip() or done.stderr.strip() or "it said nothing").splitlines()[-1]
+        raise Failed(f"scripts/assess couldn't run its checks: {why}")
     state = "success" if done.returncode == 0 else "failure"
     if state == "failure":
         # What failed, in the log, as assess printed it.
@@ -728,15 +731,25 @@ def main(argv: list[str] | None = None) -> int:
             )
             return 2
         n = int(found.group(1))
-    code, commit = start(n, a.detach)
-    if code is not None:
-        return code
-    # kill <pid>, or a hangup when the terminal of a review run by hand closes, ends the review as
-    # a Ctrl-C does: each pass runs in its own session, which the signal doesn't reach.
-    for sig in (signal.SIGTERM, signal.SIGHUP):
-        signal.signal(sig, terminated)
+    if sys.version_info < PYTHON:
+        # On an older one, scripts/assess doesn't parse, and the round would record that as the
+        # commit failing CI.
+        print(
+            f"review: needs Python {'.'.join(map(str, PYTHON))}, as scripts/assess does;"
+            f" this is {sys.version.split()[0]}",
+            file=sys.stderr,
+        )
+        return 2
     again = f"run pr again, or review.py {n} --base {a.base}, to retry"
     try:
+        code, commit = start(n, a.detach)
+        if code is not None:
+            return code
+        # kill <pid>, or a hangup when the terminal of a review run by hand closes, ends the
+        # review as a Ctrl-C does: each pass runs in its own session, which the signal doesn't
+        # reach.
+        for sig in (signal.SIGTERM, signal.SIGHUP):
+            signal.signal(sig, terminated)
         review(n, a.base, a.timeout, assess_timeout=a.assess_timeout, commit=commit)
     except (Failed, OSError) as e:
         print(f"review: {e}; nothing written; {again}", file=sys.stderr)

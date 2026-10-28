@@ -43,6 +43,8 @@ set -eu
 # where it stopped. It needs Python 3.10; /usr/bin/python3 is 3.9.
 scripts=$(dirname "$(realpath "$0")")
 py310() { python3 -c 'import sys; sys.exit(sys.version_info < (3, 10))'; }
+# The review runs scripts/assess, which needs the repo's Python, 3.14.
+py314() { python3 -c 'import sys; sys.exit(sys.version_info < (3, 14))'; }
 send_round() {
   [ ! -f ".tmp/$n/issue.md" ] ||
     echo "pr: .tmp/$n/issue.md is no longer sent; tick the issue's Done list in the PR body's ## Done section, and delete the file" >&2
@@ -242,8 +244,8 @@ if [ ! -f ".tmp/$n/review/$(git rev-parse HEAD).json" ]; then
   # never the working tree's, so deleting it on the branch doesn't turn the review off.
   if ! git cat-file -e "refs/remotes/origin/$base:REVIEW.md" 2>/dev/null && ! git cat-file -e HEAD:REVIEW.md 2>/dev/null; then
     echo "pr: no REVIEW.md on origin/$base or at HEAD, so no review"
-  elif ! py310; then
-    echo "pr: python3 is older than 3.10, so no review" >&2
+  elif ! py314; then
+    echo "pr: python3 is older than 3.14, so no review" >&2
   elif ! python3 "$scripts/review.py" "$n" --base "refs/remotes/origin/$base" --detach; then
     echo "pr: the review didn't start, so .tmp/$n/review/ has nothing for this commit; retry with: python3 $scripts/review.py $n --base refs/remotes/origin/$base" >&2
   fi
