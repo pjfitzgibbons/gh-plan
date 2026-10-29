@@ -44,12 +44,14 @@ settings: what this repo needs is here or in `.claude/`.
   catch the major issues before they're committed. Before the first Go, the submission report,
   `.tmp/<n>/report.html`, shows its fixes, the whole diff, `commit.txt` and `pr-body.md` in the
   `Review #<n>` tab.
-- **A review round:** after each push, `pr` starts Claude's review of the branch's whole diff
-  under the base's `REVIEW.md` in the background, unless a review file or a Redmine round names that commit. Beside the passes it
+- **A review round:** after each push, `pr` starts Claude's review round `k` under the base's
+  `REVIEW.md` in the background, unless a round file or a Redmine round names that commit. Round 1
+  reviews the branch's whole diff; later rounds check each fixed finding in its context
+  ([design 0005 §3.5](docs/design/0005-review-findings.md#rounds)). Beside the passes it
   runs `scripts/assess`, the round's CI, in a worktree of the commit, and writes
-  `.tmp/<n>/review/<commit>.json`, with assess's result under `ci`, which `findings.py send`
-  records in Redmine as the round. `pr` sends `.tmp/<n>/findings/outcomes.md`, the outcome lines
-  accepted at Go, after its push. Claude
+  `.tmp/<n>/<k>-findings.md`, with assess's result under `ci`, which `findings.py send`
+  records in Redmine as the round. `pr` sends `.tmp/<n>/<k>-outcomes.md`, the outcome lines
+  accepted at Go, after its push. Round files stay until Done finds them all in Redmine. Claude
   answers it in `.tmp/<n>/report.html`, which opens as the `Review #<n>` tab with Go and Ship. The
   round is complete only once assess has passed, and the PR body's Testing names the last round.
 - **Python:** `python3` on PATH. `/usr/bin/python3` is 3.9 and can't run the skill scripts.
