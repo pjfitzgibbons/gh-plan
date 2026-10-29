@@ -19,9 +19,12 @@
 #           .tmp/N/pr-body.md, then opens the PR in the GitHub Pull Requests extension
 #   replies when .tmp/N/replies/ holds <comment id>.md files: posts each to its review thread,
 #           resolves the thread and deletes the file (pr_threads.py --post)
-#   review  when HEAD has no .tmp/N/review/<commit>.json and origin's base or HEAD has REVIEW.md: starts Claude's
-#           review of the branch's whole diff in the background, which runs scripts/assess and writes
-#           that file (review.py --detach), and logs to .tmp/N/review/<commit>.log. pr doesn't wait for
+#   findings when .tmp/N/review/ holds review files or .tmp/N/findings/outcomes.md exists: sends
+#           them to Redmine and deletes each once it reads back (findings.py send --outcomes). One
+#           not recorded is named and kept, the review below still starts, and pr exits 1
+#   review  when neither .tmp/N/review/<commit>.json nor a Redmine round names HEAD, and origin's base or HEAD has REVIEW.md: starts Claude's
+#           review of the branch's whole diff in the background, which runs scripts/assess, writes
+#           that file and sends it to Redmine (review.py --detach), and logs to .tmp/N/review/<commit>.log. pr doesn't wait for
 #           it, so Ship links the PR at once. One that fails says so in its log, and the next pr,
 #           like the rerun of a pr stopped after its push, reviews the commit again
 #
@@ -54,6 +57,18 @@ send_round() {
   number=$(gh pr view "$branch" --json number --jq .number)
   python3 "$scripts/pr_threads.py" "$number" --post ".tmp/$n/replies"
 }
+
+# The review files a review left unsent and outcomes.md, after the push, so a review and its
+# outcomes reach Redmine (findings.py send --outcomes). A file stays until Redmine reads it back,
+# so a send that fails is named, and the next pr sends it again; the review still starts.
+send_findings() {
+  [ -f ".tmp/$n/findings/outcomes.md" ] || ls ".tmp/$n/review/"*.json > /dev/null 2>&1 || return 0
+  py310 ||
+    { echo "pr: .tmp/$n/ has findings to send, and python3 is older than 3.10" >&2; unsent=1; return 0; }
+  python3 "$scripts/findings.py" send "$n" --outcomes ||
+    { echo "pr: the findings above weren't all recorded; fix what findings.py says, then pr $n" >&2; unsent=1; }
+}
+unsent=0
 
 finish=0
 [ "${1:-}" != done ] || { finish=1; shift; }
@@ -89,13 +104,14 @@ case $state in
       exit 2
     fi
     send_round
+    send_findings
     if [ -f ".tmp/$n/pr-body.md" ]; then
       echo "pr: updating the PR body"
       # The title stays the squash commit's subject, whatever the body now says.
       GHBODY_KEEP_TITLE=1 gh pb "$n"
     fi
     echo "pr: the PR for $branch has merged; press Done on #$n in Next up to clean up"
-    exit 0 ;;
+    exit "$unsent" ;;
 esac
 
 # Redmine scans every branch of the shared .git, so a branch commit's fixes #<n> closes the issue
@@ -223,6 +239,7 @@ else
 fi
 
 send_round
+send_findings
 
 # The PR in the GitHub Pull Requests extension's view, not github.com: only the extension can
 # offer to delete the local branch when the PR merges.
@@ -236,10 +253,25 @@ open "vscode://github.vscode-pull-request-github/open-pull-request-webview?uri=$
 
 # The review of what this push brought (review.py), last, and in the background, so a review that
 # fails or runs long, or the assess it runs, holds up neither the PR, the replies nor Ship's link in
-# Redmine. A head with no review file has a commit to review: one this push brought, opening the PR
-# included, or one a pr that stopped after its push, or a failed review, left. It writes
-# .tmp/N/review/<commit>.json and posts nothing.
-if [ ! -f ".tmp/$n/review/$(git rev-parse HEAD).json" ]; then
+# Redmine. A head with neither a review file nor a round in Redmine has a commit to review: one this
+# push brought, opening the PR included, or one a pr that stopped after its push, or a failed
+# review, left. It writes .tmp/N/review/<commit>.json, sends it to Redmine, and posts nothing.
+# When Redmine can't say, the head is reviewed, and review.py checks again once it holds the lock.
+head=$(git rev-parse HEAD)
+if [ -f ".tmp/$n/review/$head.json" ]; then
+  review=0
+elif ! py310; then
+  review=1
+elif python3 "$scripts/findings.py" reviewed "$n" "$head"; then
+  echo "pr: Redmine has a review of $(git rev-parse --short HEAD), so no review"
+  review=0
+elif [ $? -eq 2 ]; then
+  echo "pr: Redmine can't say whether $(git rev-parse --short HEAD) was reviewed, so reviewing it" >&2
+  review=1
+else
+  review=1
+fi
+if [ "$review" = 1 ]; then
   # REVIEW.md as the base has it, or the commit's until the base has one, as review.py reads it:
   # never the working tree's, so deleting it on the branch doesn't turn the review off.
   if ! git cat-file -e "refs/remotes/origin/$base:REVIEW.md" 2>/dev/null && ! git cat-file -e HEAD:REVIEW.md 2>/dev/null; then
@@ -250,3 +282,4 @@ if [ ! -f ".tmp/$n/review/$(git rev-parse HEAD).json" ]; then
     echo "pr: the review didn't start, so .tmp/$n/review/ has nothing for this commit; retry with: python3 $scripts/review.py $n --base refs/remotes/origin/$base" >&2
   fi
 fi
+exit "$unsent"

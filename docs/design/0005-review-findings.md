@@ -75,8 +75,7 @@ Non-goals:
 <a id="schema"></a>
 ### 3.1 The plugin's schema
 
-The plugin adds one table, `review_findings`, and a project module of the same name. One row is
-one finding in one round. #111 adds a second table to the same plugin, for the issue's Done lines.
+The plugin adds two tables, `review_findings` and `review_rounds`, and a project module named `review_findings`. One `review_findings` row is one finding in one round; one `review_rounds` row is one reviewed commit (below). #111 adds another table to the same plugin, for the issue's Done lines.
 
 | Field | Type | Allowed values | What it holds |
 |---|---|---|---|
@@ -156,12 +155,14 @@ Round 6 records it with every field from `issue_id` to `body` and no `outcome`. 
 `outcomes.md`, `finding/v1:3f9c0a7e5b21d4c8 · Fixed · ignored-file-overwrite · silent/files`,
 records the outcome and the confirmation when Ship sends it (§3.4). If round 7 finds the overwrite gone, it sets `verified_round` to 7.
 
+**Rounds.** A `review_rounds` row records one review of one commit, so a round with no findings, or one whose `ci` didn't pass, still leaves a trace. Its fields are the review file's: `issue_id`, `commit` (a full SHA), `round`, `ci` (`success`, `failure` or `none`), `ci_summary`, `base`, `effort` (`medium` or `high`), `review_md` (`base` or `commit`), `summary`, and the lists `controls`, `dropped` and `new_rules`. `round` is set only when `ci` is `success`, and it's required then. Two unique indexes, `(issue_id, commit)` and `(issue_id, round)`, mean a commit is reviewed once and a round number is used once. A round's number never changes once it's recorded. Rows recorded before `review_rounds` existed have no round row, so `findings.py` numbers the next round after the highest round in either table.
+
 **The plugin's API.** Each action has `accept_api_auth`, so `pr` reaches it with the Keychain key.
 
 | Route | Does | Permission |
 |---|---|---|
-| `GET /issues/:issue_id/review_findings.json` | The issue's findings, every round | `view_review_findings` |
-| `PUT /issues/:issue_id/review_findings.json` | Upserts a list of rows by `(fingerprint, round)`, in one transaction. A field the request leaves out is left as it is. A row a person has confirmed changes only from an outcome line (`"confirm": true`); a round line leaves every field of it as it is. A change to a confirmed row adds a journal note to the issue, with the user and the old and new values | `manage_review_findings` |
+| `GET /issues/:issue_id/review_findings.json` | The issue's findings, every round, under `review_findings`, and its rounds in order under `review_rounds` | `view_review_findings` |
+| `PUT /issues/:issue_id/review_findings.json` | Upserts a list of rows by `(fingerprint, round)`, and the body's `review_round`, if any, by its commit, in one transaction. A round whose number is already another commit's, or a commit whose number would change, is refused with 422. A field the request leaves out is left as it is. A row a person has confirmed changes only from an outcome line (`"confirm": true`); a round line leaves every field of it as it is. A change to a confirmed row adds a journal note to the issue, with the user and the old and new values | `manage_review_findings` |
 | `GET /projects/:project_id/review_findings/rules.json` | Per rule: real and noise counts over confirmed findings, each fingerprint counted once by its latest round (§3.7) | `view_review_findings` |
 | `GET /projects/:project_id/review_findings/rules/:rule_id.json` | How many findings have the rule, and how many of them are confirmed, over the same issues as `rules.json` | `view_review_findings` |
 | `PUT /projects/:project_id/review_findings/rules/:rule_id.json` | Renames the rule to the body's `new_rule_id` on every finding in the project and its sub-projects, in one transaction, with a journal note for each confirmed one (§3.10). A finding on an issue the user can't see or can't manage findings in refuses the whole rename | `manage_review_findings` |
@@ -221,62 +222,42 @@ reviewer's turn starts from a commit Ship pushed and ends with the round's findi
 the PR body updated. The author's turn answers them and ends when Ship pushes the next commit. No
 finding is posted to the PR.
 
-Claude's one Redmine write is the reviewer's: `findings.py send` writes the round's findings as
-unconfirmed rows. An outcome, rule, severity or visibility is recorded only from `outcomes.md`,
-which Ship's `pr` sends after a person reviews it at Go. Both pass through an outbox in the issue's
-`.tmp/<n>/` folder, which holds a file until Redmine has it:
+Claude's one Redmine write is the reviewer's: `findings.py send` records the round and its findings as unconfirmed rows. An outcome, rule, severity or visibility is recorded only from `outcomes.md`, which Ship's `pr` sends after a person reviews it at Go. Both wait in the issue's `.tmp/<n>/` folder until Redmine has them, and each file is deleted only once Redmine reads it back:
 
 ```
-.tmp/<n>/findings/
-  round-<k>.jsonl     one finding per line, as the review produced it, with no outcome field;
-                      then one verdict line per earlier fixed finding the round found gone
-  outcomes.md         one line per finding: its fingerprint, then its outcome line (§3.4)
+.tmp/<n>/review/<commit>.json   the review of one commit, as review.py wrote it: its findings,
+                                its verdicts on earlier fixed findings, and ci
+.tmp/<n>/findings/outcomes.md   one line per finding: its fingerprint, then its outcome line (§3.4)
 ```
 
 Every round reviews a commit Ship has pushed, so the round's `commit` is on GitHub, and `scripts/assess`, which
 `review.py` runs on that commit, throttles the rounds. There's no review before a push: round 1 reviews the
 commit the first Ship pushed when it opened the PR. The steps:
 
-1. **The reviewer's turn.** Ship has pushed commit `C`, and `pr` starts `review.py`, which runs
-   the two passes and `scripts/assess` in a worktree of `C` and writes `.tmp/<n>/review/<C>.json`
-   with assess's result under `ci`. The round counts only once assess has passed at `C`:
-   `findings.py add-round <n>` reads `ci` from the review file, or runs `scripts/assess` in a
-   worktree of `C` itself when there's no review file, and refuses a commit whose assess failed.
-   The review, `review.py`'s passes or `/code-review high` in the session, reads what §3.5 lists
-   at `C` and returns its findings. `add-round` gives each one a fingerprint at `C`, applies the no-repeat rule (§3.5),
-   and writes `round-<k>.jsonl` with `commit` set to `C`. For each earlier `fixed` finding the
-   reviewer found gone, it adds a line with only that row's `fingerprint`, `round` and
-   `verified_round`. Then `findings.py send <n>` records the round, and Claude updates the PR body
-   with `gh pb`, its Done list rendered as it stands (#111). The `send` and the `gh pb` are the two
-   writes outside a button that #110 adds to `CLAUDE.md`'s Boundaries, and both wait for it.
+1. **The reviewer's turn.** Ship has pushed commit `C`, and `pr` starts `review.py`, unless a review file or a Redmine round already names `C`. It runs the two passes and `scripts/assess` in a worktree of `C`, reading what §3.5 lists, and writes `.tmp/<n>/review/<C>.json`, with assess's result under `ci` and a `gone` or `still-there` verdict for each earlier `fixed` finding not yet verified. Then it runs `findings.py send <n>` to record the review as a round, and the PR body is updated with `gh pb`, its Done list rendered as it stands (#111). The `send` and the `gh pb` are the two writes outside a button in `CLAUDE.md`'s Boundaries.
 2. **The author's turn.** Claude fixes the findings to fix (§3.2), drafts an outcome line
    for every finding in `outcomes.md`, and writes the round report (#110): each finding with
    its fix or the note refuting it, the open-to-fix count, `commit.txt` and `pr-body.md`.
 3. **A person reviews the report and presses Go.** The Review tab links
    `.tmp/<n>/findings/outcomes.md`, as it links `commit.txt` and `pr-body.md`, and shows the staged
    diff after Go. Ship refuses an `outcomes.md`, `commit.txt` or `pr-body.md` changed since Go.
-4. **Ship runs `pr`.** `pr` commits and pushes `C+1`, the next round's commit, updates the PR, then
-   calls `findings.py send <n>` for `outcomes.md`, and for any round file a reviewer's `send`
-   left behind.
+4. **Ship runs `pr`.** `pr` commits and pushes `C+1`, the next round's commit, and updates the PR. Then it runs `findings.py send <n> --outcomes` for `outcomes.md` and any review file a reviewer's `send` left behind, and starts the review of `C+1`.
 
-`findings.py send <n>` sends whatever the outbox holds:
+`findings.py send <n>` sends each review file not yet in Redmine, then, with `--outcomes`, `outcomes.md`:
 
-- each `round-<k>.jsonl` with `PUT /issues/<n>/review_findings.json`. It reads the issue's
-  findings back with `GET`, and deletes the file only when every fingerprint and round in it is
-  there, and every verdict line's `verified_round` is set;
-- `outcomes.md`, only when `pr` calls it. It parses each line, finding the row by the fingerprint
+- each review file, in the branch's commit order, with `PUT /issues/<n>/review_findings.json`. A review whose `ci` is `success` becomes the issue's next round. One whose `ci` isn't is recorded with no round number and no rows, so the next passing review takes the number. `send` fingerprints each finding at the review's commit, applies the no-repeat rule (§3.5), merges two findings at one place (§3.1), and turns each `gone` verdict into a line with only that row's `fingerprint`, `round` and `verified_round`. It reads the issue back with `GET`, deletes the file only when the round, every row and every `verified_round` are there, and prints the open-to-fix count (§3.5);
+- `outcomes.md`, only with `--outcomes`. It parses each line, finding the row by the fingerprint
   it opens with: the fingerprint's one open row, since the no-repeat rule never records a second
   open row for it (§3.5). A line that changes an answered row names its round,
-  `finding/v1:… @3 · …`. A line whose row it can't find, or that matches more than one, stops `pr`
-  before anything is recorded. It records each outcome with `confirmed_by_id` set to the key's
+  `finding/v1:… @3 · …`. A line whose row it can't find, in Redmine or in a review file waiting to go, or that matches more than one, stops `pr` before anything is recorded. It records each outcome with `confirmed_by_id` set to the key's
   user, reads it back, and deletes `outcomes.md` once every line in it reads back.
 
 `findings.py` lives with `pr` in `.claude/skills/gh-issues/scripts/`, and uses the skill's
 `redmine.py`: the `Redmine` client, the Keychain's `redmine-gh-plan` key and its `Refused` error.
-It's the one writer this design adds.
+It's the one writer this design adds. When a connection drops part way through a write, `redmine.py` raises `Refused` and says the write may have been applied, so `send` keeps the file and the next `pr` sends it again.
 
 **Recording twice leaves the same rows.** `PUT` upserts by `(issue_id, fingerprint, round)`. A
-second send of `round-<k>.jsonl` finds each row already there, with the same values, and Rails
+second send of a review file finds its round and each row already there, with the same values, and Rails
 saves nothing for a record with no change, so `updated_on` stays as it was. A round's lines carry
 no `outcome`, `justification` or confirmation, and `findings.py` writes them with those keys
 absent, never `null`; the plugin treats a `null` in them as a 422. Once a row is confirmed, a round
@@ -284,12 +265,10 @@ line can't change any of its fields, except that a verdict line sets `verified_r
 one of the fields a person confirms. So a second send after the outcomes leaves the rule, severity
 and visibility the person set, as well as the outcome. A second send of an outcome finds the row already holding that outcome, rule, weighting and
 justification and skips it, so `confirmed_on` stays as it was and no journal note is added. A `pr` that
-stops part way leaves its files in the outbox, and the next `pr` sends what's left. Every case is
+stops part way leaves its files, and the next `pr` sends what's left. Every case is
 the same set of rows as one send.
 
-**Done refuses an outbox that isn't empty.** Done removes the worktree, and `.tmp/<n>/` with it.
-While `.tmp/<n>/findings/` has a file in it, Done says which and stops, so a round that Redmine
-never got isn't deleted with the worktree.
+**Done refuses unsent files.** Done removes the worktree, and `.tmp/<n>/` with it. While `.tmp/<n>/findings/outcomes.md` or a review file in `.tmp/<n>/review/` is still there, Done says which and stops, so a round that Redmine never got isn't deleted with the worktree.
 
 <a id="confirming"></a>
 ### 3.4 Confirming what Claude drafted
@@ -328,14 +307,13 @@ are still a person's to accept, since those decide what counts.
 - Round 2 on: only the diff from the last round's `commit` to this round's, with `REVIEW.md` and
   the issue again. It also gets the issue's findings as data, in a fenced block it's told not to
   follow: the fingerprint, file, line, summary and outcome of each. `findings.py` reads them from
-  the store and the outbox together, since a round sent while Redmine was down is still there,
+  the store and any unsent review file together, since a review made while Redmine was down is still there,
   and takes a drafted outcome from its `outcomes.md` line. The reviewer answers each `fixed` one that
   hasn't been verified, gone or still there.
 
-**No repeats.** When a new finding's fingerprint matches one the issue already has, in the store
-or the outbox, `add-round` looks at the earlier one:
+**No repeats.** When a new finding's fingerprint matches one the issue already has, in the store or in a review file sent before it, `findings.py send` looks at the earlier one:
 
-| Earlier finding | New finding | `add-round` |
+| Earlier finding | New finding | `send` |
 |---|---|---|
 | Open | Any | Drops it: the earlier one is still waiting for an answer, and still counts toward the stop rule |
 | `fixed` | Any, or the reviewer's "still there" | Records it in the new round, open: the fix didn't hold |
@@ -347,14 +325,13 @@ in the stop rule: a `fixed` row followed by a "still there" row is settled by th
 the older one's missing `verified_round` no longer counts.
 
 A fingerprint whose snippet appears more than once in the file at the round's commit is never
-matched: `add-round` records the new finding, and its body says which earlier one it may repeat. A
+matched: `send` records the new finding, and its body says which earlier one it may repeat. A
 finding whose code changed has a new fingerprint, so it's new. A `fixed` finding the reviewer
 says is gone gets `verified_round` set to the new round.
 
 **The stop rule.** A finding is *open to fix* when it's a finding to fix (§3.2) and has no
 outcome, recorded or drafted. That's a `silent` finding whose `severity` isn't `nothing`, or one
-with the rule `crash`. `findings.py` counts it over the store and the outbox, so the count includes
-a round or outcome that hasn't been sent yet. After each round it prints the count, and the PR body's review line gives it: "Claude review: round 2, 0 open to fix".
+with the rule `crash`. `findings.py` counts it over the store, any unsent review file and `outcomes.md`, so the count includes a round or outcome that hasn't been sent yet. After each round it prints the count, and the PR body's review line gives it: "Claude review: round 2, 0 open to fix".
 
 - Another round runs while the open-to-fix count is above zero, while a fingerprint's latest row
   is a `fixed` finding to fix with no `verified_round`, or while the PR's head is a commit no
@@ -472,7 +449,7 @@ falls back to a partial count from threads.
   review. The case is the PR's last reviewed commit, and the expected answer is the bug that turned
   up. Each is added as a row with `tag` `Important`, `round` 0, its `file` and `line`, and a
   fingerprint `missed/v1:…`, so the store holds it with the rest. `findings.py add-missed <n>
-  <file> <line>` writes it to the outbox of the issue whose work found it, against the issue it
+  <file> <line>` writes it to a file in `.tmp/<n>/findings/` of the issue whose work found it, against the issue it
   escaped, and it's answered by an outcome line like any finding, `Fixed` once its fix ships. Until
   then it's in the open-to-fix query, as it should be: the bug is still in the code.
 - **A clean change.** A merged PR whose code nothing has since found a silent failure in. The
@@ -534,15 +511,15 @@ the rules or the model change, never on a schedule.
 
 | Failure | What happens |
 |---|---|
-| Redmine is down when a round runs | The review runs. `add-round` drops repeats by the outbox only, says the store wasn't read, and marks the round file. The reviewer's `send` fails and leaves the file in the outbox, and the next `send` applies the no-repeat rule against the store before it records a marked round |
-| The pushed commit's assess failed | `add-round` refuses and names the failed checks, which are also in the review file and the round report. The next round waits for a commit that passes |
-| Redmine is down when Ship runs | `pr` pushes and says the findings weren't sent. The outbox stays, and the next `pr` sends it |
-| Redmine is down when Done runs | Done refuses while the outbox has a file (§3.3), so nothing is lost with the worktree |
+| Redmine is down when a round runs | The review runs and writes its file, without the store's earlier findings. Its `send` fails, names the file and keeps it, and the next `send` applies the no-repeat rule against the store before it records the round |
+| The pushed commit's assess failed | `send` records the review with no round number and no rows; the failed checks are in the review file and the round report. The next round waits for a commit that passes |
+| Redmine is down when Ship runs | `pr` pushes, names each file it couldn't send, keeps them, and exits 1. The review still starts, and the next `pr` sends them |
+| Redmine is down when Done runs | Done refuses while an unsent file is there (§3.3), so nothing is lost with the worktree |
 | `pr` stops part way through a send | Each file stays until it reads back; the next `pr` sends it again, idempotently (§3.3) |
 | A `PUT` names a value outside the schema | 422 and nothing saved; `pr` stops and names the line |
 | A person deletes a line from `outcomes.md` | The finding stays open; a silent one brings another round, up to round 3 |
 | An outcome line names a fingerprint the issue doesn't have | `pr` stops before recording anything and names the line |
-| Two windows send the same round | One transaction takes SQLite's write lock and wins. The other waits out the busy timeout and fails with `SQLite3::BusyException`, or, if it got past the lock, `RecordNotUnique` at the unique index. The controller rolls back and runs it once more on either, and the retry finds the rows and changes nothing. A retry that fails again answers 500, the outbox keeps the file, and the next `pr` sends it |
+| Two windows send the same round | One transaction takes SQLite's write lock and wins. The other waits out the busy timeout and fails with `SQLite3::BusyException`, or, if it got past the lock, `RecordNotUnique` at the unique index. The controller rolls back and runs it once more on either, and the retry finds the rows and changes nothing. A retry that fails again answers 500, the file stays, and the next `pr` sends it |
 | A rule is renamed in `REVIEW.md` | Old rows keep the old id. Fingerprints don't include the rule, so no finding repeats. `redmine-set rule OLD NEW` moves them to the new id through the plugin's rename route, all or none, with a journal note on each confirmed row, and a second run writes nothing |
 
 <a id="alternatives"></a>
@@ -588,13 +565,13 @@ the rules or the model change, never on a schedule.
 | L2 Privacy and data | Not ticked for #84, and lightly affected: a row holds a summary and a few lines of the repo's code, all public, and the id of the user who confirmed it. A change to a confirmed row adds a journal note to its issue, with who changed it and the old and new values, so the history stays in Redmine's journal. Fixtures are invented |
 | L3 Reliability and failure | §3.3: the upsert by `(issue_id, fingerprint, round)` and the read-back before each delete mean recording a round twice leaves the same rows. §3.10 for the rest |
 | L4 Performance and limits | Not ticked for #84, and not affected, because a round is tens of rows: one `PUT` and one `GET` per round, and the Findings tab lists one issue's rows |
-| L5 Observability | The issue page shows "Findings: 2 open to fix" through the `view_issues_show_details_bottom` hook, linking to the project's Findings tab at `/projects/plan/review_findings?issue_id=<n>`, which lists each open finding to fix first. `findings.py` prints the count after each round, the round report (#110) and the PR body's review line give it, so a PR isn't called reviewed while one is open. Done refuses while the outbox holds an unsent round |
+| L5 Observability | The issue page shows "Findings: 2 open to fix" through the `view_issues_show_details_bottom` hook, linking to the project's Findings tab at `/projects/plan/review_findings?issue_id=<n>`, which lists each open finding to fix first. `findings.py` prints the count after each round, the round report (#110) and the PR body's review line give it, so a PR isn't called reviewed while one is open. Done refuses while an unsent review file or `outcomes.md` is there |
 | L6 Compatibility and migration | One `change` migration creates the table and its unique index, so `rake redmine:plugins:migrate NAME=review_findings VERSION=0` drops both. The image's entrypoint runs `rake redmine:plugins:migrate` on start only when `REDMINE_PLUGINS_MIGRATE` is set, and `compose.yml` doesn't set it today, so W1 adds `REDMINE_PLUGINS_MIGRATE: "1"` to its `environment`; a Redmine upgrade then migrates the plugin with the rest. The fingerprint is versioned (`finding/v1`, `seed/v1`, `missed/v1`). #82's findings are imported by `redmine/import_findings.rb`, through `rails runner`, from an uncommitted JSON file in `.tmp/`, with the fields §3.2 lists and the rest empty |
 | L7 Usability and accessibility | Not ticked for #84, and lightly affected: the Findings tab and the issue page's count use core's list and link markup, so they keep Redmine's keyboard and screen-reader behaviour |
 | L8 Testability | §6: the plugin's model and controller on Redmine's fixtures, and `findings.py` against recorded Redmine responses, without the network |
 | L9 Operations and cost | §3.8: one review is about 89 s and $0.49 at list price on the subscription; an eval of fourteen cases is about 62 minutes and $21, run only when the reviewer changes. The plugin is mounted read-only like `lane_board` and adds nothing to run. W8 adds the findings to the nightly export |
 | L10 Docs impact | Design 0004, since Ulysses rebuilds the issue page and W2's hook renders inside `div.attributes`, after the groups. Architecture §6.1 (the plugin and `findings.py`), §6.2 (the writer), §9 (the Findings tab) and §10 (invariant 6). `redmine/README.md` (the mount, the upgrade check, the backup). `redmine/compose.yml`. `CLAUDE.md`, for the review rule (a round on each pushed commit, replacing "Before each push"), the stop rule, and the reviewer's `send` in Boundaries (#110). `docs/failure-modes.md`, for the weighting as two fields. `REVIEW.md` (#104). The gh-issues skill's `SKILL.md`, for the outbox and the reply's first line |
-| L11 Invariants | 2 holds because only the plugin's code and `findings.py` are committed, and reach `main` by PR; the rows live in Redmine, not on the default branch. 6 holds because the extension's only new code here is Go and Ship checking `outcomes.md`, the Review tab linking it, and Done checking the outbox, all file reads. `add-round` reads assess's result from the review file, a file read, or runs `scripts/assess` in a worktree of the commit when there's none, as `review.py` does. The one new writer, `findings.py`, is named in §6.2 and in invariant 6's added clause: "Outside the extension, review findings are written only by `findings.py`, and once by `import_findings.rb` for the seeds". Its `send` runs in the session at the end of the reviewer's turn, writing unconfirmed finding rows only, and from Ship's `pr`, which alone sends outcomes. `add-round` and `add-missed` only read, and write the outbox |
+| L11 Invariants | 2 holds because only the plugin's code and `findings.py` are committed, and reach `main` by PR; the rows live in Redmine, not on the default branch. 6 holds because the extension's only new code here is Go and Ship checking `outcomes.md`, the Review tab linking it, and Done checking for unsent files, all file reads. `findings.py` reads assess's result from the review file `review.py` wrote. The one new writer, `findings.py`, is named in §6.2 and in invariant 6's added clause: "Outside the extension, review findings are written only by `findings.py`, and once by `import_findings.rb` for the seeds". Its `send` runs from the detached review at the end of the reviewer's turn, writing the round and unconfirmed finding rows only, and from Ship's `pr`, which alone sends outcomes. `add-missed` only reads, and writes a file under `.tmp/<n>/findings/` |
 | L12 Offline and concurrency | A round when Redmine is down keeps its findings in `.tmp/<n>/findings/`, and the next `pr` records them once Redmine is back; Done won't remove the worktree while they're there (§3.10). Two sends of one round meet at the unique index |
 
 <a id="testing"></a>
@@ -617,12 +594,10 @@ The fixtures, all invented:
   `Redmine.send` with recorded responses saved as JSON in `scripts/fixtures/findings/`: a `GET`
   of an issue's findings, a `PUT`'s answer, a 422, a refused connection. Tests:
   - the fingerprint of a known snippet, and that moving it keeps the fingerprint;
-  - `add-round` dropping a repeat from the store and, with Redmine down, from the outbox, and
-    `send` dropping it against the store later;
-  - `add-round` refusing a commit whose review file's `ci.state` is `failure` or `none`, and
-    running a fake `scripts/assess` when there's no review file;
+  - `send` numbering review files in commit order, dropping a repeat from the store or an earlier file, and setting `verified_round` from a `gone` verdict;
+  - `send` recording a review whose `ci` is `failure` with no round number and no rows;
   - `send` deleting a file only after the read-back, and keeping it on a refused connection;
-  - sending a round twice making the same requests and leaving the outbox empty;
+  - sending a review twice making the same rows;
   - parsing each `outcomes.md` line form in §3.4, and refusing one that names an unknown outcome.
 - **`sql.rb`**, a test in `tests/` that opens a copy of a fixture database and checks that a
   `CREATE` raises.
@@ -652,8 +627,8 @@ Each item is a Redmine issue in project `plan`, related to #84.
 | W1 | The plugin in `redmine/plugins/review_findings/`: model, migration, the API's routes and permissions, the journal note on a confirmed row's change (§3.1), the mount and `REDMINE_PLUGINS_MIGRATE` in `compose.yml`, its README, and `redmine/README.md`'s upgrade check | — | 5 |
 | W2 | The Findings tab and the issue page's count (§5, L5) | W1 | 3 |
 | W3 | `redmine/sql.rb`, its mount and the queries in §3.6, in `redmine/README.md`; the rename route (§3.1) and `redmine-set rule` (§3.10) | W1 | 1 |
-| W4 | `findings.py` with `add-round` (the check gate, fingerprints, no-repeat) and `send`, the outbox, and `pr` calling it (§3.3, §3.4, §3.5) | W1 | 5 |
-| W5 | Go and Ship check `outcomes.md` and the Review tab links it; Done's existing refusal over unsent `replies/` (`vscode/done.js`) extends to an outbox that isn't empty | W4 | 2 |
+| W4 | `findings.py send` (rounds, fingerprints, no-repeat, verdicts, outcomes), the plugin's `review_rounds`, and `pr` and `review.py` calling it (§3.1, §3.3, §3.4, §3.5) | W1 | 5 |
+| W5 | Go and Ship check `outcomes.md` and the Review tab links it; Done's existing refusal over unsent `replies/` (`vscode/done.js`) extends to an unsent `outcomes.md` or review file | W4 | 2 |
 | W6 | `redmine/import_findings.rb` and the 38 seed rows, after a person confirms §3.2's draft | W1 | 2 |
 | W7 | `scripts/eval`, its cases rebuilt from the seeds, and the first scored run (§3.8) | W6, #104 | 5 |
 | W8 | The backup exports each issue's findings | W1 | 1 |

@@ -1,8 +1,8 @@
 # Review findings
 
 A Redmine 7.0 plugin that stores code review findings, one row per finding per review round of an
-issue's branch, and answers per-rule counts of real findings and noise. It adds one table,
-`review_findings`, a project module of the same name, a JSON API and a Findings tab. The schema, the allowed
+issue's branch, with one row per reviewed commit for the round itself, and answers per-rule counts of real findings and noise. It adds two tables,
+`review_findings` and `review_rounds`, a project module named `review_findings`, a JSON API and a Findings tab. The schema, the allowed
 values and what each field holds are [design 0005 §3.1](../../../docs/design/0005-review-findings.md#schema).
 
 ## The Findings tab
@@ -25,8 +25,8 @@ API key (`X-Redmine-API-Key`) or basic auth, even from a signed-in browser.
 
 | Route | Does | Permission |
 |---|---|---|
-| `GET /issues/:issue_id/review_findings.json` | The issue's findings, every round, as `{"review_findings": [...]}` | View review findings |
-| `PUT /issues/:issue_id/review_findings.json` | Upserts `{"review_findings": [...]}` by `(fingerprint, round)`, in one transaction, and answers `{"created", "updated", "unchanged"}` | Manage review findings |
+| `GET /issues/:issue_id/review_findings.json` | The issue's findings, every round, and its rounds in order, as `{"review_findings": [...], "review_rounds": [...]}` | View review findings |
+| `PUT /issues/:issue_id/review_findings.json` | Upserts `{"review_findings": [...]}` by `(fingerprint, round)`, and `{"review_round": {...}}` by its commit, in one transaction, and answers `{"created", "updated", "unchanged"}` | Manage review findings |
 | `GET /projects/:project_id/review_findings/rules.json` | `{"rules": [{"rule_id", "real", "noise"}]}` over the issues the user can see in the project and its sub-projects | View review findings |
 | `GET /projects/:project_id/review_findings/rules/:rule_id.json` | `{"rule_id", "findings", "confirmed"}`: how many findings have the rule, over the same issues | View review findings |
 | `PUT /projects/:project_id/review_findings/rules/:rule_id.json` | Renames the rule to `{"new_rule_id": "…"}` on every finding in the project and its sub-projects, in one transaction, and answers `{"renamed", "noted"}` | Manage review findings |
@@ -39,6 +39,8 @@ A `PUT` line is one of two kinds:
 - **An outcome line** has `"confirm": true`, `fingerprint`, `round`, `outcome`, and any of
   `justification`, `rule_id`, `severity` and `visibility`. It needs a row already there, and it
   sets who confirmed it and when.
+
+A `review_round` records one review of one commit: `commit`, `round`, `ci` (`success`, `failure` or `none`), and any of `ci_summary`, `base`, `effort`, `review_md`, `summary`, `controls`, `dropped` and `new_rules`. `round` is set only when `ci` is `success`, and needed then. A `PUT` with a `review_round` may leave out `review_findings`, as a clean round or a failed `ci` does, and a round with no number takes no rows. A round's number never changes once recorded, and two commits never share one; either gets a 422. `findings.py send` sends them.
 
 Any change to a confirmed row adds a note to the issue's journal, naming the user and each field's
 old and new values. A line that changes nothing changes nothing, so sending the same `PUT` twice
