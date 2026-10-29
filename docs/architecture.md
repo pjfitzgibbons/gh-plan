@@ -128,18 +128,21 @@ client of one of them:
 - **The extension** shows Next up in a panel, and holds the Start, Open, Go, Ship and Done
   buttons ([`vscode/README.md`](../vscode/README.md)).
 - **`pr`** commits, pushes, opens or updates the PR, and posts review replies. After a push, it
-  has Claude review the branch under `REVIEW.md` (`review.py`), unless a review file or a Redmine round already names that commit. The review writes its findings to `.tmp/<n>/review/<commit>.json`, and `findings.py send` records them in Redmine as a round. `pr` also sends the outcome lines a person accepted at Go, `.tmp/<n>/findings/outcomes.md`. Nothing is posted. After a merge it
+  has Claude review the branch under `REVIEW.md` (`review.py`), unless a round file or a Redmine round already names that commit. Round `k`'s review writes its findings to `.tmp/<n>/<k>-findings.md`, and `findings.py send` records them in Redmine as the round. `pr` also sends the outcome lines a person accepted at Go, `.tmp/<n>/<k>-outcomes.md`. Nothing is posted. After a merge it
   sends only the replies, any unsent findings and the PR body, and leaves the cleanup to Done. It and its Python scripts live in
   `.claude/skills/gh-issues/scripts/`, with their tests. `~/.claude/skills/gh-issues` links to the
   main checkout's copy, so every repo uses the one skill and `~/.local/bin/pr` reaches it.
 - **The setup scripts**, `setup.rb`, `import.rb` and `backfill.rb`, run inside the container with
   `rails runner`, on the database directly, so they need no API key.
 - **The lane board plugin** adds the Lanes tab. It only reads.
-- **The review findings plugin** stores each review round in a `review_rounds` table, and the round's findings and their outcomes in a `review_findings` table, and serves them, with per-rule counts of real findings and noise, as
-  JSON ([design 0005 §3.1](design/0005-review-findings.md#schema)). It is the one plugin that
-  writes: an upsert per `PUT`, in one transaction, and a journal note for each change to a
-  confirmed row.
-- **`findings.py`**, beside `pr`, is the one writer of the review findings plugin outside the extension. It sends each review file and `outcomes.md` and deletes each only once Redmine reads it back ([design 0005 §3.3](design/0005-review-findings.md#writer)).
+- **The review findings plugin** keeps each issue's review as a ledger: a `review_rounds` row for
+  each round, and a `review_findings` row for each event on a finding, keyed `file:lines:rule`:
+  the reviewer raising it, a person answering it, a later round checking its fix. Rows are only
+  added. Its read API adds them up into each finding's latest status, the issue's last round and
+  per-rule counts of real findings and noise, as JSON
+  ([design 0005 §3.1](design/0005-review-findings.md#schema)). It is the one plugin that writes:
+  rows added per `POST`, in one transaction, skipping any already there.
+- **`findings.py`**, beside `pr`, is the one writer of the review findings plugin outside the extension. It sends each round's `<k>-findings.md` and `<k>-outcomes.md` that Redmine doesn't have yet, and deletes neither; they stay until Done finds every round in Redmine ([design 0005 §3.3](design/0005-review-findings.md#writer)).
 - **`redmine-get`**, in `~/.local/bin/`, sends one GET with the Keychain key, so an agent can read
   issues without seeing the key.
 
@@ -259,10 +262,11 @@ to an open PR also asks Copilot to review it again, for the commits that answer 
 `gh pr edit --help` (2.102.0) says `--add-reviewer` adds or re-requests a reviewer.
 
 After each push, including the one that opens the PR, `pr` starts `review.py --detach` when the
-head has no review file yet, so a `pr` stopped after its push, or a failed review, is reviewed on
-the rerun. It runs in a session of its own, logging to `.tmp/<n>/review/<commit>.log`, so `pr`
+head has no round file or Redmine round yet, so a `pr` stopped after its push, or a failed review, is reviewed on
+the rerun. It reads the issue's `last_round` from Redmine, and doesn't start while Redmine can't
+answer; the round is `k`, one more. It runs in a session of its own, logging to `.tmp/<n>/<k>-review.log`, so `pr`
 exits at once, Ship links the PR in Redmine without waiting, and closing Ship's terminal doesn't
-stop it; `kill` on the pid it prints does. It runs two `claude -p` passes on the branch's whole
+stop it; `kill` on the pid it prints does. In round 1 it runs two `claude -p` passes on the branch's whole
 diff against its base, less `REVIEW.md`'s Skipped paths: a review under `REVIEW.md`, and a
 security pass. `REVIEW.md` is read from the base, so a branch can't rewrite the rules it's
 reviewed under; until the base has one, the commit's copy is used and the summary says so. Beside them it runs `scripts/assess`, the round's CI, and records its result under
@@ -274,9 +278,9 @@ finding's fields ([design 0005 §3.1](design/0005-review-findings.md#schema)). I
 `medium` otherwise. The Controls are the checks a round runs under, such as `REVIEW.md`,
 `scripts/assess`, `checks/` and the hooks; the ones a diff changes are named to both passes,
 listed under `controls` and in the summary.
-The findings go to `.tmp/<n>/review/<commit>.json` and to the terminal, with the rules proposed
-and the findings dropped, in the log. None is posted to the PR. `findings.py send` then records the review in Redmine as a round, or with no round number when `ci` isn't `success`, and deletes the file once it reads back; a file Redmine can't take stays for the next `pr`. A review that fails or times out, or an assess that times out, says so in its log and writes no
-review file,
+The findings go to `.tmp/<n>/<k>-findings.md` and to the terminal, with the rules proposed
+and the findings dropped, in the log. None is posted to the PR. `findings.py send` then records the review in Redmine as round `k`, whatever its `ci`; a file Redmine can't take stays, and the next `pr` sends it without reviewing the commit again. Round 1 reviews the whole diff; each later round checks the earlier round's fixes, finding by finding, in their context ([design 0005 §3.5](design/0005-review-findings.md#rounds)). A review that fails or times out, or an assess that times out, says so in its log and writes no
+round file,
 and `pr` has already succeeded.
 
 <a id="finish"></a>
@@ -385,3 +389,8 @@ The Findings tab is at `/projects/<identifier>/review_findings`
     [`C3`](requirements.md)).
 11. Retired while tracked time is paused ([ADR 0006](adr/0006-tracked-time.md)), so the invariants
     keep their numbers.
+12. An issue's review is a ledger. The review findings plugin only adds rows: a round, a finding
+    raised, an answer and a check of a fix are each a row, and none is changed or deleted, except
+    that a rule rename relabels the rows it names. A finding's status is never stored; the read
+    API works it out from the finding's latest row
+    ([design 0005 §3.1](design/0005-review-findings.md#schema)).
