@@ -1,0 +1,30 @@
+# Invented rounds on Redmine's fixture issue 1, matching review_findings.yml's rounds 1 to 3, and
+# a review of issue 1 whose CI failed, with no round number.
+round_1:
+  issue_id: 1
+  commit: "1111111111111111111111111111111111111111"
+  round: 1
+  ci: success
+  ci_summary: "assess: 9 passed"
+  base: "0000000000000000000000000000000000000000"
+  effort: medium
+  review_md: base
+  summary: 3 findings, 1 to fix.
+  controls: "[]"
+  dropped: "[]"
+  new_rules: "[]"
+failed:
+  issue_id: 1
+  commit: "1212121212121212121212121212121212121212"
+  ci: failure
+  ci_summary: "assess: 8 passed, 1 failed"
+round_2:
+  issue_id: 1
+  commit: "2222222222222222222222222222222222222222"
+  round: 2
+  ci: success
+round_3:
+  issue_id: 1
+  commit: "3333333333333333333333333333333333333333"
+  round: 3
+  ci: success

@@ -8,17 +8,20 @@ class ReviewFindingsController < ApplicationController
 
   def index
     findings = ReviewFinding.where(issue_id: @issue.id).order(:round, :id)
-    render json: { 'review_findings' => findings.as_json }
+    rounds = ReviewRound.where(issue_id: @issue.id).order(Arel.sql('round IS NULL, round, id'))
+    render json: { 'review_findings' => findings.as_json, 'review_rounds' => rounds.as_json }
   end
 
   # Two sends of one round meet at the unique index, or wait on SQLite's write lock: the loser
   # rolls back and runs once more, finding the rows the winner saved (§3.10). A second failure is
   # a 500, and the sender keeps its file to send again.
   def update
-    rows = params.to_unsafe_h['review_findings']
+    body = params.to_unsafe_h
+    round = body['review_round']
+    rows = round && !body.key?('review_findings') ? [] : body['review_findings']
     attempts = 0
     begin
-      counts = ReviewFinding.record(@issue, rows, User.current)
+      counts = ReviewFinding.record(@issue, rows, User.current, round: round)
     rescue ActiveRecord::RecordNotUnique, ActiveRecord::StatementTimeout
       attempts += 1
       retry if attempts < 2

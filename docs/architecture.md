@@ -128,19 +128,18 @@ client of one of them:
 - **The extension** shows Next up in a panel, and holds the Start, Open, Go, Ship and Done
   buttons ([`vscode/README.md`](../vscode/README.md)).
 - **`pr`** commits, pushes, opens or updates the PR, and posts review replies. After a push, it
-  has Claude review the branch under `REVIEW.md` (`review.py`), and writes the findings to
-  `.tmp/<n>/review/<commit>.json`, unless that commit has one already. Nothing is posted. After a merge it
-  sends only the replies and the PR body, and leaves the cleanup to Done. It and its Python scripts live in
+  has Claude review the branch under `REVIEW.md` (`review.py`), unless a review file or a Redmine round already names that commit. The review writes its findings to `.tmp/<n>/review/<commit>.json`, and `findings.py send` records them in Redmine as a round. `pr` also sends the outcome lines a person accepted at Go, `.tmp/<n>/findings/outcomes.md`. Nothing is posted. After a merge it
+  sends only the replies, any unsent findings and the PR body, and leaves the cleanup to Done. It and its Python scripts live in
   `.claude/skills/gh-issues/scripts/`, with their tests. `~/.claude/skills/gh-issues` links to the
   main checkout's copy, so every repo uses the one skill and `~/.local/bin/pr` reaches it.
 - **The setup scripts**, `setup.rb`, `import.rb` and `backfill.rb`, run inside the container with
   `rails runner`, on the database directly, so they need no API key.
 - **The lane board plugin** adds the Lanes tab. It only reads.
-- **The review findings plugin** stores each review round's findings and their outcomes in a
-  `review_findings` table, and serves them, with per-rule counts of real findings and noise, as
+- **The review findings plugin** stores each review round in a `review_rounds` table, and the round's findings and their outcomes in a `review_findings` table, and serves them, with per-rule counts of real findings and noise, as
   JSON ([design 0005 §3.1](design/0005-review-findings.md#schema)). It is the one plugin that
   writes: an upsert per `PUT`, in one transaction, and a journal note for each change to a
   confirmed row.
+- **`findings.py`**, beside `pr`, is the one writer of the review findings plugin outside the extension. It sends each review file and `outcomes.md` and deletes each only once Redmine reads it back ([design 0005 §3.3](design/0005-review-findings.md#writer)).
 - **`redmine-get`**, in `~/.local/bin/`, sends one GET with the Keychain key, so an agent can read
   issues without seeing the key.
 
@@ -163,10 +162,10 @@ network or a repo.
 
 `gh` is already authenticated, so nothing holds a GitHub token ([`G3`](requirements.md)); a library
 such as Octokit would need one. Outside the repo, `pr` writes to GitHub through `gh` and to Redmine
-through the REST API, with the same Keychain keys, and starts the review, which runs `claude -p`
+through the REST API, with the same Keychain keys; its review findings and outcomes go through `findings.py`. It starts the review, which runs `claude -p`
 with read-only tools confined to a worktree of the commit (`--restricted`) and no `ANTHROPIC_`
 variable, so it uses the CLI's own login and endpoint; `scripts/assess` runs in that worktree
-too.
+too. When the review ends it runs `findings.py send` to record the round.
 
 <a id="platform"></a>
 ### 6.3 Platform
@@ -276,8 +275,7 @@ finding's fields ([design 0005 §3.1](design/0005-review-findings.md#schema)). I
 `scripts/assess`, `checks/` and the hooks; the ones a diff changes are named to both passes,
 listed under `controls` and in the summary.
 The findings go to `.tmp/<n>/review/<commit>.json` and to the terminal, with the rules proposed
-and the findings dropped, in the log. None is posted to the PR or
-written to Redmine. A review that fails or times out, or an assess that times out, says so in its log and writes no
+and the findings dropped, in the log. None is posted to the PR. `findings.py send` then records the review in Redmine as a round, or with no round number when `ci` isn't `success`, and deletes the file once it reads back; a file Redmine can't take stays for the next `pr`. A review that fails or times out, or an assess that times out, says so in its log and writes no
 review file,
 and `pr` has already succeeded.
 
@@ -377,6 +375,7 @@ The Findings tab is at `/projects/<identifier>/review_findings`
 6. `vscode/redmine.js` and `vscode/start.js` are the only extension modules that spawn a process
    or open a network connection, apart from the VS Code task in `vscode/extension.js` that runs
    Ship's `pr`. Every call the extension makes to Redmine goes through `redmine.js` (§6.2).
+   Outside the extension, review findings are written only by `findings.py`.
 7. Points are 1, 2, 3, 5, 8 or 13. An issue above 5 points is split before it is scheduled, as a
    practice: nothing refuses the save ([`B3`](requirements.md)).
 8. An issue has at most one lane: `Lane` is a single-valued list ([`D4`](requirements.md)).

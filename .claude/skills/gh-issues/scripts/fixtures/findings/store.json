@@ -1,0 +1,40 @@
+{
+  "review_findings": [
+    {
+      "id": 1, "issue_id": 9, "commit": "1111111111111111111111111111111111111111", "round": 1,
+      "fingerprint": "finding/v1:00000000000000a1", "file": "sync.sh", "line": 2,
+      "rule_id": "unchecked-step-before-destructive-op", "tag": "Important", "severity": "commits",
+      "visibility": "silent", "summary": "An open finding", "body": "Still waiting for an answer.",
+      "outcome": null, "justification": null, "verified_round": null, "confirmed_by_id": null,
+      "confirmed_on": null, "pr_url": null,
+      "created_on": "2026-10-20T10:00:00Z", "updated_on": "2026-10-20T10:00:00Z"
+    },
+    {
+      "id": 2, "issue_id": 9, "commit": "1111111111111111111111111111111111111111", "round": 1,
+      "fingerprint": "finding/v1:00000000000000a2", "file": "sync.sh", "line": 9,
+      "rule_id": "unchecked-step-before-destructive-op", "tag": "Important", "severity": "files",
+      "visibility": "silent", "summary": "A fixed finding", "body": "The copy overwrote a file.",
+      "outcome": "fixed", "justification": null, "verified_round": null, "confirmed_by_id": 5,
+      "confirmed_on": "2026-10-20T11:00:00Z", "pr_url": null,
+      "created_on": "2026-10-20T10:00:00Z", "updated_on": "2026-10-20T11:00:00Z"
+    },
+    {
+      "id": 3, "issue_id": 9, "commit": "1111111111111111111111111111111111111111", "round": 1,
+      "fingerprint": "finding/v1:00000000000000a3", "file": "sync.sh", "line": 14,
+      "rule_id": "repo-rename", "tag": "Important", "severity": "nothing", "visibility": "seen",
+      "summary": "An answered finding", "body": "A renamed repo is refused.",
+      "outcome": "intentional", "justification": "It says so", "verified_round": null,
+      "confirmed_by_id": 5, "confirmed_on": "2026-10-20T11:00:00Z", "pr_url": null,
+      "created_on": "2026-10-20T10:00:00Z", "updated_on": "2026-10-20T11:00:00Z"
+    }
+  ],
+  "review_rounds": [
+    {
+      "commit": "1111111111111111111111111111111111111111", "round": 1, "ci": "success",
+      "ci_summary": "assess: 9 passed", "base": "0000000000000000000000000000000000000000",
+      "effort": "medium", "review_md": "base", "summary": "3 findings, 2 to fix.",
+      "controls": [], "dropped": [], "new_rules": [],
+      "created_on": "2026-10-20T10:00:00Z", "updated_on": "2026-10-20T10:00:00Z"
+    }
+  ]
+}

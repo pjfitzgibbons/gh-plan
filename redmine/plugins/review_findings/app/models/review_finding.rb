@@ -67,22 +67,34 @@ class ReviewFinding < ApplicationRecord
                 "AND review_findings.outcome IS NULL AND #{latest_round}".freeze
   scope :open_silent, -> { where(OPEN_SILENT) }
 
-  # The issue's open silent count, or nil when it has no rows, as before its first review round.
+  # The issue's open silent count, or nil when it has no rows and no round, as before its first
+  # review round. A clean round, with no rows, counts 0.
   def self.open_silent_count(issue_id)
     rows, open = where(issue_id: issue_id)
                  .pick(Arel.sql('COUNT(*)'), Arel.sql("SUM(CASE WHEN #{OPEN_SILENT} THEN 1 ELSE 0 END)"))
-    rows.zero? ? nil : open.to_i
+    rows.zero? && !ReviewRound.where(issue_id: issue_id).where.not(round: nil).exists? ? nil : open.to_i
   end
 
   # Upserts a request's rows by (fingerprint, round) in one transaction (§3.1, §3.3). Answers the
   # counts, or raises Refused naming every bad row, having saved nothing. The issue's rows are read
   # once, inside the transaction; the unique index, not a validation, keeps the key unique.
-  def self.record(issue, rows, user)
+  # With `round`, a review_round, it records the round by its commit in the same transaction, and
+  # the counts say what it did under 'round'. A review with no round number, whose CI didn't pass,
+  # takes no rows.
+  def self.record(issue, rows, user, round: nil)
     raise Refused, 'review_findings must be a list of rows' unless rows.is_a?(Array)
 
     counts = { 'created' => 0, 'updated' => 0, 'unchanged' => 0 }
     errors = []
     transaction do
+      unless round.nil?
+        begin
+          counts['round'], recorded = ReviewRound.record(issue, round)
+          errors << "review_round: #{recorded.commit} has no round number, so it takes no rows" if recorded.round.nil? && rows.any?
+        rescue Refused => e
+          errors.concat(e.messages)
+        end
+      end
       fingerprints = rows.filter_map { |row| row.stringify_keys['fingerprint'] if row.is_a?(Hash) }
       found = where(issue_id: issue.id, fingerprint: fingerprints).index_by { |f| [f.fingerprint, f.round] }
       rows.each_with_index do |row, i|

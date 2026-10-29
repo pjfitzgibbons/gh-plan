@@ -243,13 +243,13 @@ class ReviewFindingsApiTest < Redmine::ApiTest::Base
   test 'L12: two sends of one round leave one set of rows' do
     rows = [finding_row('finding/v1:00000000000000e1', 4), finding_row('finding/v1:00000000000000e2', 4)]
     other_window = Module.new do
-      define_method(:record) do |issue, sent, user|
+      define_method(:record) do |issue, sent, user, **round|
         unless @raced
           @raced = true
-          super(issue, sent, user)
+          super(issue, sent, user, **round)
           raise ActiveRecord::RecordNotUnique, 'UNIQUE constraint failed: review_findings.issue_id'
         end
-        super(issue, sent, user)
+        super(issue, sent, user, **round)
       end
     end
     ReviewFinding.singleton_class.prepend(other_window)
