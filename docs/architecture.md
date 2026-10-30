@@ -264,7 +264,7 @@ to an open PR also asks Copilot to review it again, for the commits that answer 
 After each push, including the one that opens the PR, `pr` starts `review.py --detach` when the
 head has no round file or Redmine round yet, so a `pr` stopped after its push, or a failed review, is reviewed on
 the rerun. It reads the issue's `last_round` from Redmine, and doesn't start while Redmine can't
-answer; the round is `k`, one more. It runs in a session of its own, logging to `.tmp/<n>/<k>-review.log`, so `pr`
+answer; the round is `k`, one more. It runs in a session of its own, logging to `.tmp/<n>/review.log`, so `pr`
 exits at once, Ship links the PR in Redmine without waiting, and closing Ship's terminal doesn't
 stop it; `kill` on the pid it prints does. In round 1 it runs two `claude -p` passes on the branch's whole
 diff against its base, less `REVIEW.md`'s Skipped paths: a review under `REVIEW.md`, and a
@@ -279,7 +279,7 @@ finding's fields ([design 0005 §3.1](design/0005-review-findings.md#schema)). I
 `scripts/assess`, `checks/` and the hooks; the ones a diff changes are named to both passes,
 listed under `controls` and in the summary.
 The findings go to `.tmp/<n>/<k>-findings.md` and to the terminal, with the rules proposed
-and the findings dropped, in the log. None is posted to the PR. `findings.py send` then records the review in Redmine as round `k`, whatever its `ci`; a file Redmine can't take stays, and the next `pr` sends it without reviewing the commit again. Round 1 reviews the whole diff; each later round checks the earlier round's fixes, finding by finding, in their context ([design 0005 §3.5](design/0005-review-findings.md#rounds)). A review that fails or times out, or an assess that times out, says so in its log and writes no
+and the findings dropped, in the log. None is posted to the PR. `findings.py send` then records the review in Redmine as round `k`, whatever its `ci`; a file Redmine can't take stays, and the next `pr` sends it without reviewing the commit again. Round 1 reviews the whole diff; each later round checks the earlier round's fixes, finding by finding, in their context, and reviews only the code added since the last round ([design 0005 §3.5](design/0005-review-findings.md#rounds)). A review that fails or times out, or an assess that times out, says so in its log and writes no
 round file,
 and `pr` has already succeeded.
 

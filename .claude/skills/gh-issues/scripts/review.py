@@ -20,6 +20,9 @@ Round 2 on checks the fixes. One pass gets each finding whose latest row is an a
 with the summary and body that raised it and the diff of its file from the round that answered it
 to this commit, and says whether the fix held. A fix that held is recorded as `fixed`, one that
 didn't as `new`. The pass raises a new finding only when the fixed code shows a finding to fix.
+When the branch has changed, since the last round, a file that no fix names, Skipped paths aside,
+the review and security passes run too, over only the diff since that round, so a round's
+findings aren't raised again and code added after round 1 is still reviewed.
 
 When a rule reaches its third finding over the issue's rounds, a pass writes a check for it,
 `.tmp/N/<k>-check-<rule>.py`, which is run in the commit's tree, up to a timeout. Each line it
@@ -39,8 +42,9 @@ any other at medium. A diff of only Skipped paths starts no pass.
 
 scripts/assess is the round's CI. It runs beside the passes, up to --assess-timeout, in a
 worktree of the commit outside the repo, the same tree the passes read, which is removed
-afterwards. Its result is the round's `ci`: success, failure, or none when the commit has no
-scripts/assess.
+afterwards. It runs with -v, and its output goes into the log as it comes, so the log shows the
+check running and how far it has got. Its result is the round's `ci`: success, failure, or none
+when the commit has no scripts/assess.
 
 The round is written to .tmp/N/<k>-findings.md, and each finding is printed by its key. A finding
 with no rule, file or lines, or with a weighting REVIEW.md doesn't allow, is dropped, as are nits
@@ -101,6 +105,10 @@ CHECK_TIMEOUT = 300
 # Left out of assess's environment: Ship's PR_STAGED, which pr.sh's tests mustn't inherit, and the
 # repo's venv, which uv would warn about and not use.
 UNSET = {"PR_STAGED", "VIRTUAL_ENV"}
+# A later round's pass over the fixes.
+CHECK = "check of the fixes"
+# macOS's, by its full path, so PATH can't stand another in for it.
+SANDBOX = Path("/usr/bin/sandbox-exec")
 # scripts/assess's, the repo's pinned Python.
 PYTHON = (3, 14)
 
@@ -127,7 +135,9 @@ class Runner:
     def __init__(self):
         self.running, self.lock, self.stopped = [], threading.Lock(), False
 
-    def __call__(self, command, *, input, env, timeout, cwd=None, **_):
+    def __call__(self, command, *, input, env, timeout, cwd=None, echo=False, **_):
+        """With echo, stderr joins stdout and each line prints as it comes, so the log shows how
+        far a long run has got; it takes no input."""
         with self.lock:
             if self.stopped:
                 raise Failed("stopped before it started")
@@ -135,10 +145,12 @@ class Runner:
             command,
             cwd=cwd,
             env=env,
-            stdin=subprocess.PIPE,
+            stdin=subprocess.DEVNULL if echo else subprocess.PIPE,
             stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
+            stderr=subprocess.STDOUT if echo else subprocess.PIPE,
             text=True,
+            # A byte that isn't UTF-8 would end echo's reader and leave the pipe full.
+            errors="replace",
             start_new_session=True,
         ) as p:
             with self.lock:
@@ -147,7 +159,7 @@ class Runner:
                 if self.stopped:
                     self.stop(p)
             try:
-                out, err = p.communicate(input, timeout=timeout)
+                out, err = self.echo(p, timeout) if echo else p.communicate(input, timeout=timeout)
             # A timeout, or a Ctrl-C, which no longer reaches the group on its own.
             except BaseException:
                 self.stop(p)
@@ -157,6 +169,25 @@ class Runner:
                 with self.lock:
                     self.running.remove(p)
         return subprocess.CompletedProcess(command, p.returncode, out, err)
+
+    def echo(self, p: subprocess.Popen, timeout: int) -> tuple[str, str]:
+        lines = []
+
+        def read():
+            for line in p.stdout or ():
+                lines.append(line)
+                print(line, end="", flush=True)
+
+        reader = threading.Thread(target=read, daemon=True)
+        reader.start()
+        try:
+            p.wait(timeout)
+        finally:
+            # On a timeout, the group goes first, so the pipe closes and the reader ends.
+            if p.returncode is None:
+                self.stop(p)
+            reader.join()
+        return "".join(lines), ""
 
     @staticmethod
     def stop(p: subprocess.Popen) -> None:
@@ -297,8 +328,10 @@ def prompt(
     issue: str,
     diff: str,
     controls: tuple[str, ...] | list[str] = (),
+    k: int = 1,
 ) -> str:
-    """Round 1's passes."""
+    """The review and security passes: round 1's over the branch's whole diff, a later round's
+    over the code changed since the last round reviewed."""
     if security:
         task = (
             "Review the diff below for security only: secrets exposed, input run as code or as "
@@ -311,7 +344,13 @@ def prompt(
             "separate security pass. Before reviewing, read the docs CLAUDE.md's Read before list "
             "names for the paths this diff changes."
         )
-    return f"""You are reviewing the branch for issue #{n}. {task}
+    whose = (
+        f"round {k} of the branch for issue #{n}: the code changed since the last round reviewed. "
+        "Earlier rounds reviewed the rest, so report findings only in this diff's changes"
+        if k > 1
+        else f"the branch for issue #{n}"
+    )
+    return f"""You are reviewing {whose}. {task}
 
 Read the code around each change, and its callers, with the Read, Grep and Glob tools before
 reporting a finding. {FINDING} An empty findings list is a good answer for a clean diff.
@@ -498,9 +537,19 @@ def why_not_kept(f, security: bool) -> str | None:
         return f"has lines {start}-{end}, which end before they start"
     if not all(isinstance(f.get(k), str) for k in ("file", "summary", "body")):
         return "lacks a file, summary or body"
-    if not f["file"].strip() or f["file"].startswith("/") or ".." in f["file"].split("/"):
+    if not in_repo(f["file"]):
         return f"has file {f['file']!r}, not a path in the repo"
     return None
+
+
+def in_repo(file: str) -> bool:
+    """A path relative to the repo's root, as Redmine takes a finding's file: 255 characters at most."""
+    return (
+        bool(file.strip())
+        and len(file) <= 255
+        and not file.startswith("/")
+        and ".." not in file.split("/")
+    )
 
 
 def keep(found: list, security: bool) -> tuple[list[dict], list[str]]:
@@ -620,10 +669,12 @@ def assess(tree: Path, timeout: int, runner) -> dict:
     script = tree / "scripts" / "assess"
     if not script.exists():
         return {"state": "none", "summary": "", "checks": []}
-    print("review: running scripts/assess")
+    print("review: running scripts/assess -v, its output below as it comes")
     env = {k: v for k, v in os.environ.items() if k not in UNSET}
     try:
-        done = runner([str(script)], input=None, env=env, timeout=timeout, cwd=tree)
+        done = runner(
+            [str(script), "-v"], input=None, env=env, timeout=timeout, cwd=tree, echo=True
+        )
     except subprocess.TimeoutExpired:
         raise Failed(f"scripts/assess ran past {timeout}s") from None
     except OSError as e:
@@ -640,13 +691,9 @@ def assess(tree: Path, timeout: int, runner) -> dict:
     if done.returncode == 2:
         # assess runs under the python3 on PATH, which can be older than the one running this.
         # Nothing about the commit, so nothing is written and the next pr runs it again.
-        sys.stdout.write(done.stdout + done.stderr)
         why = (done.stdout.strip() or done.stderr.strip() or "it said nothing").splitlines()[-1]
         raise Failed(f"scripts/assess couldn't run its checks: {why}")
     state = "success" if done.returncode == 0 else "failure"
-    if state == "failure":
-        # What failed, in the log, as assess printed it.
-        sys.stdout.write(done.stdout + done.stderr)
     summary = out[said[-1]] if said else (done.stdout + done.stderr).strip()[-200:]
     return {"state": state, "summary": summary, "checks": results}
 
@@ -669,6 +716,25 @@ def description(n: int) -> str:
     except (Refused, OSError, ValueError, KeyError, TypeError, AttributeError) as e:
         print(f"review: #{n}'s description couldn't be read, so the review goes without it: {e}")
         return f"(#{n}'s description couldn't be read from Redmine.)"
+
+
+def beyond(
+    rounds: list[dict], root: Path, commit: str, fork: str, paths: list[str], checks: list[dict]
+) -> tuple[str, list[str]]:
+    """A later round's new code: the commit the last of rounds reviewed, and the branch's paths,
+    less Skipped paths, changed since then that no fix being checked names. The last round's
+    commit when it's gone, after a rebase and a gc, is the merge base."""
+    shown = [r for r in rounds if isinstance(r.get("round"), int) and r.get("commit")]
+    last = max(shown, key=lambda r: r["round"])["commit"] if shown else fork
+    try:
+        names = git("diff", "--name-only", "--no-renames", "-z", last, commit, cwd=root)
+    except subprocess.CalledProcessError:
+        last = fork
+        names = git("diff", "--name-only", "--no-renames", "-z", last, commit, cwd=root)
+    # Only the branch's paths: a rebase brings main's changes, which aren't the branch's code.
+    since = set(names.split("\0")) & set(paths)
+    fixed = {f["latest"]["file"] for f in checks}
+    return last, sorted(since - fixed)
 
 
 def fixes(ledger: dict, root: Path, commit: str, fork: str) -> list[dict]:
@@ -746,17 +812,37 @@ def assemble(rows: list[dict], found: list[dict]) -> tuple[list[dict], list[str]
 
 
 def matches(text: str) -> tuple[list[tuple[str, int, int, str]], list[str]]:
-    """A check's printed lines, `file:lines: message`, and those that aren't."""
+    """A check's printed lines, `file:lines: message` with file a path in the repo, and those
+    that aren't."""
     found, odd = [], []
     for line in text.splitlines():
         if not line.strip():
             continue
         m = re.fullmatch(r"(.+?):(\d+)(?:-(\d+))?: (.*)", line.strip())
-        if not m or int(m[2]) < 1 or int(m[3] or m[2]) < int(m[2]):
+        # A path outside the repo would have Redmine refuse the whole round, on every send.
+        if not m or not in_repo(m[1]) or int(m[2]) < 1 or int(m[3] or m[2]) < int(m[2]):
             odd.append(line.strip())
             continue
         found.append((m[1], int(m[2]), int(m[3] or m[2]), m[4]))
     return found, odd
+
+
+def profile(script: Path, tree: str, scratch: str) -> str:
+    """The sandbox a rule's check runs in: no network, no Keychain, no file written outside
+    scratch, and no file read under HOME but script, tree and the interpreter's own files."""
+    home = os.path.realpath(Path.home())
+    # A path as a quoted string, its quotes and backslashes escaped.
+    q = json.dumps
+    return f"""(version 1)
+(allow default)
+(deny network*)
+(deny file-write*)
+(allow file-write* (subpath {q(scratch)}) (literal "/dev/null"))
+(deny file-read-data (subpath {q(home)}) (subpath "/Library/Keychains"))
+(allow file-read-data (literal {q(os.path.realpath(script))}) (subpath {q(tree)}))
+(allow file-read-data (subpath {q(os.path.realpath(sys.base_prefix))}))
+(deny mach-lookup (global-name "com.apple.SecurityServer") (global-name "com.apple.securityd"))
+"""
 
 
 def codify(
@@ -788,14 +874,28 @@ def codify(
         script = f"# rule: {rule}\n{script}"
     path = root / ".tmp" / str(n) / name
     findings.replace_text(path, script)
-    print(f"review: wrote .tmp/{n}/{name}; running it")
-    env = {k: v for k, v in os.environ.items() if k not in UNSET}
-    try:
-        done = runner(["python3", str(path)], input=None, env=env, timeout=CHECK_TIMEOUT, cwd=tree)
-    except subprocess.TimeoutExpired:
-        return rows, [f"{name} ran past {CHECK_TIMEOUT}s, so its matches aren't findings."]
-    except OSError as e:
-        return rows, [f"{name} couldn't run ({e}), so its matches aren't findings."]
+    # A model wrote it, from a diff an author wrote, so it runs where it can't reach the network,
+    # the Keychain, files under HOME or anything outside its tree it might write.
+    if not SANDBOX.exists():
+        return rows, [
+            f"{name} wasn't run: it runs only under {SANDBOX}, macOS's sandbox, so its matches aren't findings."
+        ]
+    print(f"review: wrote .tmp/{n}/{name}; running it in a sandbox")
+    with tempfile.TemporaryDirectory(prefix=f"check-{n}-") as scratch:
+        scratch = os.path.realpath(scratch)
+        sandbox = profile(path, os.path.realpath(tree), scratch)
+        # PATH, HOME and LANG alone: no key, token or the rest of the review's environment.
+        env = {"PATH": os.environ.get("PATH", ""), "HOME": scratch}
+        if "LANG" in os.environ:
+            env["LANG"] = os.environ["LANG"]
+        python = os.path.realpath(sys.executable)
+        command = [str(SANDBOX), "-p", sandbox, python, "-I", str(path)]
+        try:
+            done = runner(command, input=None, env=env, timeout=CHECK_TIMEOUT, cwd=tree)
+        except subprocess.TimeoutExpired:
+            return rows, [f"{name} ran past {CHECK_TIMEOUT}s, so its matches aren't findings."]
+        except OSError as e:
+            return rows, [f"{name} couldn't run ({e}), so its matches aren't findings."]
     if done.returncode != 0:
         why = (done.stderr or done.stdout).strip().splitlines()[-1:] or ["no output"]
         return rows, [
@@ -870,33 +970,38 @@ def review(
     controls = touches(paths, listed(review_md, "Controls"))
     level = effort(paths, listed(review_md, "Deep paths")) if not controls else "high"
     checks = fixes(ledger, root, commit, fork) if k > 1 else []
+    # The last round reviewed, in Redmine or in a findings file not yet sent.
+    rounds = [*ledger["review_rounds"], *issue.local_rounds()]
+    last, new = beyond(rounds, root, commit, fork, paths, checks) if k > 1 else (fork, paths)
     # (name, prompt, schema, security) for each pass.
     passes = []
-    if k == 1 and paths:
-        diff = git("diff", "--no-ext-diff", fork, commit, "--", *skipped, cwd=root)
+    if checks:
+        stat = git("diff", "--stat", last, commit, cwd=root)
+        keys = [f["key"] for f in checks]
+        text = check_prompt(review_md, n, k, checks, stat)
+        passes.append((CHECK, text, check_schema(keys), False))
+        print(
+            f"review: round {k}, checking {len(checks)} fix{'' if len(checks) == 1 else 'es'} at --effort {level}"
+        )
+    if new:
+        # Code beyond the fixes gets the review and security passes, over only what's changed
+        # since the last round reviewed, so an earlier round's findings aren't raised again.
+        diff = git("diff", "--no-ext-diff", last, commit, "--", *new, cwd=root)
         about = description(n)
         for security in (False, True):
             name = "security pass" if security else "review"
-            text = prompt(security, review_md, n, about, diff, controls)
+            text = prompt(security, review_md, n, about, diff, controls, k)
             passes.append((name, text, schema(security), security))
+        against = base if k == 1 else f"the last round's {last[:7]}"
         print(
-            f"review: round 1, {len(paths)} files against {base}, at --effort {level}, with a security pass"
+            f"review: round {k}, {len(new)} files against {against}, at --effort {level}, with a security pass"
         )
     elif k == 1:
         print(
             f"review: round 1, no changes against {base} but skipped paths, so no pass; assess still runs"
         )
-    elif checks:
-        last = ledger["review_rounds"][-1]["commit"] if ledger["review_rounds"] else fork
-        stat = git("diff", "--stat", last, commit, cwd=root)
-        keys = [f["key"] for f in checks]
-        text = check_prompt(review_md, n, k, checks, stat)
-        passes.append(("check of the fixes", text, check_schema(keys), False))
-        print(
-            f"review: round {k}, checking {len(checks)} fix{'' if len(checks) == 1 else 'es'} at --effort {level}"
-        )
-    else:
-        print(f"review: round {k}, no fix to check, so no pass; assess still runs")
+    elif not checks:
+        print(f"review: round {k}, no fix to check and no new code, so no pass; assess still runs")
     tree = checkout(root, commit, n)
     try:
         with concurrent.futures.ThreadPoolExecutor(len(passes) + 1) as pool:
@@ -920,10 +1025,10 @@ def review(
             said.append(out.get("summary", ""))
             kept, dropped = keep(out["findings"], security)
             notes += dropped
-            if k > 1:
+            if name == CHECK:
                 minor = [f for f in kept if not findings.to_fix(f)]
                 notes += [
-                    f"dropped {findings.key(f)}, not a finding to fix, which a later round doesn't raise"
+                    f"dropped {findings.key(f)}, not a finding to fix, which a check doesn't raise"
                     for f in minor
                 ]
                 kept = [f for f in kept if findings.to_fix(f)]
@@ -943,7 +1048,9 @@ def review(
         if checks:
             said.insert(0, f"{held} of {len(checks)} fixes held.")
         if not passes:
-            said.append("Only skipped paths changed." if k == 1 else "No fix to check.")
+            said.append(
+                "Only skipped paths changed." if k == 1 else "No fix to check, no new code."
+            )
         rows, dropped = assemble(rows, found)
         notes += dropped
         ctx = {

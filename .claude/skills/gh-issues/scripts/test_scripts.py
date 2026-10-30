@@ -2651,6 +2651,24 @@ class Review(unittest.TestCase):
             runner(["sleep", "30"], input=None, env=None, timeout=60)
         self.assertEqual(runner.running, [])
 
+    def test_echo_prints_each_line_as_it_comes_and_a_timeout_still_stops_it(self):
+        runner = review.Runner()
+        script = "echo one; echo two >&2; sleep 30; echo never"
+        started = time.monotonic()
+        with (
+            mock.patch("sys.stdout", new_callable=io.StringIO) as out,
+            self.assertRaises(subprocess.TimeoutExpired),
+        ):
+            runner(["sh", "-c", script], input=None, env=None, timeout=2, echo=True)
+        self.assertEqual(out.getvalue(), "one\ntwo\n")
+        self.assertLess(time.monotonic() - started, 10)
+        self.assertEqual(runner.running, [])
+        with mock.patch("sys.stdout", new_callable=io.StringIO) as out:
+            done = runner(
+                ["sh", "-c", "echo a; exit 3"], input=None, env=None, timeout=9, echo=True
+            )
+        self.assertEqual((done.returncode, done.stdout, out.getvalue()), (3, "a\n", "a\n"))
+
     def test_a_kill_while_a_pass_starts_stops_it(self):
         # kill() lands after the stopped check and before p is listed, so it finds nothing to stop.
         runner = review.Runner()
@@ -2786,6 +2804,23 @@ class Review(unittest.TestCase):
         with mock.patch.dict(os.environ, PR_STAGED="1", VIRTUAL_ENV="/repo/.venv"):
             got, _ = self.assess('echo "assess: [${PR_STAGED:-}${VIRTUAL_ENV:-}]"\n')
         self.assertEqual(got["summary"], "assess: []")
+
+    def test_echo_reads_past_a_byte_that_isnt_utf_8(self):
+        with mock.patch("sys.stdout", new_callable=io.StringIO) as out:
+            done = review.Runner()(
+                [sys.executable, "-c", "import sys; sys.stdout.buffer.write(b'a\\xff\\nb\\n')"],
+                input=None,
+                env=None,
+                timeout=10,
+                echo=True,
+            )
+        self.assertEqual(done.stdout, "a\ufffd\nb\n")
+        self.assertEqual(out.getvalue(), done.stdout)
+
+    def test_assess_runs_verbose_and_its_output_reaches_the_log_as_it_runs(self):
+        got, log = self.assess('echo "PASS  pytest  (1.0s)"\necho "assess: $1"\n')
+        self.assertEqual(got["summary"], "assess: -v")
+        self.assertIn("PASS  pytest  (1.0s)\nassess: -v\n", log)
 
     def test_a_diff_that_isnt_utf_8_is_still_read(self):
         repo = Path(self.enterContext(tempfile.TemporaryDirectory()))
@@ -3168,6 +3203,22 @@ class PrReview(unittest.TestCase):
         self.assertEqual([f["status"] for f in ledger["findings"]], ["fixed"])
         self.assertEqual(ledger["last_round"], 2)
 
+    def test_round_2_reviews_new_code_beside_the_check_of_the_fix(self):
+        self.assertEqual(self.pr().returncode, 0)
+        fixed = outcome(file="a.txt", line_start=2, line_end=2)
+        findings.write(self.tree / ".tmp" / "9" / "1-outcomes.md", {"review_findings": [fixed]})
+        self.commit(self.tree, "a.txt", "one\nbranch\nfixed\n", "Fix")
+        self.head = self.commit(self.tree, "b.txt", "more\n", "More scope")
+        self.answer.write_text(answer([]))
+        self.asked.unlink()
+        run = self.pr()
+        self.assertEqual(run.returncode, 0, run.stderr)
+        # The check of the fix, the review and the security pass.
+        self.assertEqual(self.asked.read_text().count("--tools Read,Grep,Glob"), 3)
+        log = self.log()
+        self.assertIn("review: round 2, checking 1 fix", log)
+        self.assertIn("review: round 2, 1 files against the last round's", log)
+
     def test_a_failed_review_is_named_and_the_replies_are_still_sent(self):
         self.broken.touch()
         run = self.pr()
@@ -3248,9 +3299,10 @@ class PrReview(unittest.TestCase):
         self.assertIn("pr: the findings above weren't all recorded", run.stderr)
         self.assertTrue(path.exists())
         self.assertFalse(any(x["source"] == "outcomes" for x in self.store.rows[9]))
-        # Round 2 has no Fixed answer to check, so no pass, and assess still runs.
+        # Round 2 has no Fixed answer to check, so a.txt's change is new code, reviewed since round 1.
         self.assertEqual(self.round(2)["commit"], self.head)
-        self.assertIn("No fix to check.", self.round(2)["summary"])
+        self.assertIn("review: round 2, 1 files against the last round's", self.log())
+        self.assertNotIn("checking", self.log())
 
     def test_a_commit_a_round_names_isnt_reviewed_again(self):
         self.assertEqual(self.pr().returncode, 0)
@@ -3900,6 +3952,41 @@ class ReviewRounds(unittest.TestCase):
         )
         self.assertIn("checks", shape["required"])
 
+    def test_a_later_rounds_new_code_is_each_path_since_the_last_round_no_fix_names(self):
+        ledger = self.ledger(outcome())
+        checks = review.fixes(ledger, self.repo, self.c2, self.fork)
+        rounds = ledger["review_rounds"]
+        # Only the fix changed: nothing beyond it.
+        self.assertEqual(
+            review.beyond(rounds, self.repo, self.c2, self.fork, ["sync.sh"], checks),
+            (self.c1, []),
+        )
+        (self.repo / "new.sh").write_text("rm -rf /\n")
+        c3 = self.commit("step 1\nstep 2\nstep 3\npush && branch -D\n", "More")
+        # A file no fix names is new code; one off the branch's paths, as a rebase brings, isn't.
+        self.assertEqual(
+            review.beyond(rounds, self.repo, c3, self.fork, ["sync.sh", "new.sh"], checks),
+            (self.c1, ["new.sh"]),
+        )
+        self.assertEqual(
+            review.beyond(rounds, self.repo, c3, self.fork, ["sync.sh"], checks), (self.c1, [])
+        )
+        # With no fix, the fixed file is new code too; with no round, it's all since the fork.
+        self.assertEqual(
+            review.beyond(rounds, self.repo, c3, self.fork, ["sync.sh", "new.sh"], [])[1],
+            ["new.sh", "sync.sh"],
+        )
+        self.assertEqual(review.beyond([], self.repo, c3, self.fork, ["sync.sh"], [])[0], self.fork)
+        # The last round's commit gone, after a rebase and a gc, is the merge base.
+        gone = [{"round": 1, "commit": "0" * 40}]
+        self.assertEqual(
+            review.beyond(gone, self.repo, c3, self.fork, ["new.sh"], checks),
+            (self.fork, ["new.sh"]),
+        )
+        text = review.prompt(False, "rules", 9, "about", "diff", (), 3)
+        self.assertIn("round 3 of the branch for issue #9: the code changed since the last", text)
+        self.assertIn("report findings only in this diff's changes", text)
+
     def test_a_fix_that_held_is_recorded_fixed_and_one_that_didnt_new(self):
         (fix,) = review.fixes(self.ledger(outcome()), self.repo, self.c2, self.fork)
         held = review.checked(fix, {"key": fix["key"], "held": True, "body": "push is checked"}, 2)
@@ -3982,6 +4069,14 @@ class ReviewRounds(unittest.TestCase):
             got = review.codify(ctx, "unchecked-step-before-destructive-op", rows, [row()], runner)
         return rows, got, asked
 
+    def test_a_checks_match_outside_the_repo_isnt_a_finding(self):
+        long = "a/" * 130 + "x.sh"
+        text = f"/private/var/t/x.sh:4: abs\n../x.sh:4: up\n{long}:4: long\nok/x.sh:4-5: kept\n"
+        found, odd = review.matches(text)
+        self.assertEqual(found, [("ok/x.sh", 4, 5, "kept")])
+        self.assertEqual(len(odd), 3)
+
+    @unittest.skipUnless(review.SANDBOX.exists(), "the check runs only under macOS's sandbox")
     def test_a_rules_check_is_written_run_in_the_tree_and_its_matches_are_findings(self):
         script = (
             "print('sync.sh:4: push before branch -D')\n"
@@ -4010,6 +4105,7 @@ class ReviewRounds(unittest.TestCase):
             ],
         )
 
+    @unittest.skipUnless(review.SANDBOX.exists(), "the check runs only under macOS's sandbox")
     def test_a_check_that_isnt_written_fails_or_runs_long_leaves_the_rows(self):
         def slow(command, **kw):
             raise subprocess.TimeoutExpired(command, review.CHECK_TIMEOUT)
@@ -4023,6 +4119,41 @@ class ReviewRounds(unittest.TestCase):
                 rows, (got, said), _ = self.codify(script, runs)
                 self.assertEqual(got, rows)
                 self.assertIn(why, said[0])
+
+    @unittest.skipUnless(review.SANDBOX.exists(), "the check runs only under macOS's sandbox")
+    def test_a_check_has_no_network_home_keychain_or_writes_outside_its_scratch(self):
+        outside = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        script = f"""import os, socket
+def tried(what, f):
+    try:
+        f()
+        print(f"sync.sh:1: {{what}} allowed")
+    except OSError:
+        pass
+tried("network", lambda: socket.create_connection(("127.0.0.1", 9), 2))
+tried("a read under HOME", lambda: open({str(Path.home() / ".zshrc")!r}).read())
+tried("a write outside", lambda: open({str(outside / "x")!r}, "w"))
+tried("a write in the tree", lambda: open("x", "w"))
+open(os.path.join(os.environ["HOME"], "scratch"), "w").write("ok")
+if set(os.environ) - {{"HOME", "LANG", "PATH", "__CF_USER_TEXT_ENCODING"}}:
+    print(f"sync.sh:1: env {{sorted(os.environ)}}")
+print("sync.sh:7: ran")
+"""
+        with mock.patch.dict(os.environ, {"REVIEW_SECRET": "x", "LANG": "C.UTF-8"}):
+            rows, (got, said), _ = self.codify(script)
+        added = [r["summary"] for r in got[len(rows) :]]
+        self.assertEqual(added, ["ran"], said)
+        self.assertFalse((outside / "x").exists())
+        self.assertFalse((self.repo / "x").exists())
+        # A Python under HOME, as uv and pyenv install one, can still read its own files.
+        sandbox = review.profile(self.repo / "c.py", str(self.repo), str(outside))
+        self.assertIn(f"(subpath {json.dumps(os.path.realpath(sys.base_prefix))})", sandbox)
+
+    def test_without_macos_sandbox_a_check_is_written_but_not_run(self):
+        with mock.patch.object(review, "SANDBOX", Path("/nonexistent/sandbox-exec")):
+            rows, (got, said), _ = self.codify("print('sync.sh:3: x')")
+        self.assertEqual(got, rows)
+        self.assertIn("wasn't run: it runs only under /nonexistent/sandbox-exec", said[0])
 
     def test_a_second_review_of_a_reviewed_commit_exits_once_it_holds_the_lock(self):
         findings.write(self.repo / ".tmp" / "9" / "1-findings.md", a_round(commit=self.c1))

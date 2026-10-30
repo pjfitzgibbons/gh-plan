@@ -22,7 +22,8 @@ lines against its block first, so a file edited on one side only stops the send,
 A file Redmine already holds is skipped. Redmine skips a row it has and refuses, saving nothing, a
 row it has with other values; a refusal or an unreachable Redmine stops the send there, keeps
 every file, and exits 1. After the posts it prints each issue's open-to-fix count. It deletes
-nothing: Done removes `.tmp/N/` once Redmine holds every file.
+nothing. The files stay until Done, which until design 0005's W5 doesn't check that Redmine holds
+them, so a round never sent goes with the worktree.
 """
 
 import argparse
