@@ -120,8 +120,8 @@ def build(
     now: datetime,
     assign: int | None = None,
     move_from: tuple[int, ...] = (),
-) -> tuple[list[Row], int, list[str], list[str]]:
-    """Rows, the count left out as not planned, discrepancies, and correction commands."""
+) -> tuple[list[Row], int, list[str], list[Fix]]:
+    """Rows, the count left out as not planned, discrepancies, and corrections."""
     tag = f"{slug}#"
     mine = [
         i for i in intervals if f"repo:{slug}" in i.tags or any(t.startswith(tag) for t in i.tags)
@@ -272,7 +272,7 @@ def render(rows: list[Row], not_planned: int, hpp: float, hpp_source: str) -> st
             out.append(
                 f"#{r.number:<5} {r.estimate:>3}  {est_h:>5.1f}    {act:>5.2f}    {var:>+6.2f}  {var / est_h:>+5.0%}{flag}"
             )
-            tot_pts += r.estimate
+            tot_pts += r.estimate or 0
             tot_act += act
             with_snap += 1
         else:

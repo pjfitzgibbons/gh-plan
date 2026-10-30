@@ -118,7 +118,7 @@ back in place, as the Review tab already does. The Redmine page in the Integrate
 opening on Start; the Issue panel links to it.
 
 The round's text files stop opening as tabs by themselves. The Review panel links to each one:
-`commit.txt`, `pr-body.md`, each reply, and `.tmp/<n>/findings/outcomes.md` when the round has
+`commit.txt`, `pr-body.md`, each reply, and the round's `.tmp/<n>/<k>-outcomes.md` when it has
 one. A click opens the file in the left group for editing.
 
 <a id="issue-panel"></a>

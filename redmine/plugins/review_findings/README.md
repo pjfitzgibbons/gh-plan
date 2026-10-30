@@ -1,19 +1,26 @@
 # Review findings
 
-A Redmine 7.0 plugin that stores code review findings, one row per finding per review round of an
-issue's branch, with one row per reviewed commit for the round itself, and answers per-rule counts of real findings and noise. It adds two tables,
-`review_findings` and `review_rounds`, a project module named `review_findings`, a JSON API and a Findings tab. The schema, the allowed
-values and what each field holds are [design 0005 §3.1](../../../docs/design/0005-review-findings.md#schema).
+A Redmine 7.0 plugin that keeps an issue's code review as a ledger: one `review_rounds` row per
+reviewed commit, and one `review_findings` row per event on a finding, the reviewer raising it or
+checking its fix, or a person's answer. Rows are only added. It adds the two tables, a project
+module named `review_findings`, a JSON API and a Findings tab. The schema, the allowed values and
+what each field holds are [design 0005 §3.1](../../../docs/design/0005-review-findings.md#schema).
+
+A finding's key is `file:lines:rule`, such as `lib/sync.rb:12-14:ignored-file-overwrite`, and its
+status is its key's latest row, by round, an answer after the review of its round: `open`,
+`fixed, unchecked` (answered `fixed`, not yet checked by a later round), `fixed` (checked),
+`intentional`, `wrong` or `doesnt-matter`. A finding is *open to fix* when it's open and silent
+and loses something, or its rule is `crash`.
 
 ## The Findings tab
 
-The project's **Findings** tab, at `/projects/:project_id/review_findings`, lists the findings of
-every issue in the project and its sub-projects that the user can see, each open silent finding
-first. `?issue_id=<n>` shows one issue's, and says "No review yet." when it has no rows. An open
-silent finding is silent, loses something, and has no outcome in its fingerprint's latest round. It needs View review findings.
+The project's **Findings** tab, at `/projects/:project_id/review_findings`, has a line per finding
+of every issue in the project and its sub-projects that the user can see, from its latest row, each
+open finding to fix first. `?issue_id=<n>` shows one issue's, and says "No review yet." when it has
+no rows. It needs View review findings.
 
-An issue's page shows a **Findings** line, `<k> open silent` or `no review yet`, linking to the
-tab filtered to the issue. It counts the outcomes the store holds, so a drafted outcome counts as
+An issue's page shows a **Findings** line, `<k> open to fix` or `no review yet`, linking to the
+tab filtered to the issue. It counts the answers the ledger holds, so a drafted outcome counts as
 open until Ship's `pr` sends it.
 
 A finding's text is shown escaped, as text.
@@ -25,43 +32,46 @@ API key (`X-Redmine-API-Key`) or basic auth, even from a signed-in browser.
 
 | Route | Does | Permission |
 |---|---|---|
-| `GET /issues/:issue_id/review_findings.json` | The issue's findings, every round, and its rounds in order, as `{"review_findings": [...], "review_rounds": [...]}` | View review findings |
-| `PUT /issues/:issue_id/review_findings.json` | Upserts `{"review_findings": [...]}` by `(fingerprint, round)`, and `{"review_round": {...}}` by its commit, in one transaction, and answers `{"created", "updated", "unchanged"}` | Manage review findings |
+| `GET /issues/:issue_id/review_findings.json` | `{"last_round", "review_rounds", "review_findings", "findings", "open_to_fix", "fixed_unchecked", "rules"}`: the issue's rounds and rows, one `findings` entry per key with its status and latest row, and per rule the number of keys | View review findings |
+| `POST /issues/:issue_id/review_findings.json` | Adds `{"review_round": {...}}` and `{"review_findings": [...]}` in one transaction, and answers `{"created", "skipped", "round"}` | Manage review findings |
 | `GET /projects/:project_id/review_findings/rules.json` | `{"rules": [{"rule_id", "real", "noise"}]}` over the issues the user can see in the project and its sub-projects | View review findings |
-| `GET /projects/:project_id/review_findings/rules/:rule_id.json` | `{"rule_id", "findings", "confirmed"}`: how many findings have the rule, over the same issues | View review findings |
-| `PUT /projects/:project_id/review_findings/rules/:rule_id.json` | Renames the rule to `{"new_rule_id": "…"}` on every finding in the project and its sub-projects, in one transaction, and answers `{"renamed", "noted"}` | Manage review findings |
+| `GET /projects/:project_id/review_findings/rules/:rule_id.json` | `{"rule_id", "findings", "confirmed"}`: how many keys have the rule, and how many have an answer, over the same issues | View review findings |
+| `PUT /projects/:project_id/review_findings/rules/:rule_id.json` | Renames the rule to `{"new_rule_id": "…"}` on every row in the project and its sub-projects, in one transaction, and answers `{"renamed", "noted"}` | Manage review findings |
 
-A `PUT` line is one of two kinds:
+A `review_round` has `round`, `commit` and `ci` (`success`, `failure` or `none`), and any of
+`ci_summary`, `repo` (`owner/repo`), `pr_number`, `base`, `effort`, `review_md`, `summary`,
+`controls` and `new_rules`. Its `round` is the issue's `last_round` + 1, whatever its `ci`; a
+commit is reviewed once. A `POST` may leave out `review_findings`, as a clean round does.
 
-- **A round line** has `fingerprint`, `round` and any of `commit`, `file`, `line`, `rule_id`,
-  `tag`, `severity`, `visibility`, `summary`, `body`, `verified_round` and `pr_url`. A field it
-  leaves out is kept. On a confirmed row it sets only `verified_round`.
-- **An outcome line** has `"confirm": true`, `fingerprint`, `round`, `outcome`, and any of
-  `justification`, `rule_id`, `severity` and `visibility`. It needs a row already there, and it
-  sets who confirmed it and when.
+A `review_findings` row has `round`, `source`, `file`, `line_start`, `line_end`, `rule_id`,
+`outcome` and `severity`, and any of `tag`, `visibility`, `summary`, `body` and `justification`:
 
-A `review_round` records one review of one commit: `commit`, `round`, `ci` (`success`, `failure` or `none`), and any of `ci_summary`, `base`, `effort`, `review_md`, `summary`, `controls`, `dropped` and `new_rules`. `round` is set only when `ci` is `success`, and needed then. A `PUT` with a `review_round` may leave out `review_findings`, as a clean round or a failed `ci` does, and a round with no number takes no rows. A round's number never changes once recorded, and two commits never share one; either gets a 422. `findings.py send` sends them.
+- **From `review`**, `new` raises a finding, or reopens one whose fix didn't hold; `fixed` checks a
+  fix, and needs an earlier round to have raised the key. Round 0 is a missed finding (§3.8).
+- **From `outcomes`**, a person's answer: `fixed`, `intentional`, `wrong` or `doesnt-matter`, with a
+  `justification` for any but `fixed`. It needs a round up to its own to have raised the key, and
+  it records the sender as `confirmed_by_id`.
 
-Any change to a confirmed row adds a note to the issue's journal, naming the user and each field's
-old and new values. A line that changes nothing changes nothing, so sending the same `PUT` twice
-saves once.
+A row in a round other than 0 needs that round recorded, before or in the same `POST`.
 
-A value outside the allowed ones, an unknown field, or a `pr_url` that isn't
-`https://github.com/<owner>/<repo>/pull/<n>` gets a 422 with `{"errors": [...]}`, each naming its
-row, and nothing in the request is saved. An empty string is saved as `NULL`. Two `PUT`s of one
-round at once meet at the unique index on `(issue_id, fingerprint, round)`; the loser runs once
-more and finds the winner's rows.
+A row or round identical to one already there is skipped, so the same `POST` twice adds nothing. One
+whose event, `(file, line_start, line_end, rule_id, round, source)`, or whose round, is already
+there with other values gets a 422; a later answer goes in a later round. So does a value outside
+the allowed ones, an unknown field, or a round that isn't the next one. A 422 answers
+`{"errors": [...]}`, each naming its row, and nothing in the request is saved. An empty string is
+saved as `NULL`. Two `POST`s of one round at once meet at a unique index; the loser runs once more
+and skips the winner's rows.
 
-`rules.json` counts confirmed rows that have a rule, each fingerprint once, by its latest confirmed
-round: `fixed` and `intentional` are real, `wrong` and `doesnt-matter` are noise. It counts only
-the projects where the user has View review findings.
+`rules.json` counts each key once, by its latest answer: `fixed` and `intentional` are real, `wrong`
+and `doesnt-matter` are noise. It counts only the projects where the user has View review findings.
 
-A rename (§3.10) adds the same journal note to the issue of each confirmed finding it changes. A
-`new_rule_id` that isn't lowercase words and digits joined by hyphens, or is the old id, gets a
-422, and so does a rename when a finding with the old id is on an issue the user can't see or
-can't manage findings in: it renames all of them or none. `redmine-set rule OLD NEW` sends it.
+A rename (§3.10) is the one change to rows already there: a rule's id is a label, not an event. It
+adds a journal note to each issue it touches. A `new_rule_id` that isn't lowercase words and digits
+joined by hyphens, or is the old id, gets a 422, and so does a rename when a row with the old id is
+on an issue the user can't see or can't manage findings in, or when a renamed row's key is already
+another row's: it renames all of them or none. `redmine-set rule OLD NEW` sends it.
 
-Deleting an issue leaves its findings' rows in the table.
+Deleting an issue leaves its rows in the tables.
 
 ## Mounting it
 
@@ -71,7 +81,7 @@ Mount this folder there, read-only. The plugin has a migration, so the container
 on start. `compose.yml` does both. *Administration › Plugins* lists it as "Review findings" once
 it has loaded.
 
-To remove the table, roll the plugin's migration back before unmounting it:
+To remove the tables, roll the plugin's migrations back before unmounting it:
 
 ```
 docker compose -f redmine/compose.yml exec -u redmine redmine \

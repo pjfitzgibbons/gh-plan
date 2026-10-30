@@ -19,14 +19,16 @@
 #           .tmp/N/pr-body.md, then opens the PR in the GitHub Pull Requests extension
 #   replies when .tmp/N/replies/ holds <comment id>.md files: posts each to its review thread,
 #           resolves the thread and deletes the file (pr_threads.py --post)
-#   findings when .tmp/N/review/ holds review files or .tmp/N/findings/outcomes.md exists: sends
-#           them to Redmine and deletes each once it reads back (findings.py send --outcomes). One
-#           not recorded is named and kept, the review below still starts, and pr exits 1
-#   review  when neither .tmp/N/review/<commit>.json nor a Redmine round names HEAD, and origin's base or HEAD has REVIEW.md: starts Claude's
-#           review of the branch's whole diff in the background, which runs scripts/assess, writes
-#           that file and sends it to Redmine (review.py --detach), and logs to .tmp/N/review/<commit>.log. pr doesn't wait for
-#           it, so Ship links the PR at once. One that fails says so in its log, and the next pr,
-#           like the rerun of a pr stopped after its push, reviews the commit again
+#   findings when .tmp/N/ holds round files, <k>-findings.md or <k>-outcomes.md: sends them to
+#           Redmine in round order (findings.py send --outcomes). Each stays until Done finds it in
+#           Redmine. One not recorded is named, the review below still starts, and pr exits 1
+#   review  when neither a round file nor a Redmine round names HEAD, and origin's base or HEAD has
+#           REVIEW.md: starts Claude's review in the background as the issue's next round, which
+#           runs scripts/assess, writes .tmp/N/<k>-findings.md and sends it to Redmine (review.py
+#           --detach), and logs to .tmp/N/review.log. pr doesn't wait for it, so Ship links the PR
+#           at once. One that fails says so in its log, and the next pr, like the rerun of a pr
+#           stopped after its push, reviews the commit again. When Redmine can't answer, nothing
+#           is reviewed, and the next pr tries again
 #
 # The issue's Done list is ticked in the PR body's ## Done section, never in Redmine: a
 # .tmp/N/issue.md left from before is named as no longer sent, and left where it is.
@@ -58,11 +60,11 @@ send_round() {
   python3 "$scripts/pr_threads.py" "$number" --post ".tmp/$n/replies"
 }
 
-# The review files a review left unsent and outcomes.md, after the push, so a review and its
-# outcomes reach Redmine (findings.py send --outcomes). A file stays until Redmine reads it back,
-# so a send that fails is named, and the next pr sends it again; the review still starts.
+# The round files, after the push, so a review and its outcomes reach Redmine (findings.py send
+# --outcomes). Sending one Redmine holds already adds nothing, so a send that fails is named, and the
+# next pr sends it again; the review still starts.
 send_findings() {
-  [ -f ".tmp/$n/findings/outcomes.md" ] || ls ".tmp/$n/review/"*.json > /dev/null 2>&1 || return 0
+  ls ".tmp/$n/"[0-9]*-findings*.md ".tmp/$n/"[0-9]*-outcomes*.md > /dev/null 2>&1 || return 0
   py310 ||
     { echo "pr: .tmp/$n/ has findings to send, and python3 is older than 3.10" >&2; unsent=1; return 0; }
   python3 "$scripts/findings.py" send "$n" --outcomes ||
@@ -253,33 +255,25 @@ open "vscode://github.vscode-pull-request-github/open-pull-request-webview?uri=$
 
 # The review of what this push brought (review.py), last, and in the background, so a review that
 # fails or runs long, or the assess it runs, holds up neither the PR, the replies nor Ship's link in
-# Redmine. A head with neither a review file nor a round in Redmine has a commit to review: one this
-# push brought, opening the PR included, or one a pr that stopped after its push, or a failed
-# review, left. It writes .tmp/N/review/<commit>.json, sends it to Redmine, and posts nothing.
-# When Redmine can't say, the head is reviewed, and review.py checks again once it holds the lock.
-head=$(git rev-parse HEAD)
-if [ -f ".tmp/$n/review/$head.json" ]; then
-  review=0
-elif ! py310; then
-  review=1
-elif python3 "$scripts/findings.py" reviewed "$n" "$head"; then
-  echo "pr: Redmine has a review of $(git rev-parse --short HEAD), so no review"
-  review=0
+# Redmine. A head no round file or Redmine round names has a commit to review: one this push
+# brought, opening the PR included, or one a pr that stopped after its push, or a failed review,
+# left. It writes .tmp/N/<k>-findings.md, sends it to Redmine, and posts nothing. A round is
+# numbered from Redmine's, so when Redmine can't answer nothing is reviewed; review.py checks again
+# once it holds the lock.
+short=$(git rev-parse --short HEAD)
+# REVIEW.md as the base has it, or the commit's until the base has one, as review.py reads it: never
+# the working tree's, so deleting it on the branch doesn't turn the review off.
+if ! git cat-file -e "refs/remotes/origin/$base:REVIEW.md" 2>/dev/null && ! git cat-file -e HEAD:REVIEW.md 2>/dev/null; then
+  echo "pr: no REVIEW.md on origin/$base or at HEAD, so no review"
+elif ! py314; then
+  echo "pr: python3 is older than 3.14, so no review" >&2
+elif python3 "$scripts/findings.py" reviewed "$n" "$(git rev-parse HEAD)"; then
+  echo "pr: a round of #$n has reviewed $short, so no review"
 elif [ $? -eq 2 ]; then
-  echo "pr: Redmine can't say whether $(git rev-parse --short HEAD) was reviewed, so reviewing it" >&2
-  review=1
-else
-  review=1
-fi
-if [ "$review" = 1 ]; then
-  # REVIEW.md as the base has it, or the commit's until the base has one, as review.py reads it:
-  # never the working tree's, so deleting it on the branch doesn't turn the review off.
-  if ! git cat-file -e "refs/remotes/origin/$base:REVIEW.md" 2>/dev/null && ! git cat-file -e HEAD:REVIEW.md 2>/dev/null; then
-    echo "pr: no REVIEW.md on origin/$base or at HEAD, so no review"
-  elif ! py314; then
-    echo "pr: python3 is older than 3.14, so no review" >&2
-  elif ! python3 "$scripts/review.py" "$n" --base "refs/remotes/origin/$base" --detach; then
-    echo "pr: the review didn't start, so .tmp/$n/review/ has nothing for this commit; retry with: python3 $scripts/review.py $n --base refs/remotes/origin/$base" >&2
-  fi
+  echo "pr: Redmine can't answer, so $short isn't reviewed; pr $n again once it can" >&2
+  unsent=1
+elif ! python3 "$scripts/review.py" "$n" --base "refs/remotes/origin/$base" \
+    --repo "${pr_path%/pull/*}" --pr "${pr_path##*/}" --detach; then
+  echo "pr: the review didn't start, so no round names $short; retry with: python3 $scripts/review.py $n --base refs/remotes/origin/$base" >&2
 fi
 exit "$unsent"
