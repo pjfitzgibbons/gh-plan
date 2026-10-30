@@ -19,134 +19,179 @@ import pytest
 ROOT = Path(__file__).parents[1]
 SQL_RB = ROOT / "redmine" / "sql.rb"
 README = ROOT / "redmine" / "README.md"
-MIGRATION = ROOT / "redmine/plugins/review_findings/db/migrate/001_create_review_findings.rb"
+MIGRATION = ROOT / "redmine/plugins/review_findings/db/migrate/002_create_review_ledger.rb"
 
 SCHEMA = """
 CREATE TABLE issues (id integer PRIMARY KEY, subject varchar NOT NULL);
 CREATE TABLE "review_findings" ("id" integer PRIMARY KEY AUTOINCREMENT NOT NULL,
-  "issue_id" integer NOT NULL, "commit" varchar(40), "round" integer NOT NULL,
-  "fingerprint" varchar(64) NOT NULL, "file" varchar, "line" integer, "rule_id" varchar,
-  "tag" varchar NOT NULL, "severity" varchar NOT NULL, "visibility" varchar,
-  "summary" varchar(255) NOT NULL, "body" text, "outcome" varchar, "justification" text,
-  "verified_round" integer, "confirmed_by_id" integer, "confirmed_on" datetime(6),
-  "pr_url" varchar, "created_on" datetime(6) NOT NULL, "updated_on" datetime(6) NOT NULL);
+  "issue_id" integer NOT NULL, "round" integer NOT NULL, "source" varchar NOT NULL,
+  "file" varchar NOT NULL, "line_start" integer NOT NULL, "line_end" integer NOT NULL,
+  "rule_id" varchar NOT NULL, "outcome" varchar NOT NULL, "tag" varchar,
+  "severity" varchar NOT NULL, "visibility" varchar, "summary" varchar(255), "body" text,
+  "justification" text, "confirmed_by_id" integer, "created_on" datetime(6) NOT NULL);
 """
-# (issue, round, fingerprint, file, line, rule, severity, visibility, summary, outcome, confirmed,
+# (issue, round, source, file, line_start, line_end, rule, outcome, severity, visibility, summary,
 # created)
 FINDINGS = [
+    # Raised, answered fixed, and the fix checked in round 2.
     (
         7,
         1,
-        "finding/v1:00000000000000a1",
+        "review",
         "a.py",
         3,
+        3,
         "ignored-file-overwrite",
+        "new",
         "files",
         "silent",
         "overwrites a file",
-        "fixed",
-        1,
         "2026-10-12 12:00:00",
     ),
     (
         7,
-        2,
-        "finding/v1:00000000000000a1",
+        1,
+        "outcomes",
         "a.py",
         3,
+        3,
         "ignored-file-overwrite",
+        "fixed",
         "files",
         "silent",
         "overwrites a file",
-        "fixed",
-        1,
-        "2026-10-19 12:00:00",
+        "2026-10-13 12:00:00",
     ),
     (
         7,
         2,
-        "finding/v1:00000000000000b2",
+        "review",
+        "a.py",
+        3,
+        3,
+        "ignored-file-overwrite",
+        "fixed",
+        "files",
+        "silent",
+        "overwrites a file",
+        "2026-10-19 12:00:00",
+    ),
+    # Open to fix: silent, and loses something.
+    (
+        7,
+        2,
+        "review",
         "b.py",
         9,
+        9,
         "lost-commit",
+        "new",
         "commits",
         "silent",
         "drops a commit\twith a tab",
-        None,
-        None,
         "2026-10-19 12:00:00",
     ),
+    # Open to fix: a crash, though it's loud.
     (
         8,
         1,
-        "finding/v1:00000000000000c3",
-        None,
-        None,
-        None,
+        "review",
+        "c.py",
+        1,
+        4,
+        "crash",
+        "new",
         "work",
-        "silent",
+        "loud",
         "loses an edit",
-        None,
-        None,
         "2026-10-12 12:00:00",
     ),
+    # Raised twice, then answered wrong in its second round.
     (
         8,
         1,
-        "finding/v1:00000000000000d4",
+        "review",
         "d.py",
         5,
+        5,
         "lost-commit",
+        "new",
         "commits",
         "silent",
         "answered in its second round",
-        None,
-        None,
         "2026-10-12 12:00:00",
     ),
     (
         8,
         2,
-        "finding/v1:00000000000000d4",
+        "review",
         "d.py",
         5,
+        5,
         "lost-commit",
+        "new",
         "commits",
         "silent",
         "answered in its second round",
-        "wrong",
-        1,
         "2026-10-19 12:00:00",
     ),
-    # Not yet answered, so it has no outcome, and the counts, over accepted findings, leave it out.
+    (
+        8,
+        2,
+        "outcomes",
+        "d.py",
+        5,
+        5,
+        "lost-commit",
+        "wrong",
+        "commits",
+        "silent",
+        "answered in its second round",
+        "2026-10-19 13:00:00",
+    ),
+    # Not yet answered, and loses nothing, so not open to fix.
     (
         8,
         1,
-        "finding/v1:00000000000000f6",
+        "review",
         "f.py",
         2,
+        2,
         "ignored-file-overwrite",
+        "new",
         "nothing",
-        "silent",
+        None,
         "not yet answered",
-        None,
-        None,
         "2026-10-12 12:00:00",
     ),
-    # Its issue was deleted: the plugin's routes no longer see it, so the counts leave it out too.
+    # Its issue was deleted: the plugin's routes no longer see it, so the queries leave it out too.
     (
         99,
         1,
-        "finding/v1:00000000000000e5",
+        "review",
         "e.py",
         1,
+        1,
         "ignored-file-overwrite",
+        "new",
         "files",
         "silent",
         "on a deleted issue",
-        "fixed",
-        1,
         "2026-10-12 12:00:00",
+    ),
+    (
+        99,
+        1,
+        "outcomes",
+        "e.py",
+        1,
+        1,
+        "ignored-file-overwrite",
+        "fixed",
+        "files",
+        "silent",
+        "on a deleted issue",
+        "2026-10-12 13:00:00",
     ),
 ]
 
@@ -174,10 +219,10 @@ def fixture_db(tmp_path_factory) -> Path:
     db.executescript(SCHEMA)
     db.executemany("INSERT INTO issues VALUES (?, ?)", [(7, "seven"), (8, "eight")])
     db.executemany(
-        "INSERT INTO review_findings (issue_id, round, fingerprint, file, line, rule_id, tag,"
-        " severity, visibility, summary, outcome, confirmed_by_id, created_on, updated_on)"
-        " VALUES (?, ?, ?, ?, ?, ?, 'Important', ?, ?, ?, ?, ?, ?, ?)",
-        [(*row, row[-1]) for row in FINDINGS],
+        "INSERT INTO review_findings (issue_id, round, source, file, line_start, line_end,"
+        " rule_id, outcome, severity, visibility, summary, created_on)"
+        " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        FINDINGS,
     )
     db.commit()
     db.close()
@@ -324,7 +369,10 @@ def test_anything_but_one_query_prints_the_usage(db, args):
 
 
 def test_the_fixture_has_the_migrations_columns():
-    migrated = re.findall(r"^\s+t\.\w+ :(\w+)", MIGRATION.read_text(), re.M)
+    table = re.search(
+        r"create_table :review_findings do.*?^\s+end$", MIGRATION.read_text(), re.M | re.S
+    )
+    migrated = re.findall(r"^\s+t\.\w+ :(\w+)", table[0], re.M)
     db = sqlite3.connect(":memory:")
     db.executescript(SCHEMA)
     columns = [row[1] for row in db.execute("PRAGMA table_info(review_findings)")]
@@ -335,24 +383,22 @@ def readme_queries() -> list[str]:
     return re.findall(r"^```sql\n(.*?)^```", README.read_text(), re.M | re.S)
 
 
-def test_the_readme_gives_three_queries():
-    assert len(readme_queries()) == 3
+def test_the_readme_gives_four_queries():
+    assert len(readme_queries()) == 4
 
 
 @pytest.mark.parametrize(
     "index, expected",
     [
+        (0, "rule_id\toutcome\tn\nignored-file-overwrite\tfixed\t1\nlost-commit\twrong\t1\n"),
+        (1, "rule_id\tn\ncrash\t1\nignored-file-overwrite\t1\nlost-commit\t1\n"),
+        # a.py's week is the one it was raised in, not its latest row's.
+        (2, "week\toutcome\tn\n2026-41\tfixed\t1\n"),
         (
-            0,
-            "rule_id\toutcome\tn\nignored-file-overwrite\tfixed\t1\nlost-commit\twrong\t1\n",
-        ),
-        # a1's week is its first round's, not its latest's.
-        (1, "week\toutcome\tn\n2026-41\tfixed\t1\n"),
-        (
-            2,
-            "issue\tsubject\tround\tfile\tline\tseverity\tsummary\n"
-            "7\tseven\t2\tb.py\t9\tcommits\tdrops a commit\\twith a tab\n"
-            "8\teight\t1\t\t\twork\tloses an edit\n",
+            3,
+            "issue\tsubject\tround\tkey\tseverity\tsummary\n"
+            "7\tseven\t2\tb.py:9:lost-commit\tcommits\tdrops a commit\\twith a tab\n"
+            "8\teight\t1\tc.py:1-4:crash\twork\tloses an edit\n",
         ),
     ],
 )

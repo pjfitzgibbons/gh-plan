@@ -435,7 +435,9 @@ The open findings to fix, across every issue, over the `latest` rows:
 WITH ranked AS (/* as above */),
 latest AS (SELECT * FROM ranked WHERE n = 1)
 SELECT i.id AS issue, i.subject, l.round,
-       l.file || ':' || l.line_start || '-' || l.line_end || ':' || l.rule_id AS key,
+       l.file || ':' || l.line_start
+         || CASE WHEN l.line_end <> l.line_start THEN '-' || l.line_end ELSE '' END
+         || ':' || l.rule_id AS key,
        l.severity, l.summary
 FROM latest l
 JOIN issues i ON i.id = l.issue_id

@@ -1,119 +1,117 @@
-# Invented rows on Redmine's fixture issues 1 and 2 (project 1), confirmed by jsmith (2).
-open_silent:
+# Invented events on Redmine's fixture issues 1 and 2 (project 1), answered by jsmith (2).
+# Issue 1: an open finding to fix, a fix a later round checked, an intentional one, and a fix
+# no round has checked yet. Issue 2: an open crash.
+open_raised:
   issue_id: 1
-  commit: "1111111111111111111111111111111111111111"
   round: 1
-  fingerprint: finding/v1:0000000000000001
+  source: review
   file: lib/sync.rb
-  line: 12
+  line_start: 12
+  line_end: 14
   rule_id: ignored-file-overwrite
+  outcome: new
   tag: Important
   severity: files
   visibility: silent
   summary: The copy overwrites an ignored file without a word
-fixed_verified:
+checked_raised:
   issue_id: 1
-  commit: "1111111111111111111111111111111111111111"
   round: 1
-  fingerprint: finding/v1:0000000000000002
+  source: review
   file: lib/sync.rb
-  line: 40
-  rule_id: ignored-file-overwrite
+  line_start: 40
+  line_end: 40
+  rule_id: forced-update
+  outcome: new
   tag: Important
   severity: commits
   visibility: silent
   summary: A forced update drops unpushed commits
-  outcome: fixed
-  verified_round: 2
-  confirmed_by_id: 2
-  confirmed_on: 2026-10-20 10:00:00
-intentional:
+checked_answered:
   issue_id: 1
   round: 1
-  fingerprint: finding/v1:0000000000000003
+  source: outcomes
+  file: lib/sync.rb
+  line_start: 40
+  line_end: 40
+  rule_id: forced-update
+  outcome: fixed
+  severity: commits
+  visibility: silent
+  confirmed_by_id: 2
+checked_held:
+  issue_id: 1
+  round: 2
+  source: review
+  file: lib/sync.rb
+  line_start: 40
+  line_end: 40
+  rule_id: forced-update
+  outcome: fixed
+  severity: commits
+  visibility: silent
+  body: The update now names the tip it checked
+intentional_raised:
+  issue_id: 1
+  round: 1
+  source: review
   file: lib/remote.rb
-  line: 7
+  line_start: 7
+  line_end: 7
   rule_id: repo-rename
+  outcome: new
   tag: Important
   severity: nothing
   visibility: seen
   summary: A renamed repo is refused
-  outcome: intentional
-  justification: The refusal names the rename
-  confirmed_by_id: 2
-  confirmed_on: 2026-10-20 10:00:00
-wrong:
-  issue_id: 1
-  round: 2
-  fingerprint: finding/v1:0000000000000004
-  file: lib/remote.rb
-  line: 30
-  rule_id: repo-rename
-  tag: Nit
-  severity: nothing
-  visibility: seen
-  summary: The remote is read twice
-  outcome: wrong
-  justification: It is read once
-  confirmed_by_id: 2
-  confirmed_on: 2026-10-21 10:00:00
-doesnt_matter:
-  issue_id: 1
-  round: 2
-  fingerprint: finding/v1:0000000000000005
-  rule_id: ignored-file-overwrite
-  tag: Nit
-  severity: nothing
-  summary: The helper could be shorter
-  outcome: doesnt-matter
-  justification: Not worth the change
-  confirmed_by_id: 2
-  confirmed_on: 2026-10-21 10:00:00
-# One fingerprint over three rounds: fixed, then wrong, then open. Counts once, as wrong.
-repeat_round_1:
+intentional_answered:
   issue_id: 1
   round: 1
-  fingerprint: finding/v1:0000000000000006
+  source: outcomes
+  file: lib/remote.rb
+  line_start: 7
+  line_end: 7
   rule_id: repo-rename
-  tag: Important
-  severity: tracker
-  visibility: silent
-  summary: A fetch closes another issue
-  outcome: fixed
+  outcome: intentional
+  severity: nothing
+  visibility: seen
+  justification: Refused with a message; an Open row
   confirmed_by_id: 2
-  confirmed_on: 2026-10-20 10:00:00
-repeat_round_2:
+unchecked_raised:
   issue_id: 1
   round: 2
-  fingerprint: finding/v1:0000000000000006
-  rule_id: repo-rename
-  tag: Important
-  severity: tracker
-  visibility: silent
-  summary: A fetch closes another issue
-  outcome: wrong
-  justification: The keyword is refs
-  confirmed_by_id: 2
-  confirmed_on: 2026-10-21 10:00:00
-repeat_round_3:
-  issue_id: 1
-  round: 3
-  fingerprint: finding/v1:0000000000000006
-  rule_id: repo-rename
-  tag: Important
-  severity: tracker
-  visibility: silent
-  summary: A fetch closes another issue
-seed:
-  issue_id: 2
-  round: 6
-  fingerprint: seed/v1:82-R6.3
+  source: review
+  file: lib/sync.rb
+  line_start: 60
+  line_end: 61
   rule_id: ignored-file-overwrite
+  outcome: new
   tag: Important
   severity: files
   visibility: silent
-  summary: The fast-forward overwrote an ignored file
+  summary: The rename's new path isn't scanned
+unchecked_answered:
+  issue_id: 1
+  round: 2
+  source: outcomes
+  file: lib/sync.rb
+  line_start: 60
+  line_end: 61
+  rule_id: ignored-file-overwrite
   outcome: fixed
-  pr_url: https://github.com/example/plan/pull/114
+  severity: files
+  visibility: silent
   confirmed_by_id: 2
-  confirmed_on: 2026-10-19 10:00:00
+crash_raised:
+  issue_id: 2
+  round: 1
+  source: review
+  file: app/a.rb
+  line_start: 3
+  line_end: 3
+  rule_id: crash
+  outcome: new
+  tag: Important
+  severity: nothing
+  visibility: seen
+  summary: A missing key raises

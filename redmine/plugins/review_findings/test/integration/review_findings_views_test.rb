@@ -4,7 +4,7 @@ class ReviewFindingsViewsTest < Redmine::IntegrationTest
   include ReviewFindingsTestHelper
   fixtures :projects, :users, :email_addresses, :roles, :members, :member_roles, :issues,
            :issue_statuses, :trackers, :projects_trackers, :enabled_modules, :enumerations,
-           :journals, :review_findings
+           :journals, :review_findings, :review_rounds
 
   def setup
     super
@@ -12,21 +12,23 @@ class ReviewFindingsViewsTest < Redmine::IntegrationTest
     log_user('jsmith', 'jsmith')
   end
 
-  test 'the tab lists each open silent finding first' do
+  test 'the tab lists one line per finding, each open finding to fix first' do
     get '/projects/ecookbook/review_findings'
     assert_response :success
     assert_select '#main-menu a.review-findings.selected', text: 'Findings'
-    classes = css_select('table.list.review-findings tbody tr').map { |tr| tr['class'] }
-    open = classes.map { |c| c.include?('open-silent') }
-    assert_equal 2, open.count(true)
-    assert_equal [true, true], open.first(2)
+    rows = css_select('table.list.review-findings tbody tr')
+    assert_equal 5, rows.size
+    assert_equal [true, true, false, false, false], rows.map { |tr| tr['class'].include?('open-to-fix') }
   end
 
-  test 'the tab filtered to an issue lists only its findings' do
-    get '/projects/ecookbook/review_findings', params: { issue_id: 2 }
+  test 'the tab filtered to an issue lists only its findings, by key and status' do
+    get '/projects/ecookbook/review_findings', params: { issue_id: 1 }
     assert_response :success
-    assert_select 'h2 a[href="/issues/2"]'
-    assert_select 'table.list.review-findings tbody tr', ReviewFinding.where(issue_id: 2).count
+    assert_select 'h2 a[href="/issues/1"]'
+    assert_select 'table.list.review-findings tbody tr', 4
+    assert_select 'td', text: 'lib/sync.rb:60-61:ignored-file-overwrite'
+    assert_select 'td', text: /fixed, unchecked/
+    assert_select 'td', text: 'fixed (round 2)'
   end
 
   test 'the tab filtered to an issue with no rows says no review yet' do
@@ -34,21 +36,6 @@ class ReviewFindingsViewsTest < Redmine::IntegrationTest
     assert_response :success
     assert_select 'p.nodata', text: 'No review yet.'
     assert_select 'table.list.review-findings', 0
-  end
-
-  test 'a row a later round answered points to that round' do
-    fingerprint = 'finding/v1:00000000000000dd'
-    ReviewFinding.record(Issue.find(3), [finding_row(fingerprint, 1), finding_row(fingerprint, 2)], User.find(2))
-    get '/projects/ecookbook/review_findings', params: { issue_id: 3 }
-    assert_select 'tr.open-silent', 1
-    assert_select 'table.list.review-findings tbody tr td', text: 'See round 2'
-    ReviewFinding.record(Issue.find(3), [{ 'fingerprint' => fingerprint, 'round' => 2, 'confirm' => true,
-                                           'outcome' => 'fixed' }], User.find(2))
-    get '/projects/ecookbook/review_findings', params: { issue_id: 3 }
-    assert_select 'tr.open-silent', 0
-    assert_select 'table.list.review-findings tbody tr td', text: 'See round 2'
-    get '/issues/3'
-    assert_select 'div.review-findings div.value a', text: '0 open silent'
   end
 
   test 'an issue_id that is not a number is a 404, not an error' do
@@ -74,7 +61,7 @@ class ReviewFindingsViewsTest < Redmine::IntegrationTest
   end
 
   test "a finding's text renders escaped, as text" do
-    ReviewFinding.create!(issue_id: 3, **finding_row('finding/v1:00000000000000bb',
+    ReviewFinding.create!(issue_id: 3, **finding_row('lib/a.rb:1:crash', 0,
                                                      summary: '<script>alert(1)</script>',
                                                      body: '<a href="https://example.com">x</a>').symbolize_keys)
     get '/projects/ecookbook/review_findings', params: { issue_id: 3 }
@@ -85,12 +72,12 @@ class ReviewFindingsViewsTest < Redmine::IntegrationTest
     assert_includes response.body, '&lt;a href="https://example.com"&gt;x&lt;/a&gt;'
   end
 
-  test "the issue page shows its open silent count, linking to the tab filtered to it" do
+  test "the issue page shows its open-to-fix count, linking to the tab filtered to it" do
     get '/issues/1'
     assert_select 'div.attributes div.review-findings div.value ' \
-                  'a[href="/projects/ecookbook/review_findings?issue_id=1"]', text: '2 open silent'
+                  'a[href="/projects/ecookbook/review_findings?issue_id=1"]', text: '1 open to fix'
     get '/issues/2'
-    assert_select 'div.attributes div.review-findings div.value a', text: '0 open silent'
+    assert_select 'div.attributes div.review-findings div.value a', text: '1 open to fix'
     get '/issues/3'
     assert_select 'div.attributes div.review-findings div.value a', text: 'no review yet'
   end

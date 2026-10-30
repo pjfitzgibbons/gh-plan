@@ -21,7 +21,14 @@ _spec.loader.exec_module(backup)
 NOW = datetime.datetime(2026, 10, 20, 14, 30, 5)
 TODAY = NOW.date()
 ISSUES = {1: "first", 2: "second", 3: "third"}
-FINDINGS = {2: [{"fingerprint": "finding/v1:0000000000000001", "round": 1, "outcome": "fixed"}]}
+# Issue 2 has a finding; issue 3 a clean round, with none.
+FINDINGS = {
+    2: {
+        "review_rounds": [{"round": 1, "ci": "success"}],
+        "review_findings": [{"key": "a.py:3:lost-commit", "round": 1, "outcome": "new"}],
+    },
+    3: {"review_rounds": [{"round": 1, "ci": "success"}], "review_findings": []},
+}
 
 
 def _db(path: Path, issues: int) -> None:
@@ -70,7 +77,8 @@ class Fake:
             return {"issues": page, "total_count": len(ISSUES)}
         if path.endswith("/review_findings.json"):
             self.step("findings")
-            return {"review_findings": FINDINGS.get(int(path.split("/")[2]), [])}
+            none = {"review_rounds": [], "review_findings": []}
+            return FINDINGS.get(int(path.split("/")[2]), none)
         self.step("issue")
         n = int(path.split("/")[2].split(".")[0])
         return {"issue": {"id": n, "subject": ISSUES[n], "journals": []}}
@@ -106,15 +114,16 @@ def test_a_run_leaves_a_dated_backup_and_export(fake, volume, monkeypatch):
         "1.json",
         "2-findings.json",
         "2.json",
+        "3-findings.json",
         "3.json",
     ]
     assert (
         json.loads((day / "export" / "issues" / "2.json").read_text())["issue"]["subject"]
         == "second"
     )
-    assert json.loads((day / "export" / "issues" / "2-findings.json").read_text()) == {
-        "review_findings": FINDINGS[2]
-    }
+    for n in (2, 3):
+        exported = json.loads((day / "export" / "issues" / f"{n}-findings.json").read_text())
+        assert exported == FINDINGS[n]
     assert not list((volume / "redmine_backups").glob(".*.partial"))
     assert fake.alerts == []
 
