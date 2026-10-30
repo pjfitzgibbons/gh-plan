@@ -4,17 +4,22 @@ class ReviewFindingsApiTest < Redmine::ApiTest::Base
   include ReviewFindingsTestHelper
   fixtures :projects, :users, :email_addresses, :roles, :members, :member_roles, :issues,
            :issue_statuses, :trackers, :projects_trackers, :enabled_modules, :enumerations,
-           :journals, :review_findings
+           :journals, :watchers, :review_findings, :review_rounds
+
+  OPEN = 'lib/sync.rb:12-14:ignored-file-overwrite'.freeze
+  UNCHECKED = 'lib/sync.rb:60-61:ignored-file-overwrite'.freeze
 
   def setup
     super
     enable_review_findings
   end
 
-  def put_findings(rows, user: 'jsmith', issue: 1)
-    put "/issues/#{issue}/review_findings.json",
-        params: { 'review_findings' => rows }.to_json,
-        headers: { 'CONTENT_TYPE' => 'application/json' }.merge(signed_in(user))
+  def post_ledger(rows = nil, round: nil, user: 'jsmith', issue: 1)
+    body = {}
+    body['review_round'] = round if round
+    body['review_findings'] = rows unless rows.nil?
+    post "/issues/#{issue}/review_findings.json",
+         params: body.to_json, headers: { 'CONTENT_TYPE' => 'application/json' }.merge(signed_in(user))
   end
 
   # jsmith and admin have their login as password in Redmine's fixtures; dlopper has foo.
@@ -26,273 +31,214 @@ class ReviewFindingsApiTest < Redmine::ApiTest::Base
     JSON.parse(response.body)
   end
 
-  def note_count
-    Journal.where(journalized_type: 'Issue', journalized_id: 1).count
-  end
-
-  test 'GET lists the issue findings, every round' do
+  def ledger
     get '/issues/1/review_findings.json', headers: signed_in('dlopper')
     assert_response :success
-    rows = json['review_findings']
-    assert_equal ReviewFinding.where(issue_id: 1).count, rows.size
-    assert_equal [1, 2, 3], rows.select { |r| r['fingerprint'] == 'finding/v1:0000000000000006' }.map { |r| r['round'] }
+    json
   end
 
-  test 'GET needs view_review_findings' do
+  test 'GET returns the ledger and what it adds up to' do
+    body = ledger
+    assert_equal 2, body['last_round']
+    assert_equal [1, 2], body['review_rounds'].map { |r| r['round'] }
+    assert_equal ['example/app', 7], body['review_rounds'].first.values_at('repo', 'pr_number')
+    assert_equal 8, body['review_findings'].size
+    statuses = body['findings'].to_h { |f| [f['key'], f['status']] }
+    assert_equal 'open', statuses[OPEN]
+    assert_equal 'fixed', statuses['lib/sync.rb:40:forced-update']
+    assert_equal 'fixed, unchecked', statuses[UNCHECKED]
+    assert_equal 'intentional', statuses['lib/remote.rb:7:repo-rename']
+    assert_equal [1, 1], body.values_at('open_to_fix', 'fixed_unchecked')
+    assert_equal({ 'forced-update' => 1, 'ignored-file-overwrite' => 2, 'repo-rename' => 1 }, body['rules'])
+  end
+
+  test 'GET before any review has last_round 0' do
+    get '/issues/3/review_findings.json', headers: signed_in('jsmith')
+    assert_response :success
+    assert_equal [0, [], []], json.values_at('last_round', 'review_rounds', 'findings')
+  end
+
+  test 'GET needs view_review_findings, and the module' do
     Role.find(2).remove_permission!(:view_review_findings)
     get '/issues/1/review_findings.json', headers: signed_in('dlopper')
     assert_response :forbidden
-  end
-
-  test 'GET without the module is refused' do
     Project.find(1).disable_module!(:review_findings)
     get '/issues/1/review_findings.json', headers: signed_in('jsmith')
     assert_response :forbidden
   end
 
-  test 'a PUT inserts rows, and the same PUT again changes nothing' do
-    rows = [finding_row('finding/v1:00000000000000a1', 4, line: 3, file: 'lib/a.rb'),
-            finding_row('finding/v1:00000000000000a2', 4, severity: 'nothing', visibility: nil)]
-    assert_difference 'ReviewFinding.count', 2 do
-      put_findings(rows)
-    end
-    assert_response :success
-    assert_equal({ 'created' => 2, 'updated' => 0, 'unchanged' => 0 }, json)
-    saved = ReviewFinding.where(issue_id: 1, round: 4).order(:fingerprint).map { |f| [f.id, f.updated_on] }
-
-    travel 1.hour do
-      assert_no_difference ['ReviewFinding.count', 'Journal.count'] do
-        put_findings(rows)
+  test 'a POST adds the next round and its rows, and the same POST again adds nothing' do
+    rows = [finding_row('lib/b.rb:9:crash', 3, severity: 'nothing', visibility: 'seen'),
+            finding_row(UNCHECKED, 3, outcome: 'fixed', tag: nil, summary: nil, body: 'Scans the new path')]
+    assert_difference ['ReviewRound.count'], 1 do
+      assert_difference 'ReviewFinding.count', 2 do
+        post_ledger(rows, round: round_row(3, controls: ['REVIEW.md']))
       end
     end
     assert_response :success
-    assert_equal({ 'created' => 0, 'updated' => 0, 'unchanged' => 2 }, json)
-    assert_equal saved, ReviewFinding.where(issue_id: 1, round: 4).order(:fingerprint).map { |f| [f.id, f.updated_on] }
+    assert_equal({ 'created' => 2, 'skipped' => 0, 'round' => 'created' }, json)
+    assert_equal [3, 2, 0], ledger.values_at('last_round', 'open_to_fix', 'fixed_unchecked')
+
+    assert_no_difference ['ReviewRound.count', 'ReviewFinding.count', 'Journal.count'] do
+      post_ledger(rows, round: round_row(3, controls: ['REVIEW.md']))
+    end
+    assert_response :success
+    assert_equal({ 'created' => 0, 'skipped' => 2, 'round' => 'skipped' }, json)
   end
 
-  test 'a PUT updates an unconfirmed row with the fields it sends, and leaves the rest' do
-    row = review_findings(:open_silent)
-    put_findings([{ 'fingerprint' => row.fingerprint, 'round' => 1, 'line' => 14 }])
+  test 'a clean round is a round with no rows' do
+    post_ledger(round: round_row(3, summary: '0 findings.'))
     assert_response :success
-    assert_equal({ 'created' => 0, 'updated' => 1, 'unchanged' => 0 }, json)
-    row.reload
-    assert_equal 14, row.line
-    assert_equal 'lib/sync.rb', row.file
-    assert_nil row.confirmed_by_id
+    assert_equal 3, ledger['last_round']
   end
 
-  test 'a PUT that omits outcome leaves the outcome as it was' do
-    row = review_findings(:open_silent)
-    put_findings([{ 'fingerprint' => row.fingerprint, 'round' => 1, 'confirm' => true, 'outcome' => 'fixed',
-                    'rule_id' => 'ignored-file-overwrite', 'severity' => 'files', 'visibility' => 'silent' }])
+  test 'a failed ci is a numbered round too' do
+    post_ledger(round: round_row(3, ci: 'failure', ci_summary: 'assess: 2 failed'))
     assert_response :success
-    assert_equal 'fixed', row.reload.outcome
-
-    put_findings([finding_row(row.fingerprint, 1, summary: 'Another summary')])
-    assert_response :success
-    assert_equal 'fixed', row.reload.outcome
-    assert_equal 'The copy overwrites an ignored file without a word', row.summary
+    assert_equal 'failure', ReviewRound.find_by(issue_id: 1, round: 3).ci
   end
 
-  test 'a round line may not send an outcome or a justification, even null' do
-    row = review_findings(:open_silent)
-    [{ 'outcome' => 'fixed' }, { 'outcome' => nil }, { 'justification' => nil }].each do |extra|
-      put_findings([{ 'fingerprint' => row.fingerprint, 'round' => 1 }.merge(extra)])
+  test 'a round that is not the next one is refused' do
+    [1, 4].each do |k|
+      assert_no_difference 'ReviewRound.count' do
+        post_ledger(round: round_row(k, commit: 'c' * 40))
+      end
       assert_response :unprocessable_content
-      assert_match(/a round line can't send/, json['errors'].first)
     end
-    assert_nil row.reload.outcome
+    assert_match(/round 4 isn't the next one; the last is 2/, json['errors'].first)
   end
 
-  test 'an outcome line confirms an unconfirmed row as its user, without a journal note' do
-    row = review_findings(:open_silent)
-    assert_no_difference 'note_count' do
-      put_findings([{ 'fingerprint' => row.fingerprint, 'round' => 1, 'confirm' => true, 'outcome' => 'wrong',
-                      'justification' => 'The file is not ignored', 'rule_id' => 'ignored-file-overwrite',
-                      'severity' => 'nothing', 'visibility' => 'seen' }])
+  test 'a round already recorded with other values, or a commit already reviewed, is refused' do
+    post_ledger(round: round_row(2, ci: 'success'))
+    assert_response :unprocessable_content
+    assert_match(/round 2 is already recorded with other ci/, json['errors'].first)
+    post_ledger(round: round_row(3, commit: '1' * 40))
+    assert_response :unprocessable_content
+    assert_match(/is already round 1/, json['errors'].first)
+  end
+
+  test 'a row whose event is there with other values is refused, and nothing in the request is saved' do
+    assert_no_difference ['ReviewRound.count', 'ReviewFinding.count'] do
+      post_ledger([finding_row('lib/c.rb:1:crash', 3, severity: 'nothing', visibility: 'seen'),
+                   answer_row(UNCHECKED, 2, 'wrong', justification: 'Changed my mind')],
+                  round: round_row(3))
     end
+    assert_response :unprocessable_content
+    assert_equal ["row 2: #{UNCHECKED} is already in round 2 from outcomes, with other outcome, justification"],
+                 json['errors']
+  end
+
+  test 'a later answer goes in a later round' do
+    post_ledger([answer_row(UNCHECKED, 3, 'wrong', justification: 'The path is never renamed')], round: round_row(3))
     assert_response :success
-    row.reload
-    assert_equal %w[wrong nothing seen], [row.outcome, row.severity, row.visibility]
-    assert_equal 2, row.confirmed_by_id
-    assert_not_nil row.confirmed_on
+    assert_equal 'wrong', ledger['findings'].find { |f| f['key'] == UNCHECKED }['status']
   end
 
-  test 'a round line leaves a confirmed row as it is' do
-    row = review_findings(:intentional)
-    put_findings([finding_row(row.fingerprint, 1, severity: 'work', visibility: 'silent', summary: 'Changed')])
+  test 'an answer or a check needs a round that raised the finding' do
+    post_ledger([answer_row('lib/new.rb:1:crash', 2)])
+    assert_response :unprocessable_content
+    assert_equal ["row 1: lib/new.rb:1:crash: no earlier round raised it"], json['errors']
+    post_ledger([finding_row('lib/new.rb:1:crash', 2, outcome: 'fixed')])
+    assert_response :unprocessable_content
+    assert_match(/no earlier round raised it/, json['errors'].first)
+  end
+
+  test 'a row in a round Redmine has not recorded is refused' do
+    post_ledger([finding_row('lib/c.rb:1:crash', 5)])
+    assert_response :unprocessable_content
+    assert_match(/round 5 isn't recorded/, json['errors'].first)
+  end
+
+  test 'a missed finding is a round 0 review row, answered like any other' do
+    post_ledger([finding_row('lib/d.rb:4-6:ignored-file-overwrite', 0, tag: 'Important'),
+                 answer_row('lib/d.rb:4-6:ignored-file-overwrite', 0)])
     assert_response :success
-    assert_equal({ 'created' => 0, 'updated' => 0, 'unchanged' => 1 }, json)
-    row.reload
-    assert_equal %w[nothing seen intentional], [row.severity, row.visibility, row.outcome]
-    assert_equal 'A renamed repo is refused', row.summary
+    assert_equal 'fixed, unchecked', ledger['findings'].find { |f| f['key'] == 'lib/d.rb:4-6:ignored-file-overwrite' }['status']
   end
 
-  test 'a change to a confirmed row adds a journal note with the user and the old and new values' do
-    row = review_findings(:wrong)
-    confirmed_on = row.confirmed_on
-    assert_difference 'note_count', 1 do
-      put_findings([{ 'fingerprint' => row.fingerprint, 'round' => 2, 'confirm' => true, 'outcome' => 'fixed',
-                      'justification' => nil, 'rule_id' => 'repo-rename', 'severity' => 'nothing',
-                      'visibility' => 'seen' }], user: 'admin')
-    end
+  test 'an answer is confirmed by the sender' do
+    post_ledger([answer_row(OPEN, 1)])
     assert_response :success
-    row.reload
-    assert_equal 'fixed', row.outcome
-    assert_nil row.justification
-    assert_equal 1, row.confirmed_by_id
-    assert_not_equal confirmed_on, row.confirmed_on
-
-    note = Journal.where(journalized_type: 'Issue', journalized_id: 1).order(:id).last
-    assert_equal 1, note.user_id
-    assert_includes note.notes, 'Redmine Admin changed review finding finding/v1:0000000000000004 in round 2'
-    assert_includes note.notes, '* outcome: "wrong" → "fixed"'
-    assert_includes note.notes, '* justification: "It is read once" → (empty)'
-    assert_not_includes note.notes, 'severity'
+    assert_equal User.find_by(login: 'jsmith'), ReviewFinding.find_by(file: 'lib/sync.rb', line_start: 12, source: 'outcomes').confirmed_by
   end
 
-  test 'a second send of the same outcome line changes nothing' do
-    row = review_findings(:wrong)
-    line = { 'fingerprint' => row.fingerprint, 'round' => 2, 'confirm' => true, 'outcome' => 'wrong',
-             'justification' => 'It is read once', 'rule_id' => 'repo-rename', 'severity' => 'nothing',
-             'visibility' => 'seen' }
-    assert_no_difference 'note_count' do
-      put_findings([line], user: 'admin')
-    end
-    assert_response :success
-    assert_equal({ 'created' => 0, 'updated' => 0, 'unchanged' => 1 }, json)
-    row_after = row.reload
-    assert_equal 2, row_after.confirmed_by_id
-    assert_equal review_findings(:wrong).confirmed_on, row_after.confirmed_on
+  test 'an unknown field, a bad value, or a row that is not an object is refused' do
+    post_ledger([finding_row('lib/c.rb:1:crash', 2, fingerprint: 'x')])
+    assert_match(/can't send fingerprint/, json['errors'].first)
+    post_ledger([finding_row('lib/c.rb:1:crash', 2, severity: 'data')])
+    assert_match(/Severity/, json['errors'].first)
+    post_ledger(['row'])
+    assert_equal ['row 1: is not an object'], json['errors']
+    post_ledger(round: round_row(3, repo: 'not a repo'))
+    assert_match(/Repo/, json['errors'].first)
+    assert_response :unprocessable_content
   end
 
-  test "a verdict line sets a confirmed row's verified_round, with a journal note" do
-    row = review_findings(:repeat_round_1)
-    assert_difference 'note_count', 1 do
-      put_findings([{ 'fingerprint' => row.fingerprint, 'round' => 1, 'verified_round' => 2 }])
-    end
-    assert_response :success
-    assert_equal 2, row.reload.verified_round
-    assert_includes Journal.order(:id).last.notes, '* verified_round: (empty) → "2"'
-  end
-
-  test 'an outcome line needs a row and an outcome' do
-    put_findings([{ 'fingerprint' => 'finding/v1:00000000000000ff', 'round' => 1, 'confirm' => true,
-                    'outcome' => 'fixed' }])
-    assert_response :unprocessable_content
-    assert_match(/has no row in round 1/, json['errors'].first)
-
-    put_findings([{ 'fingerprint' => review_findings(:open_silent).fingerprint, 'round' => 1, 'confirm' => true,
-                    'outcome' => '' }])
-    assert_response :unprocessable_content
-    assert_match(/needs an outcome/, json['errors'].first)
-  end
-
-  test 'a confirmed row always has an outcome, and an unconfirmed one may not' do
-    confirmed = review_findings(:fixed_verified)
-    confirmed.outcome = nil
-    refute confirmed.valid?
-    assert confirmed.errors.added?(:outcome, :blank)
-    assert review_findings(:open_silent).valid?
-  end
-
-  test 'a 422 saves nothing from its request' do
-    rows = [finding_row('finding/v1:00000000000000b1', 4),
-            { 'fingerprint' => review_findings(:open_silent).fingerprint, 'round' => 1, 'line' => 99 },
-            finding_row('finding/v1:00000000000000b2', 4, tag: 'Huge')]
-    assert_no_difference ['ReviewFinding.count', 'Journal.count'] do
-      put_findings(rows)
-    end
-    assert_response :unprocessable_content
-    assert_equal 1, json['errors'].size
-    assert_match(/\Arow 3: Tag/, json['errors'].first)
-    assert_equal 12, review_findings(:open_silent).reload.line
-  end
-
-  test 'unknown fields, wrong types and a body that is not a list are refused' do
-    put_findings([finding_row('finding/v1:00000000000000c1', 4, colour: 'red')])
-    assert_response :unprocessable_content
-    put_findings([finding_row('finding/v1:00000000000000c1', 4, summary: ['a', 'b'])])
-    assert_response :unprocessable_content
-    put_findings([finding_row('finding/v1:00000000000000c1', '4')])
-    assert_response :unprocessable_content
-    put_findings([finding_row('finding/v1:00000000000000c1', 4, confirm: 'yes')])
-    assert_response :unprocessable_content
-    put_findings({ 'fingerprint' => 'finding/v1:00000000000000c1' })
-    assert_response :unprocessable_content
-    assert_equal 0, ReviewFinding.where(fingerprint: 'finding/v1:00000000000000c1').count
-  end
-
-  test 'L1: a PUT without manage_review_findings gets 403' do
+  test 'a POST without manage_review_findings gets 403' do
     assert_no_difference 'ReviewFinding.count' do
-      put_findings([finding_row('finding/v1:00000000000000d1', 4)], user: 'dlopper')
+      post_ledger([finding_row('lib/c.rb:1:crash', 2)], user: 'dlopper')
     end
     assert_response :forbidden
   end
 
-  test 'L1: a pr_url off the pattern gets 422' do
-    ['javascript:alert(1)', 'https://github.com/example/plan/pull/1?x=<script>'].each do |url|
-      put_findings([finding_row('finding/v1:00000000000000d2', 4, pr_url: url)])
-      assert_response :unprocessable_content
-    end
-    assert_nil ReviewFinding.find_by(fingerprint: 'finding/v1:00000000000000d2')
-  end
-
-  # Another window's send commits the same round first; this one hits the unique index, rolls
-  # back and runs again, finding the rows (§3.10).
-  test 'L12: two sends of one round leave one set of rows' do
-    rows = [finding_row('finding/v1:00000000000000e1', 4), finding_row('finding/v1:00000000000000e2', 4)]
+  # Another window's send commits the same round first; this one hits a unique index, rolls back
+  # and runs again, skipping the rows (§3.3).
+  test 'two sends of one round leave one set of rows' do
+    rows = [finding_row('lib/e.rb:1:crash', 3), finding_row('lib/e.rb:2:crash', 3)]
     other_window = Module.new do
-      define_method(:record) do |issue, sent, user|
+      define_method(:record) do |issue, sent, user, **round|
         unless @raced
           @raced = true
-          super(issue, sent, user)
-          raise ActiveRecord::RecordNotUnique, 'UNIQUE constraint failed: review_findings.issue_id'
+          super(issue, sent, user, **round)
+          raise ActiveRecord::RecordNotUnique, 'UNIQUE constraint failed: review_rounds.issue_id'
         end
-        super(issue, sent, user)
+        super(issue, sent, user, **round)
       end
     end
     ReviewFinding.singleton_class.prepend(other_window)
     begin
       assert_difference 'ReviewFinding.count', 2 do
-        put_findings(rows)
+        post_ledger(rows, round: round_row(3))
       end
     ensure
       other_window.send(:remove_method, :record)
       ReviewFinding.remove_instance_variable(:@raced) if ReviewFinding.instance_variable_defined?(:@raced)
     end
     assert_response :success
-    assert_equal({ 'created' => 0, 'updated' => 0, 'unchanged' => 2 }, json)
-    assert_equal 1, ReviewFinding.where(issue_id: 1, fingerprint: 'finding/v1:00000000000000e1').count
+    assert_equal({ 'created' => 0, 'skipped' => 2, 'round' => 'skipped' }, json)
   end
 
-  test 'L12: a send that fails twice answers 500 and saves nothing' do
+  test 'a send that fails twice answers 500 and saves nothing' do
     ReviewFinding.stubs(:record).raises(ActiveRecord::StatementTimeout, 'database is locked')
     assert_no_difference 'ReviewFinding.count' do
-      put_findings([finding_row('finding/v1:00000000000000e3', 4)])
+      post_ledger([finding_row('lib/c.rb:1:crash', 2)])
     end
     assert_response :internal_server_error
   end
 
-  test 'rules.json counts real and noise per rule over confirmed rows, each fingerprint once by its latest round' do
+  test 'rules.json counts real and noise per rule, each key once by its latest answer' do
+    post_ledger([answer_row(UNCHECKED, 3, 'wrong', justification: 'Never renamed')], round: round_row(3))
     get '/projects/1/review_findings/rules.json', headers: signed_in('dlopper')
     assert_response :success
-    assert_equal [{ 'rule_id' => 'ignored-file-overwrite', 'real' => 2, 'noise' => 1 },
-                  { 'rule_id' => 'repo-rename', 'real' => 1, 'noise' => 2 }], json['rules']
+    assert_equal [{ 'rule_id' => 'forced-update', 'real' => 1, 'noise' => 0 },
+                  { 'rule_id' => 'ignored-file-overwrite', 'real' => 0, 'noise' => 1 },
+                  { 'rule_id' => 'repo-rename', 'real' => 1, 'noise' => 0 }], json['rules']
   end
 
-  test 'rules.json counts only the issues the user can see' do
-    # Developer sees only its own issues: dlopper is assigned issue 2, and not issue 1.
+  test 'rules.json counts only the issues the user can see, and needs view_review_findings' do
     Role.find(2).update!(issues_visibility: 'own')
     get '/projects/1/review_findings/rules.json', headers: signed_in('dlopper')
     assert_response :success
-    assert_equal [{ 'rule_id' => 'ignored-file-overwrite', 'real' => 1, 'noise' => 0 }], json['rules']
-  end
-
-  test 'rules.json needs view_review_findings' do
+    assert_equal [], json['rules']
     Role.find(2).remove_permission!(:view_review_findings)
     get '/projects/1/review_findings/rules.json', headers: signed_in('dlopper')
     assert_response :forbidden
+  end
+
+  test 'GET rules/:rule_id counts the keys with the rule, and the answered ones' do
+    get '/projects/1/review_findings/rules/ignored-file-overwrite.json', headers: signed_in('dlopper')
+    assert_response :success
+    assert_equal({ 'rule_id' => 'ignored-file-overwrite', 'findings' => 2, 'confirmed' => 1 }, json)
   end
 
   def rename_rule(to, user: 'jsmith', from: 'ignored-file-overwrite')
@@ -305,72 +251,60 @@ class ReviewFindingsApiTest < Redmine::ApiTest::Base
     ReviewFinding.order(:id).pluck(:id, :rule_id)
   end
 
-  test 'GET rules/:rule_id counts the rule findings and the confirmed ones' do
-    get '/projects/1/review_findings/rules/ignored-file-overwrite.json', headers: signed_in('dlopper')
-    assert_response :success
-    assert_equal({ 'rule_id' => 'ignored-file-overwrite', 'findings' => 4, 'confirmed' => 3 }, json)
-  end
-
-  test 'a rename moves every finding to the new rule, notes each confirmed one, and a second changes nothing' do
-    assert_difference 'Journal.count', 3 do
+  test 'a rename moves every row to the new rule, notes each issue once, and a second changes nothing' do
+    assert_difference 'Journal.count', 1 do
       rename_rule('file-overwrite')
     end
     assert_response :success
-    assert_equal({ 'renamed' => 4, 'noted' => 3 }, json)
-    assert_equal 0, ReviewFinding.where(rule_id: 'ignored-file-overwrite').count
-    assert_equal 4, ReviewFinding.where(rule_id: 'file-overwrite').count
+    assert_equal({ 'renamed' => 3, 'noted' => 1 }, json)
+    assert_equal 3, ReviewFinding.where(rule_id: 'file-overwrite').count
     note = Journal.order(:id).last
-    assert_includes note.notes, 'changed review finding'
-    assert_includes note.notes, '* rule_id: "ignored-file-overwrite" → "file-overwrite"'
-    assert_equal User.find_by(login: 'jsmith'), note.user
-    assert_not_nil review_findings(:fixed_verified).reload.confirmed_by_id
+    assert_equal 'John Smith renamed review rule ignored-file-overwrite to file-overwrite on 3 rows.', note.notes
+    assert_equal 1, note.journalized_id
 
     assert_no_difference 'Journal.count' do
       rename_rule('file-overwrite')
     end
-    assert_response :success
     assert_equal({ 'renamed' => 0, 'noted' => 0 }, json)
   end
 
   test 'a new rule id that is not kebab-case, or is the old one, is refused' do
     before = rule_ids
     ['File-Overwrite', '', nil, 'ignored-file-overwrite'].each do |to|
-      assert_no_difference 'Journal.count' do
-        rename_rule(to)
-      end
+      rename_rule(to)
       assert_response :unprocessable_content
       assert_match(/new_rule_id/, json['errors'].first)
     end
     assert_equal before, rule_ids
   end
 
-  test 'L3: a rename that fails part-way renames none' do
-    ReviewFinding.where(rule_id: 'ignored-file-overwrite').order(:id).last.update_column(:summary, '')
+  test 'a rename onto a key another row has renames none' do
+    post_ledger([finding_row('lib/sync.rb:12-14:copy-overwrite', 1)])
+    assert_response :success
     before = rule_ids
     assert_no_difference 'Journal.count' do
-      rename_rule('file-overwrite')
+      rename_rule('copy-overwrite')
     end
     assert_response :unprocessable_content
-    assert_match(/Summary/, json['errors'].first)
+    assert_match(/is already a finding of issue #1/, json['errors'].first)
     assert_equal before, rule_ids
   end
 
-  test 'L1: a rename without manage_review_findings gets 403' do
+  test 'a rename without manage_review_findings gets 403' do
     rename_rule('file-overwrite', user: 'dlopper')
     assert_response :forbidden
-    assert_equal 0, ReviewFinding.where(rule_id: 'file-overwrite').count
   end
 
-  test 'L1: a finding on an issue the user cannot see refuses the whole rename' do
-    # Manager sees only its own issues: jsmith wrote issue 1, and issue 2, which has the seed row,
+  test 'a row on an issue the user cannot see refuses the whole rename' do
+    # Manager sees only its own issues: jsmith wrote issue 1, and issue 2, which has the crash row,
     # is made dlopper's.
     Role.find(1).update!(issues_visibility: 'own')
     Issue.find(2).update_columns(author_id: 3, assigned_to_id: 3)
     Watcher.where(watchable_type: 'Issue', watchable_id: 2).delete_all
     before = rule_ids
-    rename_rule('file-overwrite')
+    rename_rule('panic', from: 'crash')
     assert_response :unprocessable_content
-    assert_match(/1 finding with rule ignored-file-overwrite is on issues you can't see or manage/, json['errors'].first)
+    assert_match(/1 finding with rule crash is on issues you can't see or manage/, json['errors'].first)
     assert_equal before, rule_ids
   end
 end

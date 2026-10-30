@@ -35,7 +35,7 @@ settings: what this repo needs is here or in `.claude/`.
 - **Tests:** `uv run pytest` runs `tests/` (the backup and contents-list suites), `.claude/hooks/`
   and the gh-issues scripts, and fails under 90% coverage of `redmine/` and `.claude/hooks/`.
 - **Python lint:** `uv run ruff check .` and `uv run ruff format --check .`; `uv run ruff format .`
-  fixes the format.
+  fixes the format. `uv run ty check` type-checks the code, the suites' `test_*.py` aside.
 - **The VS Code extension:** `npm test` and `npm run lint`, in `vscode/`, after `npm install`.
 - **Review findings:** weigh severity, visibility and frequency. Fix silent failures that lose
   work, files, commits or the tracker's state, and hard crashes, even rare ones. A rare warning or
@@ -44,10 +44,14 @@ settings: what this repo needs is here or in `.claude/`.
   catch the major issues before they're committed. Before the first Go, the submission report,
   `.tmp/<n>/report.html`, shows its fixes, the whole diff, `commit.txt` and `pr-body.md` in the
   `Review #<n>` tab.
-- **A review round:** after each push, `pr` starts Claude's review of the branch's whole diff
-  under the base's `REVIEW.md` in the background, unless that commit has a review file. Beside the passes it
+- **A review round:** after each push, `pr` starts Claude's review round `k` under the base's
+  `REVIEW.md` in the background, unless a round file or a Redmine round names that commit. Round 1
+  reviews the branch's whole diff; later rounds check each fixed finding in its context
+  ([design 0005 §3.5](docs/design/0005-review-findings.md#rounds)). Beside the passes it
   runs `scripts/assess`, the round's CI, in a worktree of the commit, and writes
-  `.tmp/<n>/review/<commit>.json`, with assess's result under `ci`. Claude
+  `.tmp/<n>/<k>-findings.md`, with assess's result under `ci`, which `findings.py send`
+  records in Redmine as the round. `pr` sends `.tmp/<n>/<k>-outcomes.md`, the outcome lines
+  accepted at Go, after its push. Round files stay until Done finds them all in Redmine. Claude
   answers it in `.tmp/<n>/report.html`, which opens as the `Review #<n>` tab with Go and Ship. The
   round is complete only once assess has passed, and the PR body's Testing names the last round.
 - **Python:** `python3` on PATH. `/usr/bin/python3` is 3.9 and can't run the skill scripts.
@@ -88,7 +92,7 @@ settings: what this repo needs is here or in `.claude/`.
   person runs. Write `.tmp/<n>/commit.txt`, `pr-body.md`, `replies/` and issue drafts for them to
   review; reads, inspections, the test suite and cleaning up your own mess you run yourself.
 - **The reviewer's two writes** fall outside a button (design 0005 §3.3). When a round's review
-  ends, `findings.py send <n>` records its findings as unconfirmed rows, once #124 builds it, and
+  ends, `findings.py send <n>` records the round and its findings as unconfirmed rows, and
   `gh pb` updates the PR body of the worktree's own issue. Nothing else is written: no push, no
   comment, no other PR, no outcome.
 - **An agent commits only on its own issue branch,** and only when asked.

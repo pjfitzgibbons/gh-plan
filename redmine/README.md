@@ -60,7 +60,7 @@ the USB drive (*Backup and export*).
 | `redmine.db` | The database, copied through SQLite's online backup API while Redmine runs, and integrity-checked |
 | `files.tar` | The attachments volume |
 | `export/issues/<n>.json` | Each issue as the REST API gives it, with its journal, relations, children, attachments, commits and custom fields |
-| `export/issues/<n>-findings.json` | Each issue's review findings, as the review findings plugin's API gives them, for an issue that has any |
+| `export/issues/<n>-findings.json` | Each issue's review rounds and findings, as the review findings plugin's API gives them, for an issue that has any |
 
 The drive holds every issue body, unencrypted. The job only reads Redmine: the database through
 `docker compose exec`, the issues by GET with the key in `redmine-gh-plan`. It writes only to the
@@ -236,67 +236,96 @@ aren't UTF-8, such as a BLOB's, print as `�`. It runs only as the database's o
 none open, and root's would stop Redmine writing. Put the query in double quotes, as above, and its
 string literals in single quotes.
 
-Counts by rule and outcome, over accepted findings. A finding seen in three rounds is three rows,
-so each fingerprint counts once, by its latest accepted round. A finding re-opened in a round
-nobody has answered yet still counts by its last accepted answer. The join on `issues` leaves out
-a finding whose issue was deleted, as the plugin's routes do:
+The table holds events, one row each time a review raises or checks a finding and each time a
+person answers it, so every query starts from one row per finding, keyed by its file, lines and
+rule. The join on `issues` leaves out a finding whose issue was deleted, as the plugin's routes do.
+
+Counts by rule and outcome, over accepted answers, each finding counted once by its latest answer.
+A finding no one has answered isn't in them:
 
 ```sql
-WITH latest AS (
-  SELECT f.* FROM review_findings f
+WITH answered AS (
+  SELECT f.*, ROW_NUMBER() OVER (
+    PARTITION BY f.issue_id, f.file, f.line_start, f.line_end, f.rule_id
+    ORDER BY f.round DESC) AS n
+  FROM review_findings f
   JOIN issues i ON i.id = f.issue_id
-  WHERE f.confirmed_by_id IS NOT NULL
-    AND f.round = (SELECT MAX(g.round) FROM review_findings g
-                   WHERE g.issue_id = f.issue_id AND g.fingerprint = f.fingerprint
-                     AND g.confirmed_by_id IS NOT NULL)
+  WHERE f.source = 'outcomes'
 )
 SELECT rule_id, outcome, COUNT(*) AS n
-FROM latest
-WHERE rule_id IS NOT NULL
+FROM answered
+WHERE n = 1
 GROUP BY rule_id, outcome
 ORDER BY rule_id, outcome;
 ```
 
-One rule's findings by week, over the same latest rows, each in the week it was first found;
-change `ignored-file-overwrite` to the rule:
+The findings no one has answered yet, by rule:
 
 ```sql
-WITH latest AS (
-  SELECT f.* FROM review_findings f
-  JOIN issues i ON i.id = f.issue_id
-  WHERE f.confirmed_by_id IS NOT NULL
-    AND f.round = (SELECT MAX(g.round) FROM review_findings g
-                   WHERE g.issue_id = f.issue_id AND g.fingerprint = f.fingerprint
-                     AND g.confirmed_by_id IS NOT NULL)
-),
-found AS (
-  SELECT issue_id, fingerprint, MIN(created_on) AS found_on FROM review_findings
-  GROUP BY issue_id, fingerprint
-)
-SELECT strftime('%Y-%W', found.found_on) AS week, latest.outcome, COUNT(*) AS n
-FROM latest JOIN found USING (issue_id, fingerprint)
-WHERE latest.rule_id = 'ignored-file-overwrite'
-GROUP BY week, outcome
-ORDER BY week, outcome;
-```
-
-The open silent findings, across every issue: each finding once, by its latest round, listed
-while that round has no answer:
-
-```sql
-SELECT i.id AS issue, i.subject, f.round, f.file, f.line, f.severity, f.summary
+SELECT f.rule_id, COUNT(DISTINCT f.issue_id || ' ' || f.file || ':' || f.line_start || '-'
+                              || f.line_end) AS n
 FROM review_findings f
 JOIN issues i ON i.id = f.issue_id
-WHERE f.round = (SELECT MAX(g.round) FROM review_findings g
-                 WHERE g.issue_id = f.issue_id AND g.fingerprint = f.fingerprint)
-  AND f.visibility = 'silent' AND f.severity <> 'nothing' AND f.outcome IS NULL
-ORDER BY i.id, f.round, f.id;
+WHERE NOT EXISTS (
+  SELECT 1 FROM review_findings o
+  WHERE o.source = 'outcomes' AND o.issue_id = f.issue_id AND o.file = f.file
+    AND o.line_start = f.line_start AND o.line_end = f.line_end AND o.rule_id = f.rule_id)
+GROUP BY f.rule_id
+ORDER BY f.rule_id;
+```
+
+One rule's answered findings by week, each in the week it was first raised; change
+`ignored-file-overwrite` to the rule:
+
+```sql
+WITH answered AS (
+  SELECT f.*, ROW_NUMBER() OVER (
+    PARTITION BY f.issue_id, f.file, f.line_start, f.line_end, f.rule_id
+    ORDER BY f.round DESC) AS n
+  FROM review_findings f
+  JOIN issues i ON i.id = f.issue_id
+  WHERE f.source = 'outcomes'
+),
+found AS (
+  SELECT issue_id, file, line_start, line_end, rule_id, MIN(created_on) AS found_on
+  FROM review_findings
+  GROUP BY issue_id, file, line_start, line_end, rule_id
+)
+SELECT strftime('%Y-%W', found.found_on) AS week, answered.outcome, COUNT(*) AS n
+FROM answered JOIN found USING (issue_id, file, line_start, line_end, rule_id)
+WHERE answered.n = 1 AND answered.rule_id = 'ignored-file-overwrite'
+GROUP BY week, answered.outcome
+ORDER BY week, answered.outcome;
+```
+
+The open findings to fix, across every issue: each finding's latest row, by round and then an
+answer after the review, while that row is a review raising it, and it is silent and loses
+something, or its rule is `crash`:
+
+```sql
+WITH ranked AS (
+  SELECT f.*, ROW_NUMBER() OVER (
+    PARTITION BY f.issue_id, f.file, f.line_start, f.line_end, f.rule_id
+    ORDER BY f.round DESC, f.source = 'outcomes' DESC) AS n
+  FROM review_findings f
+  JOIN issues i ON i.id = f.issue_id
+)
+SELECT i.id AS issue, i.subject, l.round,
+       l.file || ':' || l.line_start
+         || CASE WHEN l.line_end <> l.line_start THEN '-' || l.line_end ELSE '' END
+         || ':' || l.rule_id AS key,
+       l.severity, l.summary
+FROM ranked l
+JOIN issues i ON i.id = l.issue_id
+WHERE l.n = 1 AND l.outcome = 'new'
+  AND ((l.visibility = 'silent' AND l.severity <> 'nothing') OR l.rule_id = 'crash')
+ORDER BY i.id, l.round, l.id;
 ```
 
 A rule renamed in `REVIEW.md` keeps its old id on the findings already recorded, so the counts
-split it in two; fingerprints don't include the rule, so no finding repeats. `redmine-set` moves
-them to the new id, in `plan` and its subprojects (`--project` picks another), in one transaction,
-and adds a journal note to the issue of each confirmed one:
+split it in two. `redmine-set` moves them to the new id, in `plan` and its subprojects
+(`--project` picks another), in one transaction, and adds a journal note to each issue it touches.
+It renames none when a renamed finding's key is already another finding's on the same issue:
 
 ```
 redmine-set --check rule old-id new-id    # how many findings it would rename; nothing written

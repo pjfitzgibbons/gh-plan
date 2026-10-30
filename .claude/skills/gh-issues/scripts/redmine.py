@@ -1,5 +1,4 @@
-"""The Redmine API client the gh-issues scripts (new_issue.py, issue_body.py, redmine_set.py,
-issue_relations.py) write through.
+"""A Redmine API client.
 
 The API key comes from the Keychain item redmine-gh-plan (REDMINE_KEYCHAIN picks another), and
 goes only in a request header. REDMINE_URL defaults to http://127.0.0.1:3010.
@@ -174,19 +173,26 @@ class Redmine:
             method=method,
             headers={"X-Redmine-API-Key": self.key, "Content-Type": "application/json"},
         )
+        # A write Redmine is slow to answer, or drops part way, may still have landed: running it
+        # again repeats it.
+        maybe = (
+            ""
+            if method == "GET"
+            else "; it may have been applied, so check Redmine before running it again"
+        )
         try:
             with urllib.request.urlopen(req, timeout=TIMEOUT) as r:
                 raw = r.read()
         except TimeoutError:
-            # A write Redmine is slow to answer may still have landed: running it again repeats it.
-            maybe = (
-                ""
-                if method == "GET"
-                else "; it may have been applied, so check Redmine before running it again"
-            )
             raise Refused(f"Redmine {method} {path}: no answer in {TIMEOUT}s{maybe}") from None
         except urllib.error.HTTPError as e:
             raise Refused(f"Redmine {method} {path}: HTTP {e.code}{reasons(e)}", e.code) from None
         except urllib.error.URLError as e:
             raise Refused(f"Redmine can't be reached at {self.url}: {e.reason}") from None
+        except (OSError, http.client.HTTPException) as e:
+            # urllib wraps only a failure to send; one while reading the answer, such as a
+            # container restarting mid-request, comes through as it is.
+            raise Refused(
+                f"Redmine {method} {path}: the connection dropped ({e or type(e).__name__}){maybe}"
+            ) from None
         return json.loads(raw) if raw.strip() else None

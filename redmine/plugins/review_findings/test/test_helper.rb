@@ -13,8 +13,22 @@ module ReviewFindingsTestHelper
     Role.find(2).add_permission!(:view_review_findings)
   end
 
-  def finding_row(fingerprint, round = 1, **fields)
-    { 'fingerprint' => fingerprint, 'round' => round, 'tag' => 'Important', 'severity' => 'files',
-      'visibility' => 'silent', 'summary' => 'A copy loses a file' }.merge(fields.stringify_keys)
+  # A row raising a finding, or with `source` and `outcome`, checking or answering one.
+  def finding_row(key, round, **fields)
+    file, lines, rule = key.split(':')
+    first, last = lines.split('-').map(&:to_i)
+    { 'round' => round, 'source' => 'review', 'file' => file, 'line_start' => first,
+      'line_end' => last || first, 'rule_id' => rule, 'outcome' => 'new', 'tag' => 'Important',
+      'severity' => 'files', 'visibility' => 'silent', 'summary' => 'A copy loses a file' }
+      .merge(fields.stringify_keys)
+  end
+
+  def answer_row(key, round, outcome = 'fixed', **fields)
+    finding_row(key, round, source: 'outcomes', outcome: outcome, tag: nil, summary: nil, **fields)
+  end
+
+  def round_row(round, **fields)
+    { 'round' => round, 'commit' => round.to_s(16) * 40, 'ci' => 'success', 'repo' => 'example/app',
+      'pr_number' => 7 }.merge(fields.stringify_keys)
   end
 end

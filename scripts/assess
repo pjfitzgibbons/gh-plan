@@ -1,13 +1,14 @@
 #!/usr/bin/env python3
 """Assess a change: run every check, print one line each, and exit 1 if any failed.
 
-The checks are the Python suite and its lint, the extension's lint and tests, then every checker in
-`checks/`. Every check runs even after one fails, so a single run shows them all. A failed check's
-output is printed above its line; `-v` prints every check's output.
+The checks are the Python suite, its lint and type check, the extension's lint and tests, then
+every checker in `checks/`. Every check runs even after one fails, so a single run shows them all. A
+failed check's output is printed above its line; `-v` prints every check's output.
 
-A checker is an executable in `checks/` that reads the repo and prints `file:line: message` for
-each violation. It fails when it prints anything or exits non-zero. Its first comment line names
-the rule it covers, `# rule: <name>`; `assess --rules` lists them.
+A checker is an executable in `checks/` that reads the repo and prints `file:lines: message` for
+each violation, lines a line or a range such as 12-14. It fails when it prints anything or exits
+non-zero. Its first comment line names the rule it covers, `# rule: <name>`; `assess --rules` lists
+them.
 
 Run it from anywhere: it works from the repo root, `scripts/..`. It needs Python 3.14, the
 `python3` setup puts on PATH.
@@ -28,6 +29,7 @@ SUITES = [
     ("pytest", ".", ["uv", "run", "pytest"]),
     ("ruff check", ".", ["uv", "run", "ruff", "check", "."]),
     ("ruff format", ".", ["uv", "run", "ruff", "format", "--check", "."]),
+    ("ty", ".", ["uv", "run", "ty", "check"]),
     ("npm run lint", "vscode", ["npm", "run", "lint"]),
     ("npm test", "vscode", ["npm", "test"]),
 ]

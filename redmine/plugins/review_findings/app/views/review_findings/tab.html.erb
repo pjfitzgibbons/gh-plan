@@ -5,28 +5,24 @@
 <% else %>
 <div class="autoscroll">
 <table class="list review-findings">
-  <thead><tr><th>Issue</th><th>Round</th><th>Outcome</th><th>Visibility</th><th>Severity</th>
-    <th>Rule</th><th>Where</th><th>Finding</th></tr></thead>
+  <thead><tr><th>Issue</th><th>Finding</th><th>Raised</th><th>Status</th><th>Visibility</th>
+    <th>Severity</th><th>Summary</th></tr></thead>
   <tbody>
-  <% @findings.each do |f| %>
-    <% open = @open.include?(f.id) %>
-    <% latest = @latest[[f.issue_id, f.fingerprint]] %>
-    <tr class="<%= cycle('odd', 'even') %><%= ' open-silent' if open %>">
-      <td><%= link_to_issue f.issue, tracker: false, subject: false %></td>
-      <td><%= f.round %></td>
-      <td><%= if open then 'Open, silent'
-              elsif f.outcome then f.outcome
-              elsif f.round < latest then "See round #{latest}"
-              else 'Open'
-              end %></td>
-      <td><%= f.visibility %></td>
-      <td><%= f.severity %></td>
-      <td><%= f.rule_id %></td>
-      <td><%= [f.file, f.line].compact.join(':') %></td>
+  <% @findings.each_with_index do |events, i| %>
+    <% latest = events.first %>
+    <% raised = events.reverse.find { |f| f.source == 'review' } || events.last %>
+    <% answer = events.find { |f| f.source == 'outcomes' } %>
+    <tr class="<%= cycle('odd', 'even') %><%= ' open-to-fix' if i < @open %>">
+      <td><%= link_to_issue latest.issue, tracker: false, subject: false %></td>
+      <td><%= latest.key %></td>
+      <td><%= raised.round %></td>
+      <td><%= i < @open ? 'Open to fix' : latest.status %><% if latest.round != raised.round %> (round <%= latest.round %>)<% end %></td>
+      <td><%= latest.visibility %></td>
+      <td><%= latest.severity %></td>
       <td>
-        <strong><%= f.summary %></strong>
-        <% if f.body.present? %><%= simple_format(h(f.body)) %><% end %>
-        <% if f.justification.present? %><%= simple_format(h(f.justification)) %><% end %>
+        <strong><%= raised.summary %></strong>
+        <% if raised.body.present? %><%= simple_format(h(raised.body)) %><% end %>
+        <% if answer&.justification.present? %><%= simple_format(h(answer.justification)) %><% end %>
       </td>
     </tr>
   <% end %>
