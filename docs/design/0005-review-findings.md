@@ -59,7 +59,7 @@ Goals:
 - Nothing Claude drafts is recorded as an outcome, a rule, a severity or a visibility until a person
   has accepted it.
 - Rounds converge: round 1 reviews the whole change, and each later round checks the earlier
-  fixes, one finding at a time, and ends on a rule.
+  fixes, one finding at a time, reviews only the code added since, and ends on a rule.
 - A rule found a third time in one PR becomes a scripted check, so the rest of its matches are
   searched for rather than sampled.
 - A rule that keeps finding real bugs becomes a checker, and one that keeps raising noise becomes a
@@ -296,7 +296,8 @@ still a person's to accept, since those decide what counts.
 
 Rounds converge. A reviewer can't cover every point of a change, so a second full review samples a
 different part of it, and its findings are new rather than fewer. Round 1 is the one full review;
-every later round checks the fixes, finding by finding, in their context.
+every later round checks the fixes, finding by finding, in their context, and reviews only the code
+added since the round before it.
 
 **Round 1** reads the branch's whole diff against `main`, the issue's description, `REVIEW.md`,
 and the docs `CLAUDE.md` says to read before the kind of change the diff makes, and raises its
@@ -316,6 +317,12 @@ A finding answered `intentional`, `wrong` or `doesnt-matter` was a person's call
 again. A finding still `new` is waiting for an answer, not another review. A later round raises a
 new finding only when the fixed code shows a finding to fix (§3.2), with its key at this round's
 commit.
+
+**New code in a later round.** When the diff since the last round, Skipped paths aside, changes a
+file that no fix being checked names, the author has widened the change. Round 1's review and
+security passes then run beside the check, over that diff alone, so code added after round 1 is
+reviewed and round 1's findings aren't raised again. Only the branch's own paths count, so a
+rebase that brings in `main`'s changes doesn't start them.
 
 **A rule's third finding becomes a check.** The issue's GET returns, per rule, how many keys the
 ledger has over every round. When the reviewer would raise a third finding under one rule, it
@@ -456,7 +463,11 @@ committed to `checks/`, has this one interface, so a check written for a PR can 
 is, checks can be compared over time, and code they share can move into a module.
 
 **Within a PR**, a rule's third finding over the issue's rounds becomes `<k>-check-<rule>.py`
-(§3.5). Its matches are the rule's findings in that round. Go commits it with the fixes as
+(§3.5). Its matches are the rule's findings in that round. A model wrote it from a diff an author
+wrote, so it runs under macOS's `sandbox-exec`: no network, no Keychain, no reads under the home
+directory but its own file and the commit's tree, no writes outside a scratch directory, and only
+`PATH`, `HOME` and `LANG` in its environment. Without `sandbox-exec` it isn't run, and the round's
+summary says so. Go commits it with the fixes as
 `checks/<rule>.py`, with a `# rule: <id>` line, so the check is kept and `assess` runs it on every
 later commit. When `checks/<rule>.py` already exists, the round's check is merged into it rather
 than written beside it, so a rule has one checker that grows with each PR that adds a case. A
@@ -672,7 +683,8 @@ The fixtures, all invented:
   - parsing each outcome line form in §3.4, and refusing a line with an unknown outcome or a key
     no round raised;
   - round 2's prompt holding only `fixed` findings, with their keys, claims and the fix's context,
-    and a rule's third finding turning into a check.
+    a later round's new code getting the review and security passes over the diff since the last
+    round, and a rule's third finding turning into a check.
 - **`sql.rb`**, a test in `tests/` that opens a copy of a fixture database and checks that a
   `CREATE` raises.
 - **Done**, in `vscode/test/done.test.js`: a `.tmp/<n>/<k>-outcomes.md` whose rows a stubbed
