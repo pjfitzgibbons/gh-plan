@@ -26,7 +26,8 @@ CREATE TABLE issues (id integer PRIMARY KEY, subject varchar NOT NULL);
 CREATE TABLE "review_findings" ("id" integer PRIMARY KEY AUTOINCREMENT NOT NULL,
   "issue_id" integer NOT NULL, "round" integer NOT NULL, "source" varchar NOT NULL,
   "file" varchar NOT NULL, "line_start" integer NOT NULL, "line_end" integer NOT NULL,
-  "rule_id" varchar NOT NULL, "outcome" varchar NOT NULL, "tag" varchar,
+  "rule_id" varchar NOT NULL, "raised_round" integer NOT NULL DEFAULT 0,
+  "outcome" varchar NOT NULL, "tag" varchar,
   "severity" varchar NOT NULL, "visibility" varchar, "summary" varchar(255), "body" text,
   "justification" text, "confirmed_by_id" integer, "created_on" datetime(6) NOT NULL);
 """
@@ -224,6 +225,13 @@ def fixture_db(tmp_path_factory) -> Path:
         " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         FINDINGS,
     )
+    # Each finding was raised by its key's first review row.
+    db.execute(
+        "UPDATE review_findings SET raised_round = (SELECT MIN(r.round) FROM review_findings r"
+        " WHERE r.source = 'review' AND r.issue_id = review_findings.issue_id"
+        " AND r.file = review_findings.file AND r.line_start = review_findings.line_start"
+        " AND r.line_end = review_findings.line_end AND r.rule_id = review_findings.rule_id)"
+    )
     db.commit()
     db.close()
     return path
@@ -397,8 +405,8 @@ def test_the_readme_gives_four_queries():
         (
             3,
             "issue\tsubject\tround\tkey\tseverity\tsummary\n"
-            "7\tseven\t2\tb.py:9:lost-commit\tcommits\tdrops a commit\\twith a tab\n"
-            "8\teight\t1\tc.py:1-4:crash\twork\tloses an edit\n",
+            "7\tseven\t2\tb.py:9:lost-commit@2\tcommits\tdrops a commit\\twith a tab\n"
+            "8\teight\t1\tc.py:1-4:crash@1\twork\tloses an edit\n",
         ),
     ],
 )

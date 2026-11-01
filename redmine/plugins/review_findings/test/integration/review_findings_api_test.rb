@@ -6,8 +6,8 @@ class ReviewFindingsApiTest < Redmine::ApiTest::Base
            :issue_statuses, :trackers, :projects_trackers, :enabled_modules, :enumerations,
            :journals, :watchers, :review_findings, :review_rounds
 
-  OPEN = 'lib/sync.rb:12-14:ignored-file-overwrite'.freeze
-  UNCHECKED = 'lib/sync.rb:60-61:ignored-file-overwrite'.freeze
+  OPEN = 'lib/sync.rb:12-14:ignored-file-overwrite@1'.freeze
+  UNCHECKED = 'lib/sync.rb:60-61:ignored-file-overwrite@2'.freeze
 
   def setup
     super
@@ -45,9 +45,9 @@ class ReviewFindingsApiTest < Redmine::ApiTest::Base
     assert_equal 8, body['review_findings'].size
     statuses = body['findings'].to_h { |f| [f['key'], f['status']] }
     assert_equal 'open', statuses[OPEN]
-    assert_equal 'fixed', statuses['lib/sync.rb:40:forced-update']
+    assert_equal 'fixed', statuses['lib/sync.rb:40:forced-update@1']
     assert_equal 'fixed, unchecked', statuses[UNCHECKED]
-    assert_equal 'intentional', statuses['lib/remote.rb:7:repo-rename']
+    assert_equal 'intentional', statuses['lib/remote.rb:7:repo-rename@1']
     assert_equal [1, 1], body.values_at('open_to_fix', 'fixed_unchecked')
     assert_equal({ 'forced-update' => 1, 'ignored-file-overwrite' => 2, 'repo-rename' => 1 }, body['rules'])
   end
@@ -135,12 +135,22 @@ class ReviewFindingsApiTest < Redmine::ApiTest::Base
   end
 
   test 'an answer or a check needs a round that raised the finding' do
-    post_ledger([answer_row('lib/new.rb:1:crash', 2)])
+    post_ledger([answer_row('lib/new.rb:1:crash@1', 2)])
     assert_response :unprocessable_content
-    assert_equal ["row 1: lib/new.rb:1:crash: no earlier round raised it"], json['errors']
-    post_ledger([finding_row('lib/new.rb:1:crash', 2, outcome: 'fixed')])
+    assert_equal ["row 1: lib/new.rb:1:crash@1: round 1 didn't raise it"], json['errors']
+    post_ledger([finding_row('lib/new.rb:1:crash@1', 2, outcome: 'fixed')])
     assert_response :unprocessable_content
-    assert_match(/no earlier round raised it/, json['errors'].first)
+    assert_match(/round 1 didn't raise it/, json['errors'].first)
+  end
+
+  test 'a supersede is the review closing an open finding it raised again as a new one' do
+    post_ledger([finding_row('lib/sync.rb:13-15:ignored-file-overwrite', 3),
+                 finding_row(OPEN, 3, outcome: 'superseded', body: 'Round 3 raised it again')],
+                round: round_row(3))
+    assert_response :success
+    statuses = ledger['findings'].to_h { |f| [f['key'], f['status']] }
+    assert_equal ['superseded', 'open'], statuses.values_at(OPEN, 'lib/sync.rb:13-15:ignored-file-overwrite@3')
+    assert_equal 1, ledger['open_to_fix']
   end
 
   test 'a row in a round Redmine has not recorded is refused' do
@@ -153,13 +163,36 @@ class ReviewFindingsApiTest < Redmine::ApiTest::Base
     post_ledger([finding_row('lib/d.rb:4-6:ignored-file-overwrite', 0, tag: 'Important'),
                  answer_row('lib/d.rb:4-6:ignored-file-overwrite', 0)])
     assert_response :success
-    assert_equal 'fixed, unchecked', ledger['findings'].find { |f| f['key'] == 'lib/d.rb:4-6:ignored-file-overwrite' }['status']
+    assert_equal 'fixed, unchecked', ledger['findings'].find { |f| f['key'] == 'lib/d.rb:4-6:ignored-file-overwrite@0' }['status']
   end
 
   test 'an answer is confirmed by the sender' do
     post_ledger([answer_row(OPEN, 1)])
     assert_response :success
     assert_equal User.find_by(login: 'jsmith'), ReviewFinding.find_by(file: 'lib/sync.rb', line_start: 12, source: 'outcomes').confirmed_by
+  end
+
+  test "an answer takes the raising row's tag, summary and body, and its own weighting" do
+    post_ledger([answer_row(OPEN, 1, 'doesnt-matter', severity: 'nothing', visibility: 'seen', justification: 'Never run')])
+    assert_response :success
+    answer = ReviewFinding.find_by(file: 'lib/sync.rb', line_start: 12, source: 'outcomes')
+    assert_equal ['Important', 'The copy overwrites an ignored file without a word', nil, 'nothing', 'seen'],
+                 [answer.tag, answer.summary, answer.body, answer.severity, answer.visibility]
+    post_ledger([answer_row(OPEN, 1, 'doesnt-matter', severity: 'nothing', visibility: 'seen', justification: 'Never run')])
+    assert_equal({ 'created' => 0, 'skipped' => 1 }, json)
+  end
+
+  test "an answer's tag, summary and body are dropped, with a log line" do
+    log = StringIO.new
+    logger, ReviewFinding.logger = ReviewFinding.logger, Logger.new(log)
+    post_ledger([answer_row(OPEN, 1, tag: 'Nit', summary: 'Nothing is lost', body: 'It is fine')])
+    assert_response :success
+    answer = ReviewFinding.find_by(file: 'lib/sync.rb', line_start: 12, source: 'outcomes')
+    assert_equal ['Important', 'The copy overwrites an ignored file without a word', nil],
+                 [answer.tag, answer.summary, answer.body]
+    assert_match "#{OPEN}: dropped an answer's tag, summary, body", log.string
+  ensure
+    ReviewFinding.logger = logger
   end
 
   test 'an unknown field, a bad value, or a row that is not an object is refused' do

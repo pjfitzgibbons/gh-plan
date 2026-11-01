@@ -13,8 +13,8 @@ writes, and `<k>-outcomes.md`, a person's answers to it. `0-findings-<m>.md` and
 `0-outcomes-<m>.md` hold missed findings, round 0, of issue m. Each file is a line per finding,
 written from the fenced `json` block below them, which is the POST's body:
 
-    vscode/done.js:214-219:ignored-file-overwrite · New · silent/files — The fast-forward overwrites an ignored file
-    vscode/github.js:88:repo-rename · Intentional · seen/nothing — a repo renamed on GitHub is refused
+    vscode/done.js:214-219:ignored-file-overwrite@6 · New · silent/files — The fast-forward overwrites an ignored file
+    vscode/github.js:88:repo-rename@6 · Intentional · seen/nothing — a repo renamed on GitHub is refused
 
 `send` posts the files in round order, each round's findings before its outcomes, to
 `POST /issues/<n>/review_findings.json`, and only `pr` passes --outcomes. It checks each file's
@@ -41,9 +41,12 @@ OUTCOMES = {
     "intentional": "Intentional",
     "wrong": "Wrong",
     "doesnt-matter": "Doesnt-matter",
+    "superseded": "Superseded",
 }
 SEVERITIES = ["work", "files", "commits", "tracker", "nothing"]
 VISIBILITIES = ["silent", "seen"]
+# What an answer takes from the row that raised it, never from its file (design 0005, §3.4).
+RAISED = ("tag", "summary", "body")
 RULE = re.compile(r"^[a-z0-9]+(-[a-z0-9]+)*$")
 NAME = re.compile(r"^(?P<k>\d+)-(?P<kind>findings|outcomes)(?:-(?P<m>\d+))?\.md$")
 
@@ -59,10 +62,11 @@ def git(*args: str, cwd: Path | None = None) -> str:
 
 
 def key(row: dict) -> str:
-    """`file:lines:rule`, with one number when the finding is one line."""
+    """`file:lines:rule@k`, with one number when the finding is one line, and k the round that
+    raised it (design 0005, §3.1)."""
     start, end = row["line_start"], row["line_end"]
     lines = str(start) if start == end else f"{start}-{end}"
-    return f"{row['file']}:{lines}:{row['rule_id']}"
+    return f"{row['file']}:{lines}:{row['rule_id']}@{row['raised_round']}"
 
 
 def to_fix(row: dict) -> bool:
@@ -228,7 +232,7 @@ class Issue:
         }
         for row in data["review_findings"]:
             have = rows.get((key(row), row["round"], row["source"]))
-            if not have or any(same(v) != same(have.get(k)) for k, v in row.items()):
+            if not have or any(same(v) != same(have.get(k)) for k, v in kept_fields(row).items()):
                 return False
         return True
 
@@ -303,6 +307,14 @@ class Issue:
         data["review_findings"].append(row)
         write(path, data)
         return path
+
+
+def kept_fields(row: dict) -> dict:
+    """The row's fields that Redmine keeps as sent: all but an answer's tag, summary and body,
+    which it copies from the row that raised the finding."""
+    if row["source"] != "outcomes":
+        return row
+    return {k: v for k, v in row.items() if k not in RAISED}
 
 
 def same(v):
@@ -392,6 +404,7 @@ def main(argv: list[str] | None = None) -> int:
             "line_end": a.lines[1],
             "rule_id": a.rule,
             "round": 0,
+            "raised_round": 0,
             "source": "review",
             "outcome": "new",
             "tag": "Important",

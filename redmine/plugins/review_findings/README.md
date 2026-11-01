@@ -6,10 +6,11 @@ checking its fix, or a person's answer. Rows are only added. It adds the two tab
 module named `review_findings`, a JSON API and a Findings tab. The schema, the allowed values and
 what each field holds are [design 0005 §3.1](../../../docs/design/0005-review-findings.md#schema).
 
-A finding's key is `file:lines:rule`, such as `lib/sync.rb:12-14:ignored-file-overwrite`, and its
+A finding's key is `file:lines:rule@round`, such as `lib/sync.rb:12-14:ignored-file-overwrite@2`:
+the lines as the raising round's commit had them, and that round. Its
 status is its key's latest row, by round, an answer after the review of its round: `open`,
 `fixed, unchecked` (answered `fixed`, not yet checked by a later round), `fixed` (checked),
-`intentional`, `wrong` or `doesnt-matter`. A finding is *open to fix* when it's open and silent
+`intentional`, `wrong`, `doesnt-matter` or `superseded`. A finding is *open to fix* when it's open and silent
 and loses something, or its rule is `crash`.
 
 ## The Findings tab
@@ -44,18 +45,21 @@ A `review_round` has `round`, `commit` and `ci` (`success`, `failure` or `none`)
 commit is reviewed once. A `POST` may leave out `review_findings`, as a clean round does.
 
 A `review_findings` row has `round`, `source`, `file`, `line_start`, `line_end`, `rule_id`,
-`outcome` and `severity`, and any of `tag`, `visibility`, `summary`, `body` and `justification`:
+`raised_round`, `outcome` and `severity`, and any of `tag`, `visibility`, `summary`, `body` and `justification`:
 
-- **From `review`**, `new` raises a finding, or reopens one whose fix didn't hold; `fixed` checks a
-  fix, and needs an earlier round to have raised the key. Round 0 is a missed finding (§3.8).
+- **From `review`**, `new` raises a finding when `raised_round` is its own `round`, or reopens one
+  whose fix didn't hold; `fixed` checks a fix, and `superseded` marks an open finding a later round
+  raised again on changed code. A row in a later round needs its `raised_round` to have raised the
+  key. Round 0 is a missed finding (§3.8).
 - **From `outcomes`**, a person's answer: `fixed`, `intentional`, `wrong` or `doesnt-matter`, with a
-  `justification` for any but `fixed`. It needs a round up to its own to have raised the key, and
-  it records the sender as `confirmed_by_id`.
+  `justification` for any but `fixed`. It needs its `raised_round` to have raised the key, and
+  it records the sender as `confirmed_by_id`. It sends no `tag`, `summary` or `body`: the plugin
+  copies them from the row that raised the key, and drops any it sends with a line in Redmine's log.
 
 A row in a round other than 0 needs that round recorded, before or in the same `POST`.
 
 A row or round identical to one already there is skipped, so the same `POST` twice adds nothing. One
-whose event, `(file, line_start, line_end, rule_id, round, source)`, or whose round, is already
+whose event, `(file, line_start, line_end, rule_id, raised_round, round, source)`, or whose round, is already
 there with other values gets a 422; a later answer goes in a later round. So does a value outside
 the allowed ones, an unknown field, or a round that isn't the next one. A 422 answers
 `{"errors": [...]}`, each naming its row, and nothing in the request is saved. An empty string is

@@ -24,6 +24,7 @@ from unittest import mock
 import findings
 import issue_body
 import issue_relations
+import linemap
 import new_issue
 import redmine
 import redmine_set
@@ -2517,14 +2518,17 @@ class Review(unittest.TestCase):
     def test_a_rule_review_md_doesnt_list_is_marked_new(self):
         rules = review.listed(REVIEW_MD, "Rules")
         self.assertEqual(
-            "  sync.sh:4:unchecked-step-before-destructive-op  Important  New  commits/silent\n"
+            "  sync.sh:4:unchecked-step-before-destructive-op@1  Important  New  commits/silent\n"
             "    A failed push still deletes the branch",
-            review.line(finding(outcome="new"), rules),
+            review.line(row(), rules),
         )
         shown = review.line(
-            finding(rule_id="races-the-fetch", line_end=6, outcome="fixed", tag=None), rules
+            row(
+                2, rule_id="races-the-fetch", line_end=6, outcome="fixed", tag=None, raised_round=1
+            ),
+            rules,
         )
-        self.assertIn("sync.sh:4-6:races-the-fetch  -  Fixed  commits/silent  *new rule*", shown)
+        self.assertIn("sync.sh:4-6:races-the-fetch@1  -  Fixed  commits/silent  *new rule*", shown)
 
     def test_the_summary_opens_with_the_count_open_and_the_count_to_fix(self):
         found = [
@@ -3180,7 +3184,7 @@ class PrReview(unittest.TestCase):
         )
         log = self.log()
         self.assertIn(
-            "  a.txt:2:unchecked-step-before-destructive-op  Important  New  commits/silent", log
+            "  a.txt:2:unchecked-step-before-destructive-op@1  Important  New  commits/silent", log
         )
         self.assertIn("couldn't be read", log)
         self.assertIn(
@@ -3545,6 +3549,7 @@ ROW_FIELDS = (
     "line_start",
     "line_end",
     "rule_id",
+    "raised_round",
     "round",
     "source",
     "outcome",
@@ -3571,6 +3576,22 @@ class FakeLedger:
         found = re.fullmatch(r"/issues/(\d+)/review_findings\.json", path)
         assert found, path
         return int(found[1])
+
+    @staticmethod
+    def raises(row) -> bool:
+        """Whether the row is its finding's review row in the round that raised it."""
+        return row["source"] == "review" and row["round"] == row["raised_round"]
+
+    @classmethod
+    def original_finding(cls, row, found):
+        """The review row that raised the row's finding, in the round its key names."""
+        return next((f for f in found if f["key"] == findings.key(row) and cls.raises(f)), None)
+
+    @classmethod
+    def take_from_original(cls, answer, found):
+        """The answer with the original finding's tag, summary and body, or none without one."""
+        original = cls.original_finding(answer, found) or {}
+        return answer | {f: original.get(f) for f in findings.RAISED}
 
     def send(self, method, path, body=None):
         if self.down:
@@ -3612,6 +3633,8 @@ class FakeLedger:
             ):
                 errors.append(f"row {i}: {key}: Justification can't be blank")
                 continue
+            if row["source"] == "outcomes":
+                row = self.take_from_original(row, found)
             same = next(
                 (
                     f
@@ -3631,19 +3654,17 @@ class FakeLedger:
             if row["round"] > 0 and row["round"] not in recorded:
                 errors.append(f"row {i}: {key}: round {row['round']} isn't recorded")
                 continue
-            if not (row["source"] == "review" and row["outcome"] == "new"):
-                raised = any(
-                    f["key"] == key
-                    and f["source"] == "review"
-                    and (
-                        f["round"] < row["round"]
-                        or (row["source"] == "outcomes" and f["round"] <= row["round"])
-                    )
-                    for f in found
+            if row["raised_round"] > row["round"]:
+                errors.append(f"row {i}: {key}: Raised round must be round or earlier")
+                continue
+            if self.raises(row) and row["outcome"] != "new":
+                errors.append(
+                    f"row {i}: {key}: Outcome is new in the round that raises the finding"
                 )
-                if not raised:
-                    errors.append(f"row {i}: {key}: no earlier round raised it")
-                    continue
+                continue
+            if not self.raises(row) and not self.original_finding(row, found):
+                errors.append(f"row {i}: {key}: round {row['raised_round']} didn't raise it")
+                continue
             confirmed = 5 if row["source"] == "outcomes" else None
             new = {**row, "key": key, "issue_id": n, "confirmed_by_id": confirmed}
             found.append(new)
@@ -3667,7 +3688,7 @@ class FakeLedger:
                 events, key=lambda r: (r["round"], r["source"] == "outcomes"), reverse=True
             )
             latest = events[0]
-            raised = next((f for f in reversed(events) if f["source"] == "review"), events[-1])
+            raised = next((f for f in events if FakeLedger.raises(f)), events[-1])
             status = {
                 ("review", "fixed"): "fixed",
                 ("outcomes", "fixed"): "fixed, unchecked",
@@ -3677,7 +3698,7 @@ class FakeLedger:
             out.append(
                 {
                     "key": key,
-                    "round": raised["round"],
+                    "round": latest["raised_round"],
                     "summary": raised["summary"],
                     "status": status,
                     "to_fix": findings.to_fix(latest),
@@ -3699,8 +3720,16 @@ class FakeLedger:
 
 
 def row(k=1, **over):
-    """A finding raised in round k, as a round file holds it."""
-    return {**finding(), "round": k, "source": "review", "outcome": "new", **over}
+    """A finding raised in round k, as a round file holds it, or with raised_round, a check of an
+    earlier round's."""
+    return {
+        **finding(),
+        "round": k,
+        "raised_round": k,
+        "source": "review",
+        "outcome": "new",
+        **over,
+    }
 
 
 def outcome(k=1, word="fixed", why=None, **over):
@@ -3709,6 +3738,7 @@ def outcome(k=1, word="fixed", why=None, **over):
     keep = ("file", "line_start", "line_end", "rule_id", "severity", "visibility")
     return {
         **{x: raised[x] for x in keep},
+        "raised_round": 1,
         "round": k,
         "source": "outcomes",
         "outcome": word,
@@ -3770,9 +3800,9 @@ class Findings(unittest.TestCase):
                 "  2 findings open, 1 to fix.\n"
                 "    Review: dropped one\n"
                 "\n"
-                "sync.sh:4:unchecked-step-before-destructive-op · New · silent/commits"
+                "sync.sh:4:unchecked-step-before-destructive-op@1 · New · silent/commits"
                 " — A failed push still deletes the branch\n"
-                "sync.sh:4-6:unchecked-step-before-destructive-op · New · -/nothing"
+                "sync.sh:4-6:unchecked-step-before-destructive-op@1 · New · -/nothing"
                 " — A failed push still deletes the branch\n"
                 "\n```json\n"
             ),
@@ -3815,7 +3845,10 @@ class Findings(unittest.TestCase):
                 self.assertEqual(self.store.posts, [])
 
     def test_send_records_each_round_file_in_round_order_once_and_keeps_it(self):
-        findings.write(self.folder / "2-findings.md", a_round(2, "c2", [row(2, outcome="fixed")]))
+        findings.write(
+            self.folder / "2-findings.md",
+            a_round(2, "c2", [row(2, outcome="fixed", raised_round=1)]),
+        )
         findings.write(self.folder / "1-outcomes.md", {"review_findings": [outcome()]})
         findings.write(self.folder / "1-findings.md", a_round(rows=[row()]))
         code, out, err = self.send()
@@ -3860,7 +3893,20 @@ class Findings(unittest.TestCase):
         )
         code, _, err = self.send()
         self.assertEqual(code, 1)
-        self.assertIn("sync.sh:4:other-rule: no earlier round raised it", err)
+        self.assertIn("sync.sh:4:other-rule@1: round 1 didn't raise it", err)
+
+    def test_an_answer_holds_the_raising_rows_summary_whatever_its_file_says(self):
+        findings.write(self.folder / "1-findings.md", a_round(rows=[row()]))
+        findings.write(
+            self.folder / "1-outcomes.md", {"review_findings": [outcome(summary="Nothing is lost")]}
+        )
+        self.assertEqual(self.send()[0], 0)
+        answer = next(x for x in self.store.rows[9] if x["source"] == "outcomes")
+        self.assertEqual(answer["summary"], finding()["summary"])
+        # Held, so a second send posts nothing.
+        posts = len(self.store.posts)
+        self.assertEqual(self.send()[0], 0)
+        self.assertEqual(len(self.store.posts), posts)
 
     def test_a_post_that_doesnt_read_back_keeps_the_file(self):
         self.store.lose = True
@@ -3919,7 +3965,7 @@ class Findings(unittest.TestCase):
             # The same key twice is refused.
             self.assertEqual(findings.main(args), 1)
         self.assertIn(
-            "added sync.sh:4-6:unchecked-step-before-destructive-op to .tmp/9/0-findings-7.md",
+            "added sync.sh:4-6:unchecked-step-before-destructive-op@0 to .tmp/9/0-findings-7.md",
             out.getvalue(),
         )
         self.assertIn("already has sync.sh:4-6", err.getvalue())
@@ -3929,6 +3975,112 @@ class Findings(unittest.TestCase):
         self.assertIn("findings: #7: no round yet, 1 open to fix", out)
         self.assertIn("findings: #9: no round yet, 0 open to fix", out)
         self.assertEqual(self.store.rows[7][0]["round"], 0)
+
+
+class LineMap(unittest.TestCase):
+    """linemap.py: a finding's lines, from the commit that raised it to a later one."""
+
+    BLOCK = [f"line {i} carries enough text for blame -M to follow it" for i in range(1, 7)]
+
+    def setUp(self):
+        self.repo = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        env = {
+            "GIT_CONFIG_GLOBAL": "/dev/null",
+            "GIT_AUTHOR_NAME": "t",
+            "GIT_AUTHOR_EMAIL": "t@example.com",
+            "GIT_COMMITTER_NAME": "t",
+            "GIT_COMMITTER_EMAIL": "t@example.com",
+        }
+        self.enterContext(mock.patch.dict(os.environ, env))
+        self.git("init", "-q", "-b", "main", str(self.repo))
+        self.raised = self.commit(self.BLOCK, "Raised")
+
+    def git(self, *args: str) -> str:
+        return linemap.git(self.repo, *args)
+
+    def commit(self, lines: list[str], message: str, file: str = "a.txt") -> str:
+        (self.repo / file).write_text("".join(f"{x}\n" for x in lines))
+        self.git("add", "-A")
+        self.git("commit", "-q", "-m", message)
+        return self.git("rev-parse", "HEAD").strip()
+
+    def where(self, start: int, end: int, commit: str, since: str | None = None):
+        return linemap.where(self.repo, "a.txt", start, end, since or self.raised, commit)
+
+    def test_lines_shift_with_the_code_above_them(self):
+        later = self.commit(["new 1", "new 2", *self.BLOCK], "Above")
+        lines = self.where(2, 3, later)
+        self.assertEqual(lines.moved, {2: 4, 3: 5})
+        self.assertTrue(lines.unchanged())
+        self.assertEqual(lines.shown(), "a.txt:4-5")
+
+    def test_an_edited_line_is_changed_and_one_wholly_changed_sits_between_its_neighbours(self):
+        later = self.commit([*self.BLOCK[:2], "edited", *self.BLOCK[3:]], "Edit")
+        lines = self.where(2, 3, later)
+        self.assertEqual(lines.moved, {2: 2, 3: None})
+        self.assertFalse(lines.unchanged())
+        self.assertEqual(lines.shown(), "a.txt:2, its old line 3 changed")
+        gone = self.where(3, 3, later)
+        self.assertEqual((gone.extent(), gone.span()), (None, (3, 3)))
+        self.assertEqual(gone.shown(), "a.txt: every line changed")
+
+    def test_blame_follows_a_block_moved_within_the_file(self):
+        later = self.commit([*self.BLOCK[3:], *self.BLOCK[:3]], "Move")
+        self.assertEqual(self.where(1, 2, later).moved, {1: 4, 2: 5})
+
+    def test_a_renamed_file_keeps_its_lines_and_a_deleted_one_has_none(self):
+        self.git("mv", "a.txt", "b.txt")
+        renamed = self.commit(["new", *self.BLOCK], "Rename", file="b.txt")
+        lines = self.where(1, 1, renamed)
+        self.assertEqual((lines.file, lines.moved), ("b.txt", {1: 2}))
+        self.git("rm", "-q", "b.txt")
+        self.git("commit", "-q", "-m", "Delete")
+        self.assertIsNone(self.where(1, 1, self.git("rev-parse", "HEAD").strip()))
+
+    def test_after_a_rebase_the_tree_diff_maps_the_lines(self):
+        # The same edit, made again on a branch the raising commit isn't on, as a rebase leaves it.
+        fork = self.git("rev-parse", "HEAD").strip()
+        self.git("checkout", "-q", "-b", "other", fork)
+        self.commit(["base", *self.BLOCK], "Upstream")
+        rebased = self.commit(["base", *self.BLOCK[:2], "edited", *self.BLOCK[3:]], "Rebased")
+        since = self.commit([*self.BLOCK[:2], "edited", *self.BLOCK[3:]], "x")
+        self.git("checkout", "-q", "main")
+        self.git("reset", "-q", "--hard", fork)
+        raised = self.git("commit-tree", f"{since}^{{tree}}", "-p", fork, "-m", "Raised").strip()
+        self.assertFalse(
+            linemap.succeeds(self.repo, "merge-base", "--is-ancestor", raised, rebased)
+        )
+        lines = self.where(2, 4, rebased, since=raised)
+        self.assertEqual(lines.moved, {2: 3, 3: 4, 4: 5})
+
+    def test_a_commit_neither_the_repo_nor_origin_has_maps_nothing(self):
+        self.assertIsNone(self.where(1, 1, self.raised, since="0" * 40))
+
+    def test_blames_later_group_of_a_commit_takes_the_filename_it_printed_first(self):
+        a, b = "a" * 40, "b" * 40
+        out = (
+            f"{a} 1 1 2\nauthor t\nboundary\nfilename x.txt\n\tone\n{a} 2 2\n\ttwo\n"
+            f"{b} 3 3 1\nauthor t\nfilename x.txt\n\tnew\n{a} 4 4 1\n\tfour\n"
+        )
+        self.assertEqual(
+            [(x.old, x.new, x.file, x.boundary) for x in linemap.blame_lines(out)],
+            [
+                (1, 1, "x.txt", True),
+                (2, 2, "x.txt", True),
+                (3, 3, "x.txt", False),
+                (4, 4, "x.txt", True),
+            ],
+        )
+
+    def test_the_tree_diffs_hunks_shift_lines_and_name_those_they_replace(self):
+        found = linemap.hunks("@@ -2 +2,2 @@\n@@ -5,0 +7 @@\n")
+        self.assertEqual(found, [(2, 1, 2, 2), (5, 0, 7, 1)])
+        self.assertEqual(
+            [linemap.shifted(old, found) for old in (1, 2, 3, 5, 6)], [1, None, 4, 6, 8]
+        )
+        self.assertEqual(linemap.gap(4, 6), (5, 5))
+        self.assertEqual(linemap.gap(4, 5), (4, 5))
+        self.assertEqual(linemap.gap(0, None), (1, None))
 
 
 class ReviewRounds(unittest.TestCase):
@@ -3964,31 +4116,44 @@ class ReviewRounds(unittest.TestCase):
             store.send("POST", "/issues/9/review_findings.json", {"review_findings": list(answers)})
         return store.send("GET", "/issues/9/review_findings.json")
 
+    def fixes(self, ledger: dict, commit: str | None = None) -> list[dict]:
+        """The fixes a round at commit, c2 by default, checks."""
+        commit = commit or self.c2
+        place = review.placer(ledger, self.repo, commit, self.fork)
+        return review.fixes(ledger, self.repo, commit, self.fork, place)
+
     def test_a_later_round_checks_each_fix_with_its_finding_and_its_files_diff_since(self):
-        (fix,) = review.fixes(self.ledger(outcome()), self.repo, self.c2, self.fork)
-        self.assertEqual(fix["key"], "sync.sh:4:unchecked-step-before-destructive-op")
+        (fix,) = self.fixes(self.ledger(outcome()))
+        self.assertEqual(fix["key"], "sync.sh:4:unchecked-step-before-destructive-op@1")
         self.assertEqual((fix["summary"], fix["answered"]), (finding()["summary"], 1))
         self.assertIn("-push; branch -D\n+push && branch -D", fix["diff"])
+        self.assertEqual(fix["now"], "sync.sh: every line changed")
         # An answer other than Fixed, or no answer, isn't checked.
-        self.assertEqual(
-            review.fixes(
-                self.ledger(outcome(word="intentional", why="x")), self.repo, self.c2, self.fork
-            ),
-            [],
-        )
-        self.assertEqual(review.fixes(self.ledger(), self.repo, self.c2, self.fork), [])
+        self.assertEqual(self.fixes(self.ledger(outcome(word="intentional", why="x"))), [])
+        self.assertEqual(self.fixes(self.ledger()), [])
         text = review.check_prompt("rules", 9, 2, [fix], " sync.sh | 2 +-")
         self.assertIn("round 2 of the branch for issue #9", text)
         self.assertIn("Its file's diff since round 1:\n\n```\n", text)
+        self.assertIn("sync.sh: every line changed", text)
         shape = review.check_schema([fix["key"]])
         self.assertEqual(
             shape["properties"]["checks"]["items"]["properties"]["key"], {"enum": [fix["key"]]}
         )
         self.assertIn("checks", shape["required"])
 
+    def test_a_fixs_diff_follows_its_file_renamed_since_the_answer(self):
+        subprocess.run(["git", "mv", "sync.sh", "push.sh"], **self.run_in)
+        (self.repo / "push.sh").write_text("step 1\nstep 2\nstep 3\npush && branch -d\n")
+        subprocess.run(["git", "commit", "-q", "-am", "Rename"], **self.run_in)
+        c3 = review.git("rev-parse", "HEAD", cwd=self.repo).strip()
+        (fix,) = self.fixes(self.ledger(outcome()), c3)
+        self.assertIn("rename from sync.sh\nrename to push.sh", fix["diff"])
+        self.assertIn("-push; branch -D\n+push && branch -d", fix["diff"])
+        self.assertTrue(fix["now"].startswith("push.sh"))
+
     def test_a_later_rounds_new_code_is_each_path_since_the_last_round_no_fix_names(self):
         ledger = self.ledger(outcome())
-        checks = review.fixes(ledger, self.repo, self.c2, self.fork)
+        checks = self.fixes(ledger)
         rounds = ledger["review_rounds"]
         # Only the fix changed: nothing beyond it.
         self.assertEqual(
@@ -4022,7 +4187,7 @@ class ReviewRounds(unittest.TestCase):
         self.assertIn("report findings only in this diff's changes", text)
 
     def test_a_fix_that_held_is_recorded_fixed_and_one_that_didnt_new(self):
-        (fix,) = review.fixes(self.ledger(outcome()), self.repo, self.c2, self.fork)
+        (fix,) = self.fixes(self.ledger(outcome()))
         held = review.checked(fix, {"key": fix["key"], "held": True, "body": "push is checked"}, 2)
         self.assertEqual(
             {k: held[k] for k in ("round", "source", "outcome", "tag", "summary", "body")},
@@ -4037,21 +4202,68 @@ class ReviewRounds(unittest.TestCase):
         )
         self.assertEqual(review.checked(fix, {"held": False}, 2)["outcome"], "new")
 
-    def test_a_round_has_one_row_per_key_its_check_first(self):
-        check = row(2, outcome="fixed")
+    def test_a_round_has_one_row_per_key_its_checks_first(self):
+        check = row(2, outcome="fixed", raised_round=1)
         found = [row(2, tag="Security", visibility="seen"), row(2, line_start=9, line_end=9)]
-        rows, notes = review.assemble([check], found)
+        rows = review.assemble([check], [*found, row(2)])
         self.assertEqual(
-            [findings.key(r) for r in rows], [findings.key(check), findings.key(found[1])]
+            [findings.key(r) for r in rows], [findings.key(r) for r in [check, *found]]
         )
         self.assertIs(rows[0], check)
+        self.assertEqual(rows[1]["visibility"], "silent")
+        self.assertIn("Also found here: Security, seen/commits", rows[1]["body"])
+
+    def sift(self, raises: list[dict], ledger: dict, commit: str, checks=()):
+        place = review.placer(ledger, self.repo, commit, self.fork)
+        return review.sift(raises, ledger, list(checks), place, 2)
+
+    def test_a_raise_on_an_earlier_findings_unchanged_lines_is_that_finding(self):
+        subprocess.run(["git", "checkout", "-q", "-b", "side", self.c1], **self.run_in)
+        c3 = self.commit("# sync\nstep 1\nstep 2\nstep 3\npush; branch -D\n", "Header")
+        raised = row(2, line_start=5, line_end=5)
+        kept, superseded, notes = self.sift([raised], self.ledger(), c3)
+        self.assertEqual((kept, superseded), ([], {}))
         self.assertEqual(
             notes,
-            [f"dropped a finding on {findings.key(check)}, which this round's check of it covers"],
+            [
+                f"dropped {findings.key(raised)}, which is "
+                "sync.sh:4:unchecked-step-before-destructive-op@1 on unchanged code"
+            ],
         )
-        rows, _ = review.assemble([], [found[0], row(2)])
-        self.assertEqual(rows[0]["visibility"], "silent")
-        self.assertIn("Also found here: Security, seen/commits", rows[0]["body"])
+        # Another rule, or other lines, is another finding.
+        other = [
+            row(2, rule_id="other-rule", line_start=5, line_end=5),
+            row(2, line_start=2, line_end=2),
+        ]
+        self.assertEqual(self.sift(other, self.ledger(), c3), (other, {}, []))
+
+    def test_a_raise_on_a_finding_this_round_checks_is_dropped(self):
+        ledger = self.ledger(outcome())
+        raised = row(2)
+        kept, superseded, notes = self.sift([raised], ledger, self.c2, self.fixes(ledger))
+        self.assertEqual((kept, superseded), ([], {}))
+        self.assertIn("which this round's check covers", notes[0])
+
+    def test_a_raise_on_changed_lines_is_new_and_supersedes_an_open_finding(self):
+        raised = row(2)
+        kept, superseded, notes = self.sift([raised], self.ledger(), self.c2)
+        self.assertEqual((kept, notes), ([raised], []))
+        (gone,) = superseded.values()
+        self.assertEqual(
+            (findings.key(gone), gone["round"], gone["source"], gone["outcome"]),
+            ("sync.sh:4:unchecked-step-before-destructive-op@1", 2, "review", "superseded"),
+        )
+        self.assertIn(f"Round 2 raised {findings.key(raised)}", gone["body"])
+        # One answered isn't open, so it keeps its answer.
+        answered = self.ledger(outcome(word="intentional", why="x"))
+        self.assertEqual(self.sift([raised], answered, self.c2), ([raised], {}, []))
+        # The ledger takes the round: the old finding superseded, the new one open.
+        store = FakeLedger()
+        store.send("POST", "/issues/9/review_findings.json", a_round(commit=self.c1, rows=[row()]))
+        store.send("POST", "/issues/9/review_findings.json", a_round(2, self.c2, [raised, gone]))
+        got = store.send("GET", "/issues/9/review_findings.json")
+        statuses = {f["key"]: f["status"] for f in got["findings"]}
+        self.assertEqual(set(statuses.values()), {"superseded", "open"})
 
     def test_a_rules_third_finding_over_the_rounds_gets_a_check(self):
         ledger = self.ledger()
@@ -4059,7 +4271,7 @@ class ReviewRounds(unittest.TestCase):
         third = [row(2, line_start=9, line_end=9)]
         self.assertEqual(review.to_codify(ledger, third), ["unchecked-step-before-destructive-op"])
         # A check of a finding already raised isn't a new one.
-        self.assertEqual(review.to_codify(ledger, [row(2)]), [])
+        self.assertEqual(review.to_codify(ledger, [row(2, raised_round=1)]), [])
         ledger["rules"] = {}
         self.assertEqual(review.to_codify(ledger, third), [])
 
@@ -4127,7 +4339,7 @@ class ReviewRounds(unittest.TestCase):
         # sync.sh:4 is the reviewer's own already; 3-4 is new, weighted as the rule's heaviest.
         self.assertEqual(got[:2], rows)
         (added,) = got[2:]
-        self.assertEqual(findings.key(added), "sync.sh:3-4:unchecked-step-before-destructive-op")
+        self.assertEqual(findings.key(added), "sync.sh:3-4:unchecked-step-before-destructive-op@2")
         self.assertEqual((added["visibility"], added["severity"]), ("silent", "commits"))
         self.assertEqual(added["summary"], "the same, wider")
         self.assertEqual(

@@ -135,7 +135,7 @@ client of one of them:
   `rails runner`, on the database directly, so they need no API key.
 - **The lane board plugin** adds the Lanes tab. It only reads.
 - **The review findings plugin** keeps each issue's review as a ledger: a `review_rounds` row for
-  each round, and a `review_findings` row for each event on a finding, keyed `file:lines:rule`:
+  each round, and a `review_findings` row for each event on a finding, keyed `file:lines:rule@round`:
   the reviewer raising it, a person answering it, a later round checking its fix. Rows are only
   added. Its read API adds them up into each finding's latest status, the issue's last round and
   per-rule counts of real findings and noise, as JSON

@@ -26,7 +26,7 @@ class ReviewFindingsViewsTest < Redmine::IntegrationTest
     assert_response :success
     assert_select 'h2 a[href="/issues/1"]'
     assert_select 'table.list.review-findings tbody tr', 4
-    assert_select 'td', text: 'lib/sync.rb:60-61:ignored-file-overwrite'
+    assert_select 'td', text: 'lib/sync.rb:60-61:ignored-file-overwrite@2'
     assert_select 'td', text: /fixed, unchecked/
     assert_select 'td', text: 'fixed (round 2)'
   end

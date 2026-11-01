@@ -1,5 +1,5 @@
-# One event on one finding of an issue's branch (design 0005, §3.1): the reviewer raising it or
-# checking its fix (`review`), or a person's answer (`outcomes`). Rows are only added; a finding's
+# One event on one finding of an issue's branch (design 0005, §3.1): the reviewer raising it,
+# checking its fix or superseding it (`review`), or a person's answer (`outcomes`). Rows are only added; a finding's
 # status is its key's latest row, worked out on read. The rule rename is the one change to a row.
 class ReviewFinding < ApplicationRecord
   # A request the API refuses with 422, saving nothing from it.
@@ -16,9 +16,9 @@ class ReviewFinding < ApplicationRecord
   TAGS = %w[Important Nit Pre-existing Security].freeze
   SEVERITIES = %w[work files commits tracker nothing].freeze
   VISIBILITIES = %w[silent seen].freeze
-  OUTCOMES = %w[new fixed intentional wrong doesnt-matter].freeze
-  ANSWERS = (OUTCOMES - %w[new]).freeze
-  CHECKS = %w[new fixed].freeze
+  OUTCOMES = %w[new fixed intentional wrong doesnt-matter superseded].freeze
+  ANSWERS = (OUTCOMES - %w[new superseded]).freeze
+  REVIEWED = %w[new fixed superseded].freeze
   REAL = %w[fixed intentional].freeze
   NOISE = %w[wrong doesnt-matter].freeze
 
@@ -26,8 +26,12 @@ class ReviewFinding < ApplicationRecord
   # Past an integer column's range, save raises instead of validating.
   INT_MAX = 2**31
 
-  KEY = %w[file line_start line_end rule_id].freeze
+  # The finding's lines at the commit of the round that raised it, its rule, and that round.
+  KEY = %w[file line_start line_end rule_id raised_round].freeze
   FIELDS = (KEY + %w[round source outcome tag severity visibility summary body justification]).freeze
+  # What an answer takes from the row that raised its key, never from the request (§3.4).
+  RAISED = %w[tag summary body].freeze
+  ANSWER_FIELDS = (FIELDS - RAISED).freeze
 
   # A finding's rows newest first: by round, then an `outcomes` row after the `review` row of its round.
   NEWEST_FIRST = 'round DESC, CASE source WHEN \'outcomes\' THEN 0 ELSE 1 END'.freeze
@@ -37,7 +41,7 @@ class ReviewFinding < ApplicationRecord
 
   before_validation :blanks_to_nil
 
-  validates :round, numericality: { only_integer: true, greater_than_or_equal_to: 0, less_than: INT_MAX }
+  validates :round, :raised_round, numericality: { only_integer: true, greater_than_or_equal_to: 0, less_than: INT_MAX }
   validates :source, inclusion: { in: SOURCES }
   validates :file, presence: true, length: { maximum: 255 }, format: { without: %r{\A/|(?:\A|/)\.\.(?:/|\z)} }
   validates :line_start, :line_end, numericality: { only_integer: true, greater_than: 0, less_than: INT_MAX }
@@ -47,11 +51,11 @@ class ReviewFinding < ApplicationRecord
   validates :severity, inclusion: { in: SEVERITIES }
   validates :visibility, inclusion: { in: VISIBILITIES }, allow_nil: true
   validates :summary, length: { maximum: 255 }
-  validate :lines_in_order, :visibility_unless_nothing, :outcome_for_source, :justified, :confirmed_only_by_answer
+  validate :lines_in_order, :raised_by_then, :visibility_unless_nothing, :outcome_for_source, :justified, :confirmed_only_by_answer
 
   def key
     lines = line_start == line_end ? line_start.to_s : "#{line_start}-#{line_end}"
-    "#{file}:#{lines}:#{rule_id}"
+    "#{file}:#{lines}:#{rule_id}@#{raised_round}"
   end
 
   def key_fields
@@ -84,8 +88,8 @@ class ReviewFinding < ApplicationRecord
     groups = by_finding(rows).values
     findings = groups.map do |events|
       latest = events.first
-      raised = events.reverse.find { |f| f.source == 'review' } || events.last
-      { 'key' => latest.key, 'round' => raised.round, 'summary' => raised.summary, 'status' => latest.status,
+      raised = events.find { |f| f.raises? } || events.last
+      { 'key' => latest.key, 'round' => latest.raised_round, 'summary' => raised.summary, 'status' => latest.status,
         'to_fix' => latest.to_fix?, 'latest' => latest.as_json }
     end
     open = findings.count { |f| f['to_fix'] && f['status'] == 'open' }
@@ -141,41 +145,119 @@ class ReviewFinding < ApplicationRecord
   # `found` holds the issue's rows, and gains each row this request adds, so a check or an answer
   # may follow the row that raised it in one request.
   def self.record_row(issue, row, user, rounds, found)
+    row = well_formed(row)
+    dropped = detect_disallowed_fields(row)
+    row = row.except(*dropped)
+    finding = new(row.merge('issue_id' => issue.id))
+    log_dropped(finding, dropped)
+    finding.take_from_original(found, user) if finding.answer?
+    refuse_invalid(finding)
+
+    repeat = finding.same_event(found)
+    return skip_or_refuse(repeat, row, finding) if repeat
+
+    refuse_unrecorded_round(finding, rounds)
+    refuse_unraised(finding, found)
+
+    finding.save!
+    found << finding
+    'created'
+  end
+
+  # The row with string keys; Refused for anything but an object of known fields and plain values.
+  def self.well_formed(row)
     raise Refused, 'is not an object' unless row.is_a?(Hash)
 
     row = row.stringify_keys
     unknown = row.keys - FIELDS
     raise Refused, "can't send #{unknown.join(', ')}" if unknown.any?
 
-    typed = row.reject { |_, v| v.nil? || v.is_a?(String) || v.is_a?(Integer) }.keys
+    typed = fields_not_plain(row)
     raise Refused, "#{typed.join(', ')} must be a string, a whole number or null" if typed.any?
 
-    finding = new(row.merge('issue_id' => issue.id))
-    finding.confirmed_by = user if finding.source == 'outcomes'
-    raise Refused, "#{finding.key}: #{finding.errors.full_messages.join(', ')}" unless finding.valid?
+    row
+  end
 
-    same = found.find { |f| f.key_fields == finding.key_fields && f.round == finding.round && f.source == finding.source }
-    if same
-      same.assign_attributes(row.except('issue_id'))
-      same.blanks_to_nil
-      return 'skipped' unless same.changed?
+  # The fields whose value isn't a string, a whole number or null.
+  def self.fields_not_plain(row)
+    row.keys.reject { |field| plain_value?(row[field]) }
+  end
 
-      raise Refused, "#{finding.key} is already in round #{finding.round} from #{finding.source}, " \
-                     "with other #{same.changed.join(', ')}"
-    end
-    if finding.round.positive? && !rounds.include?(finding.round)
-      raise Refused, "#{finding.key}: round #{finding.round} isn't recorded"
-    end
+  def self.plain_value?(value)
+    value.nil? || value.is_a?(String) || value.is_a?(Integer)
+  end
 
-    earlier = found.select { |f| f.key_fields == finding.key_fields && f.round <= finding.round }
-    unless finding.source == 'review' && finding.outcome == 'new'
-      raised = earlier.any? { |f| f.source == 'review' && (f.round < finding.round || finding.source == 'outcomes') }
-      raise Refused, "#{finding.key}: no earlier round raised it" unless raised
-    end
+  # The fields a row may not send: an answer's tag, summary and body (§3.4).
+  def self.detect_disallowed_fields(row)
+    row['source'] == 'outcomes' ? row.keys - ANSWER_FIELDS : []
+  end
 
-    finding.save!
-    found << finding
-    'created'
+  def self.log_dropped(finding, dropped)
+    return if dropped.empty?
+
+    logger&.info("review_findings: #{finding.key}: dropped an answer's #{dropped.join(', ')}; " \
+                 'it takes them from the row that raised it')
+  end
+
+  # 'skipped' when the row matches the event already recorded; Refused when it differs.
+  def self.skip_or_refuse(repeat, row, finding)
+    repeat.assign_attributes(row.except('issue_id'))
+    repeat.blanks_to_nil
+    return 'skipped' unless repeat.changed?
+
+    raise Refused, "#{finding.key} is already in round #{finding.round} from #{finding.source}, " \
+                   "with other #{repeat.changed.join(', ')}"
+  end
+
+  def self.refuse_invalid(finding)
+    return if finding.valid?
+
+    raise Refused, "#{finding.key}: #{finding.errors.full_messages.join(', ')}"
+  end
+
+  # A check, a supersede or an answer needs the review row that raised its finding.
+  def self.refuse_unraised(finding, found)
+    return if finding.raises? || finding.original_finding(found)
+
+    raise Refused, "#{finding.key}: round #{finding.raised_round} didn't raise it"
+  end
+
+  # Round 0 is a missed finding and needs no round; any other must be recorded.
+  def self.refuse_unrecorded_round(finding, rounds)
+    return if finding.round.zero? || rounds.include?(finding.round)
+
+    raise Refused, "#{finding.key}: round #{finding.round} isn't recorded"
+  end
+
+  def answer?
+    source == 'outcomes'
+  end
+
+  # The review row of the finding's raising round.
+  def raises?
+    source == 'review' && round == raised_round
+  end
+
+  def same_finding?(other)
+    other.key_fields == key_fields
+  end
+
+  # This finding's row with the same round and source, among `found`.
+  def same_event(found)
+    found.find { |f| same_finding?(f) && f.round == round && f.source == source }
+  end
+
+  # The review row among `found` that raised this finding, in the round its key names.
+  def original_finding(found)
+    found.find { |f| same_finding?(f) && f.raises? }
+  end
+
+  # An answer takes the reviewer's tag, summary and body from the original finding, and the sender
+  # confirms it (§3.4).
+  def take_from_original(found, user)
+    original = original_finding(found)
+    assign_attributes(original.attributes.slice(*RAISED)) if original
+    self.confirmed_by = user
   end
 
   def blanks_to_nil
@@ -260,14 +342,21 @@ class ReviewFinding < ApplicationRecord
     errors.add(:visibility, 'is empty only when severity is nothing')
   end
 
-  # The reviewer raises a finding (`new`) or checks a fix (`new` or `fixed`); a person answers.
+  # The reviewer raises a finding (`new`), checks a fix (`new` or `fixed`) or supersedes it; a
+  # person answers.
   def outcome_for_source
-    if source == 'review' && !CHECKS.include?(outcome)
-      errors.add(:outcome, "from a review is #{CHECKS.join(' or ')}")
+    if source == 'review' && !REVIEWED.include?(outcome)
+      errors.add(:outcome, "from a review is #{REVIEWED.join(', ')}")
     elsif source == 'outcomes' && !ANSWERS.include?(outcome)
       errors.add(:outcome, "from outcomes is #{ANSWERS.join(', ')}")
     end
-    errors.add(:round, 'is 0 only for a missed finding a review raised') if round == 0 && source == 'review' && outcome != 'new'
+    errors.add(:outcome, 'is new in the round that raises the finding') if raises? && outcome != 'new'
+  end
+
+  def raised_by_then
+    return unless round.is_a?(Integer) && raised_round.is_a?(Integer)
+
+    errors.add(:raised_round, 'must be round or earlier') if raised_round > round
   end
 
   def justified

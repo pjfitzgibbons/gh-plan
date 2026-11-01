@@ -9,6 +9,7 @@ open_raised:
   line_start: 12
   line_end: 14
   rule_id: ignored-file-overwrite
+  raised_round: 1
   outcome: new
   tag: Important
   severity: files
@@ -22,6 +23,7 @@ checked_raised:
   line_start: 40
   line_end: 40
   rule_id: forced-update
+  raised_round: 1
   outcome: new
   tag: Important
   severity: commits
@@ -35,9 +37,12 @@ checked_answered:
   line_start: 40
   line_end: 40
   rule_id: forced-update
+  raised_round: 1
   outcome: fixed
+  tag: Important
   severity: commits
   visibility: silent
+  summary: A forced update drops unpushed commits
   confirmed_by_id: 2
 checked_held:
   issue_id: 1
@@ -47,6 +52,7 @@ checked_held:
   line_start: 40
   line_end: 40
   rule_id: forced-update
+  raised_round: 1
   outcome: fixed
   severity: commits
   visibility: silent
@@ -59,6 +65,7 @@ intentional_raised:
   line_start: 7
   line_end: 7
   rule_id: repo-rename
+  raised_round: 1
   outcome: new
   tag: Important
   severity: nothing
@@ -72,9 +79,12 @@ intentional_answered:
   line_start: 7
   line_end: 7
   rule_id: repo-rename
+  raised_round: 1
   outcome: intentional
+  tag: Important
   severity: nothing
   visibility: seen
+  summary: A renamed repo is refused
   justification: Refused with a message; an Open row
   confirmed_by_id: 2
 unchecked_raised:
@@ -85,6 +95,7 @@ unchecked_raised:
   line_start: 60
   line_end: 61
   rule_id: ignored-file-overwrite
+  raised_round: 2
   outcome: new
   tag: Important
   severity: files
@@ -98,9 +109,12 @@ unchecked_answered:
   line_start: 60
   line_end: 61
   rule_id: ignored-file-overwrite
+  raised_round: 2
   outcome: fixed
+  tag: Important
   severity: files
   visibility: silent
+  summary: The rename's new path isn't scanned
   confirmed_by_id: 2
 crash_raised:
   issue_id: 2
@@ -110,6 +124,7 @@ crash_raised:
   line_start: 3
   line_end: 3
   rule_id: crash
+  raised_round: 1
   outcome: new
   tag: Important
   severity: nothing

@@ -13,9 +13,10 @@ class ReviewFindingTest < ActiveSupport::TestCase
     assert finding.valid?, finding.errors.full_messages.join(', ')
   end
 
-  test 'its key names the file, the lines and the rule' do
-    assert_equal 'lib/a.rb:3-5:some-rule', finding.key
-    assert_equal 'lib/a.rb:3:some-rule', finding(line_end: 3).key
+  test 'its key names the file, the lines, the rule and the round that raised it' do
+    assert_equal 'lib/a.rb:3-5:some-rule@1', finding.key
+    assert_equal 'lib/a.rb:3:some-rule@1', finding(line_end: 3).key
+    assert_equal 'lib/a.rb:3-5:some-rule@1', finding(round: 2, outcome: 'fixed').key
   end
 
   test 'a key needs a file, lines in order and a kebab-case rule' do
@@ -46,6 +47,22 @@ class ReviewFindingTest < ActiveSupport::TestCase
     answer = finding(source: 'outcomes', outcome: 'new', confirmed_by_id: 2)
     refute answer.valid?
     assert_includes answer.errors[:outcome], 'from outcomes is fixed, intentional, wrong, doesnt-matter'
+    refute finding(source: 'outcomes', outcome: 'superseded', confirmed_by_id: 2, justification: 'Moved').valid?
+  end
+
+  test 'the raising round says new; a later review row may check or supersede' do
+    raised = finding(outcome: 'fixed')
+    refute raised.valid?
+    assert_includes raised.errors[:outcome], 'is new in the round that raises the finding'
+    refute finding(outcome: 'superseded').valid?
+    assert finding(round: 2, outcome: 'superseded').valid?
+    assert finding(round: 2, outcome: 'new').valid?
+  end
+
+  test 'a row comes in or after the round that raised its finding' do
+    late = finding(raised_round: 2)
+    refute late.valid?
+    assert_includes late.errors[:raised_round], 'must be round or earlier'
   end
 
   test 'an answer is confirmed by someone, and one other than fixed is justified' do
@@ -57,9 +74,9 @@ class ReviewFindingTest < ActiveSupport::TestCase
   end
 
   test 'round 0 is a missed finding raised by a review' do
-    assert finding(round: 0).valid?
-    refute finding(round: 0, outcome: 'fixed').valid?
-    assert finding(round: 0, source: 'outcomes', outcome: 'fixed', confirmed_by_id: 2).valid?
+    assert finding(round: 0, raised_round: 0).valid?
+    refute finding(round: 0, raised_round: 0, outcome: 'fixed').valid?
+    assert finding(round: 0, raised_round: 0, source: 'outcomes', outcome: 'fixed', confirmed_by_id: 2).valid?
   end
 
   test 'an empty string is saved as NULL' do
@@ -73,10 +90,31 @@ class ReviewFindingTest < ActiveSupport::TestCase
     statuses = ReviewFinding.by_finding(ReviewFinding.where(issue_id: 1)).values.to_h do |events|
       [events.first.key, events.first.status]
     end
-    assert_equal({ 'lib/remote.rb:7:repo-rename' => 'intentional',
-                   'lib/sync.rb:12-14:ignored-file-overwrite' => 'open',
-                   'lib/sync.rb:40:forced-update' => 'fixed',
-                   'lib/sync.rb:60-61:ignored-file-overwrite' => 'fixed, unchecked' }, statuses)
+    assert_equal({ 'lib/remote.rb:7:repo-rename@1' => 'intentional',
+                   'lib/sync.rb:12-14:ignored-file-overwrite@1' => 'open',
+                   'lib/sync.rb:40:forced-update@1' => 'fixed',
+                   'lib/sync.rb:60-61:ignored-file-overwrite@2' => 'fixed, unchecked' }, statuses)
+  end
+
+  test "an answer's original finding is its key's review row in the round the key names" do
+    raised = finding
+    check = finding(round: 2, outcome: 'fixed')
+    other = finding(rule_id: 'other-rule')
+    again = finding(round: 2, raised_round: 2)
+    answer = finding(round: 2, source: 'outcomes', outcome: 'fixed')
+    assert_same raised, answer.original_finding([check, other, again, raised])
+    assert_nil answer.original_finding([check, other, again])
+  end
+
+  test 'a check, a supersede or an answer is refused without its raising row' do
+    raised = finding
+    [finding(round: 2, outcome: 'fixed'), finding(round: 2, outcome: 'superseded'),
+     finding(source: 'outcomes', outcome: 'fixed')].each do |row|
+      assert_nil ReviewFinding.refuse_unraised(row, [raised])
+      error = assert_raises(ReviewFinding::Refused) { ReviewFinding.refuse_unraised(row, []) }
+      assert_equal ["#{row.key}: round 1 didn't raise it"], error.messages
+    end
+    assert_nil ReviewFinding.refuse_unraised(raised, [])
   end
 
   test 'the open-to-fix count, or nil before any review' do
