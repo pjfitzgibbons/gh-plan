@@ -1,7 +1,7 @@
 # Imports, once, every item in one repo's .tracker/ into its Redmine project (ADR 0011,
 # Consequences). Run in the container, from the gh-plan checkout:
 #   gh issue list -R pjfitzgibbons/<repo> --state all --limit 200 \
-#     --json number,title,body,closedAt,labels > .tmp/<project>-issues.json
+#     --json number,url,title,body,closedAt,labels > .tmp/<project>-issues.json
 #   docker compose -f redmine/compose.yml exec -T -u redmine redmine \
 #     bin/rails runner /setup/import.rb <project> [--dry-run | --check] < .tmp/<project>-issues.json
 # An overlay repo's items keep their titles and bodies in its GitHub issues, and the container has
@@ -126,6 +126,25 @@ def labels_of(issue, kinds, id)
   issue.fetch('labels') { abort "import: #{id} has no labels on stdin; add labels to gh issue list's --json" }
 end
 
+# The GitHub issue on stdin that an overlay item names. stdin is matched by number, so each issue's
+# url must be in the item's repo: another repo's list would give every item a stranger's title and
+# body, and --check, reading the same stdin, would agree.
+def issue_of(issues, fields, id)
+  issue = issues.fetch(fields['issue']) { abort "import: #{id} is not in the GitHub issues on stdin" }
+  url = issue.fetch('url') { abort "import: #{id} has no url on stdin; add url to gh issue list's --json" }
+  abort "import: #{id} is #{url} on stdin, not this item's issue" unless url.end_with?("/#{id.sub('#', '/issues/')}")
+
+  issue
+end
+
+# A Done item's finish, its issue's closedAt. An issue still open has none.
+def finish_of(issue, fields, id)
+  return unless fields['status'] == 'Done'
+
+  closed = issue.fetch('closedAt') || abort("import: #{id} is Done, but its GitHub issue is open, so it has no finish")
+  Time.iso8601(closed)
+end
+
 def overlay_items(repo, issues)
   versions = paths(repo, '.tracker/milestones').to_h do |path|
     fields = YAML.safe_load(show(repo, path))
@@ -136,9 +155,8 @@ def overlay_items(repo, issues)
     id = "#{fields.fetch('repo')}##{fields.fetch('issue')}"
     unknown = fields.keys - OVERLAY_KEYS
     abort "import: #{id} has fields with no place in Redmine: #{unknown.join(', ')}" unless unknown.empty?
-    issue = issues.fetch(fields['issue']) { abort "import: #{id} is not in the GitHub issues on stdin" }
-
-    finish = Time.iso8601(issue.fetch('closedAt')) if fields['status'] == 'Done'
+    issue = issue_of(issues, fields, id)
+    finish = finish_of(issue, fields, id)
     {
       old_id: id, project: repo[:project], subject: issue.fetch('title'),
       description: issue.fetch('body').strip, tracker: tracker_of(issue, repo[:kinds], id),

@@ -187,7 +187,7 @@ in `SOURCES`, `Feature` without one:
 
 ```
 gh issue list -R <owner>/<GitHub repo> --state all --limit 200 \
-  --json number,title,body,closedAt,labels > .tmp/<project>-issues.json
+  --json number,url,title,body,closedAt,labels > .tmp/<project>-issues.json
 docker compose -f redmine/compose.yml exec -T -u redmine redmine \
   bin/rails runner /setup/import.rb <project> --dry-run < .tmp/<project>-issues.json
 ```
