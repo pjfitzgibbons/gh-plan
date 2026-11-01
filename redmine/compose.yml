@@ -37,6 +37,7 @@ services:
       - ${TEMPOTAG_GIT:-${HOME}/programming/tempotag/.git}:/repos/tempotag.git:ro
       - ${ULYSSES_GIT:-${HOME}/programming/redmine_ulysses/.git}:/repos/ulysses.git:ro
       - ${GLASSWING_GIT:-${HOME}/programming/glasswing/.git}:/repos/glasswing.git:ro
+      - ${MS_SECURITY_DOCS_GIT:-${HOME}/programming/ms-security/ms-security-docs/.git}:/repos/ms-security-docs.git:ro
 
 volumes:
   db:

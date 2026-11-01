@@ -1,14 +1,13 @@
-# Imports, once, every item in gh-plan's and tempotag's .tracker/ into Redmine (ADR 0011,
+# Imports, once, every item in one repo's .tracker/ into its Redmine project (ADR 0011,
 # Consequences). Run in the container, from the gh-plan checkout:
-#   gh issue list -R pjfitzgibbons/tempotag --state all --limit 100 \
-#     --json number,title,body,closedAt > .tmp/tempotag-issues.json
+#   gh issue list -R pjfitzgibbons/<repo> --state all --limit 200 \
+#     --json number,url,title,body,closedAt,labels > .tmp/<project>-issues.json
 #   docker compose -f redmine/compose.yml exec -T -u redmine redmine \
-#     bin/rails runner /setup/import.rb [--dry-run | --check] < .tmp/tempotag-issues.json
-# tempotag's items keep their titles and bodies in its GitHub issues, and the container has no gh,
-# so they come in on stdin.
+#     bin/rails runner /setup/import.rb <project> [--dry-run | --check] < .tmp/<project>-issues.json
+# An overlay repo's items keep their titles and bodies in its GitHub issues, and the container has
+# no gh, so they come in on stdin; gh-plan's items hold their own and read nothing from stdin.
 #
-# It reads each repo through its read-only .git mount (compose.yml): gh-plan at origin/main, and
-# tempotag from its index, where three of its items are staged but not yet committed.
+# It reads the repo through its read-only .git mount (compose.yml) at the ref SOURCES names.
 # An issue is found by its Old ID, so a second run makes nothing new; an issue that exists is left
 # as it is, and only a missing parent or relation is added to it. It runs in one transaction, so a
 # run that stops halfway leaves nothing behind. --dry-run does the whole import, prints it and
@@ -19,21 +18,31 @@ require 'json'
 require 'open3'
 require 'yaml'
 
-GH_PLAN = { project: 'gh-plan', git: '/repos/gh-plan.git', ref: 'origin/main' }.freeze
-# An empty ref reads the index: `git show :<path>`.
-TEMPOTAG = { project: 'tempotag', git: '/repos/tempotag.git', ref: '' }.freeze
+# Each importable project: its .git mount, the ref its .tracker/ is read at, and its layout.
+# :items is gh-plan's Markdown items; :overlay is a .yml per GitHub issue, holding only the fields
+# GitHub has no place for. An empty ref reads the index: `git show :<path>`. gh-plan's and
+# tempotag's .tracker/ are gone since their import; their entries record where it was read.
+SOURCES = {
+  'gh-plan' => { git: '/repos/gh-plan.git', ref: 'origin/main', layout: :items },
+  'tempotag' => { git: '/repos/tempotag.git', ref: '', layout: :overlay, kinds: {} },
+  # The tracker is on this branch only; it has not reached main.
+  'ms-security-docs' => { git: '/repos/ms-security-docs.git', ref: 'act-0/tracking-and-agents', layout: :overlay,
+                          kinds: { 'kind:defect' => 'Bug', 'kind:config' => 'Support', 'kind:writing' => 'Feature' } }
+}.freeze
 # The days that start_date and due_date fall on.
 ZONE = ActiveSupport::TimeZone['America/Los_Angeles']
 STATUSES = { 'Todo' => 'New', 'In Progress' => 'In Progress', 'Done' => 'Closed', 'Icebox' => 'Icebox' }.freeze
 TRACKERS = { 'feat' => 'Feature', 'bug' => 'Bug', 'chore' => 'Support' }.freeze
-# tempotag's items have no type; their GitHub issues carry no label that gives one.
+# An overlay item has no type; its tracker comes from the issue's kind: label, or this without one.
 UNTYPED = 'Feature'.freeze
 PRIORITIES = { 'P0' => 'Urgent', 'P1' => 'High', 'P2' => 'Normal', 'P3' => 'Low' }.freeze
 ITEM_KEYS = %w[title type status estimate priority ordinal lane milestone labels parent blocked_by
                started baseline].freeze
 OVERLAY_KEYS = %w[issue node_id repo estimate priority status lane milestone].freeze
 
-MODE = ARGV.first
+PROJECT, MODE = ARGV
+SOURCE = SOURCES.fetch(PROJECT) { abort "import: name the project to import, one of #{SOURCES.keys.join(', ')}" }
+               .merge(project: PROJECT).freeze
 abort "import: unknown argument #{MODE}; use --dry-run or --check" unless [nil, '--dry-run', '--check'].include?(MODE)
 
 def git(repo, *args)
@@ -101,22 +110,56 @@ def gh_plan_items(repo)
   end
 end
 
-def tempotag_items(repo, issues)
+# The tracker an issue's kind: label gives, or UNTYPED. Two kinds on one issue stop the import, and
+# so does an issue with no labels field for a project with kinds: stdin from a gh issue list without
+# --json labels would make every item UNTYPED, and --check, reading the same stdin, would agree.
+def tracker_of(issue, kinds, id)
+  trackers = labels_of(issue, kinds, id).filter_map { |label| kinds[label.fetch('name')] }.uniq
+  abort "import: #{id} has labels for #{trackers.join(' and ')}" if trackers.size > 1
+
+  trackers.first || UNTYPED
+end
+
+def labels_of(issue, kinds, id)
+  return issue.fetch('labels', []) if kinds.empty?
+
+  issue.fetch('labels') { abort "import: #{id} has no labels on stdin; add labels to gh issue list's --json" }
+end
+
+# The GitHub issue on stdin that an overlay item names. stdin is matched by number, so each issue's
+# url must be in the item's repo: another repo's list would give every item a stranger's title and
+# body, and --check, reading the same stdin, would agree.
+def issue_of(issues, fields, id)
+  issue = issues.fetch(fields['issue']) { abort "import: #{id} is not in the GitHub issues on stdin" }
+  url = issue.fetch('url') { abort "import: #{id} has no url on stdin; add url to gh issue list's --json" }
+  abort "import: #{id} is #{url} on stdin, not this item's issue" unless url.end_with?("/#{id.sub('#', '/issues/')}")
+
+  issue
+end
+
+# A Done item's finish, its issue's closedAt. An issue still open has none.
+def finish_of(issue, fields, id)
+  return unless fields['status'] == 'Done'
+
+  closed = issue.fetch('closedAt') || abort("import: #{id} is Done, but its GitHub issue is open, so it has no finish")
+  Time.iso8601(closed)
+end
+
+def overlay_items(repo, issues)
   versions = paths(repo, '.tracker/milestones').to_h do |path|
     fields = YAML.safe_load(show(repo, path))
     [fields.fetch('id'), fields.fetch('title')]
   end
   paths(repo, '.tracker/items').select { |p| p.end_with?('.yml') }.map do |path|
     fields = YAML.safe_load(show(repo, path))
-    id = "tempotag##{fields.fetch('issue')}"
+    id = "#{fields.fetch('repo')}##{fields.fetch('issue')}"
     unknown = fields.keys - OVERLAY_KEYS
     abort "import: #{id} has fields with no place in Redmine: #{unknown.join(', ')}" unless unknown.empty?
-    issue = issues.fetch(fields['issue']) { abort "import: #{id} is not in the GitHub issues on stdin" }
-
-    finish = Time.iso8601(issue.fetch('closedAt')) if fields['status'] == 'Done'
+    issue = issue_of(issues, fields, id)
+    finish = finish_of(issue, fields, id)
     {
       old_id: id, project: repo[:project], subject: issue.fetch('title'),
-      description: issue.fetch('body').strip, tracker: UNTYPED,
+      description: issue.fetch('body').strip, tracker: tracker_of(issue, repo[:kinds], id),
       status: map(STATUSES, fields.fetch('status'), 'status', id),
       priority: map(PRIORITIES, fields.fetch('priority', 'P2'), 'priority', id),
       points: fields['estimate']&.to_s, lane: fields['lane'], ordinal: nil,
@@ -256,7 +299,7 @@ def check(items)
   differences.empty?
 end
 
-items = gh_plan_items(GH_PLAN) + tempotag_items(TEMPOTAG, github_issues)
+items = SOURCE[:layout] == :items ? gh_plan_items(SOURCE) : overlay_items(SOURCE, github_issues)
 author = User.active.where(admin: true).order(:id).first || abort('import: no active administrator')
 
 if MODE == '--check'
