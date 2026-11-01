@@ -2593,6 +2593,40 @@ class Review(unittest.TestCase):
             self.assertEqual(running.result().returncode, -9)
         self.assertLess(time.monotonic() - started, 10)
 
+    def test_a_kill_that_misses_one_of_the_group_stops_it_again(self):
+        # The first kill finds the group and stops nothing, as when sh forks the sleep while it
+        # lands; the next look at the stopped pass takes it.
+        runner = review.Runner()
+        stop = review.Runner.stop
+        stops = []
+
+        def misses_once(p):
+            stops.append(p.pid)
+            if len(stops) > 1:
+                stop(p)
+
+        started = time.monotonic()
+        with (
+            mock.patch.object(review.Runner, "stop", staticmethod(misses_once)),
+            concurrent.futures.ThreadPoolExecutor(1) as pool,
+        ):
+            running = pool.submit(runner, ["sleep", "30"], input=None, env=None, timeout=60)
+            deadline = time.monotonic() + 10
+            while not runner.running and not running.done() and time.monotonic() < deadline:
+                time.sleep(0.05)
+            self.assertTrue(runner.running, running.exception() if running.done() else "no start")
+            runner.kill()
+            self.assertEqual(running.result().returncode, -9)
+        self.assertLess(time.monotonic() - started, 10)
+        self.assertGreater(len(stops), 1)
+
+    def test_a_runner_sends_its_input_once_across_its_waits(self):
+        # The pass reads its input after the first wait has run out.
+        done = review.Runner()(
+            ["sh", "-c", "sleep 1; cat"], input="the prompt", env=None, timeout=60
+        )
+        self.assertEqual(done.stdout, "the prompt")
+
     def test_a_pass_that_starts_after_a_kill_never_runs(self):
         runner = review.Runner()
         runner.kill()

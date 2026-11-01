@@ -110,12 +110,20 @@ def gh_plan_items(repo)
   end
 end
 
-# The tracker an issue's kind: label gives, or UNTYPED. Two kinds on one issue stop the import.
+# The tracker an issue's kind: label gives, or UNTYPED. Two kinds on one issue stop the import, and
+# so does an issue with no labels field for a project with kinds: stdin from a gh issue list without
+# --json labels would make every item UNTYPED, and --check, reading the same stdin, would agree.
 def tracker_of(issue, kinds, id)
-  trackers = issue.fetch('labels', []).filter_map { |label| kinds[label.fetch('name')] }.uniq
+  trackers = labels_of(issue, kinds, id).filter_map { |label| kinds[label.fetch('name')] }.uniq
   abort "import: #{id} has labels for #{trackers.join(' and ')}" if trackers.size > 1
 
   trackers.first || UNTYPED
+end
+
+def labels_of(issue, kinds, id)
+  return issue.fetch('labels', []) if kinds.empty?
+
+  issue.fetch('labels') { abort "import: #{id} has no labels on stdin; add labels to gh issue list's --json" }
 end
 
 def overlay_items(repo, issues)

@@ -90,7 +90,11 @@ class Failed(Exception):
 class Runner:
     """subprocess.run for scripts/assess and the claude passes, and kill() to stop every one still
     running, and any started after. Each runs in its own process group, and a kill takes the group:
-    a grandchild, such as assess's pytest, would otherwise hold the pipe open past the timeout."""
+    a grandchild, such as assess's pytest, would otherwise hold the pipe open past the timeout.
+    While a stopped pass still holds its pipes, its group is killed again every RESTOP seconds: a
+    child forked as the first kill lands can miss it, as macOS lets one do under load."""
+
+    RESTOP = 0.5
 
     def __init__(self):
         self.running, self.lock, self.stopped = [], threading.Lock(), False
@@ -111,11 +115,10 @@ class Runner:
         ) as p:
             with self.lock:
                 self.running.append(p)
-                # A kill() between the check above and here found nothing of p's to stop.
-                if self.stopped:
-                    self.stop(p)
+            # A kill() between the check above and here found nothing of p's to stop.
+            self.restop(p)
             try:
-                out, err = p.communicate(input, timeout=timeout)
+                out, err = self.communicate(p, input, timeout)
             # A timeout, or a Ctrl-C, which no longer reaches the group on its own.
             except BaseException:
                 self.stop(p)
@@ -125,6 +128,28 @@ class Runner:
                 with self.lock:
                     self.running.remove(p)
         return subprocess.CompletedProcess(command, p.returncode, out, err)
+
+    def communicate(self, p: subprocess.Popen, input, timeout: float) -> tuple[str, str]:
+        """p.communicate(input, timeout), waiting RESTOP at a time so a kill() that missed one of
+        p's group stops it again."""
+        deadline = time.monotonic() + timeout
+        while True:
+            try:
+                return p.communicate(
+                    input, timeout=min(self.RESTOP, max(deadline - time.monotonic(), 0))
+                )
+            except subprocess.TimeoutExpired:
+                if time.monotonic() >= deadline:
+                    raise subprocess.TimeoutExpired(p.args, timeout) from None
+            # The input went with the first call; a retry may not send it again.
+            input = None
+            self.restop(p)
+
+    def restop(self, p: subprocess.Popen) -> None:
+        """Stops p's group again once kill() has run."""
+        with self.lock:
+            if self.stopped:
+                self.stop(p)
 
     @staticmethod
     def stop(p: subprocess.Popen) -> None:
