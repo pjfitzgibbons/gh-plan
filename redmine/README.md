@@ -11,7 +11,7 @@ command here from the root of the gh-plan checkout.
 | `Dockerfile` | The image: the pinned Redmine with the pinned Opale theme, its assets compiled; and a `test` stage for the plugins' tests |
 | `backup.py` | The nightly backup and export to the USB drive (*Backup and export*) |
 | `setup.rb` | The projects, fields, status, workflow, settings, repositories and versions |
-| `import.rb` | The one-time import of each repo's `.tracker/` items |
+| `import.rb` | The one-time import of a repo's `.tracker/` items |
 | `backfill.rb` | The one-time backfill of each imported issue's commits, pull requests and status history |
 | `sql.rb` | One read-only query on the database, printed as tab-separated rows (*Querying the findings*) |
 | `plugins/lane_board/` | The lane board plugin, mounted read-only |
@@ -31,12 +31,10 @@ Redmine is at <http://127.0.0.1:3010>, bound to localhost only. `REDMINE_PORT` p
 port. The first sign-in is `admin` / `admin`, and Redmine makes you change the password at once.
 Nothing in the repo holds the new password or any API key.
 
-Each tracked repo's `.git` is mounted read-only, from `$HOME/programming/gh-plan/.git`,
-`$HOME/programming/tempotag/.git`, `$HOME/programming/redmine_ulysses/.git` and
-`$HOME/programming/glasswing/.git`. `GH_PLAN_GIT`, `TEMPOTAG_GIT`, `ULYSSES_GIT` and
-`GLASSWING_GIT` point them elsewhere. Mount a
-checkout's `.git` directory, not a worktree: a worktree's `.git` is a file naming a path on the
-Mac, which the container can't follow.
+Each tracked repo's `.git` is mounted read-only at `/repos/<project>.git`. `compose.yml` lists
+the mounts, each with its default path under `$HOME/programming` and the variable that points it
+elsewhere. Mount a checkout's `.git` directory, not a worktree: a worktree's `.git` is a file
+naming a path on the Mac, which the container can't follow.
 
 ## Where the data lives
 
@@ -144,18 +142,19 @@ A run without `SYS_API_KEY` leaves the web service as it is.
 
 What it sets up:
 
-- A public parent project `plan`, with sub-projects `gh-plan`, `tempotag`, `ulysses` and
-  `glasswing`, each with the lane board, review findings, Gantt and repository modules.
+- A public parent project `plan`, with a sub-project for each repo in `REPOS`, each with the lane
+  board, review findings, Gantt and repository modules.
+- A version in `plan`, shared with its tree, for each milestone in `VERSIONS`.
 - Each sub-project's homepage is its repository's `origin` URL, read from the mount, so `new_issue`
   knows the project from the checkout it runs in. A mount with no `origin` leaves the homepage as
   it is, with a warning.
 - The default trackers, statuses, roles and workflows, on an empty database.
 - An `Icebox` status, open, with the transitions of New in each workflow, so it opens no route a
   role lacks. The lane board leaves it out.
-- The issue custom fields `Points` (1, 2, 3, 5, 8, 13), `Lane` (cli, engine, github, infra, model,
-  web, core), and the dates `Baseline start` and `Baseline finish`; and for the import, `Old ID`
-  (searchable) and `Ordinal`, a whole number in `ready.yml`'s order; and `Pull requests`, each
-  merged PR as a Markdown link, which `backfill.rb` fills.
+- The issue custom fields `Points` (1, 2, 3, 5, 8, 13), `Lane` (the values in `LANES`), and the
+  dates `Baseline start` and `Baseline finish`; and for the import, `Old ID` (searchable) and
+  `Ordinal`, a whole number in `ready.yml`'s order; and `Pull requests`, each merged PR as a
+  Markdown link, which `backfill.rb` fills.
 - The baselines read-only, by workflow, for every role. A `Baseline editor` role, with no members,
   keeps them editable by the administrator, who holds every role in workflow checks.
 - **View lane board** for every role.
@@ -176,17 +175,21 @@ recreate the container (`up -d --force-recreate`) after editing one.
 
 ## Importing the items
 
-`import.rb` imports every item in gh-plan's and tempotag's `.tracker/` once
-([ADR 0011](../docs/adr/0011-redmine-is-the-tracker.md), *Consequences*), keeping each body, with
-the item's ID in the `Old ID` field. It reads gh-plan at `origin/main` and tempotag from its index,
-through the `.git` mounts. tempotag's titles and bodies are in its GitHub issues, and the container
-has no `gh`, so they come in on stdin:
+`import.rb` imports every item in one repo's `.tracker/` once
+([ADR 0011](../docs/adr/0011-redmine-is-the-tracker.md), *Consequences*), into the project it is
+named with, keeping each body, with the item's ID in the `Old ID` field. Its `SOURCES` table
+gives each importable project the ref its `.tracker/` is read at, through the `.git` mount, and
+its layout. An `items` tracker holds Markdown items with their own titles and bodies. An `overlay`
+tracker holds one `.yml` per GitHub issue: the titles, bodies and labels are in the issues, and
+the container has no `gh`, so they come in on stdin. An overlay item's Old ID is
+`<GitHub repo>#<issue>`, and its issue's `kind:` label gives its tracker by the project's `kinds`
+in `SOURCES`, `Feature` without one:
 
 ```
-gh issue list -R pjfitzgibbons/tempotag --state all --limit 100 \
-  --json number,title,body,closedAt > .tmp/tempotag-issues.json
+gh issue list -R <owner>/<GitHub repo> --state all --limit 200 \
+  --json number,title,body,closedAt,labels > .tmp/<project>-issues.json
 docker compose -f redmine/compose.yml exec -T -u redmine redmine \
-  bin/rails runner /setup/import.rb --dry-run < .tmp/tempotag-issues.json
+  bin/rails runner /setup/import.rb <project> --dry-run < .tmp/<project>-issues.json
 ```
 
 `--dry-run` makes everything, prints it and rolls it back. Without it the import writes, in one
@@ -196,8 +199,9 @@ an issue is found by its Old ID and left as it is, and only a missing issue, par
 made.
 
 A Done item's finish is the first commit on `origin/main` whose copy of it reads `status: Done`,
-its squash-merge, or for tempotag the issue's `closedAt`. It becomes the issue's `closed_on` and
-due date. `started` becomes the start date. Both dates are days in America/Los_Angeles.
+its squash-merge, or for an overlay item the issue's `closedAt`. It becomes the issue's
+`closed_on` and due date. `started` becomes the start date. Both dates are days in
+America/Los_Angeles.
 
 ## Backfilling the history
 

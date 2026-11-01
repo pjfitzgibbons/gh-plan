@@ -16,9 +16,10 @@ require 'open3'
 PARENT = { identifier: 'plan', name: 'Plan' }.freeze
 # identifier => name. Each repo's .git is mounted at /repos/<identifier>.git (compose.yml), and its
 # project's homepage is its origin's GitHub URL, which new_issue matches to the repo it runs in.
-REPOS = { 'gh-plan' => 'GH Plan', 'tempotag' => 'tempotag', 'ulysses' => 'Ulysses', 'glasswing' => 'Glasswing' }.freeze
+REPOS = { 'gh-plan' => 'GH Plan', 'tempotag' => 'tempotag', 'ulysses' => 'Ulysses', 'glasswing' => 'Glasswing',
+          'ms-security-docs' => 'MS Security Docs' }.freeze
 # The milestones of each repo's .tracker/milestones/, as versions in the parent project:
-# name => description. Every one still has open items, so each is made open.
+# name => description. Each is made open.
 VERSIONS = {
   'tempo' => "tempotag's milestone: all its issues closed.",
   'Redmine migration' => 'Redmine is the tracker (ADR 0011).',
@@ -26,11 +27,22 @@ VERSIONS = {
   'Phase 0: repo setup' => 'The repo builds, lints and documents itself.',
   'Phase 1: CLI only' => 'The CLI answers what next in the terminal over this repo\'s own tracker.',
   'Phase 2: HTML views' => 'plan render and plan serve show the lane board, the timeline and its arrows.',
-  'Phase 3: write UI' => 'Drag to change status and lane.'
+  'Phase 3: write UI' => 'Drag to change status and lane.',
+  "Act 0 — The workbench" => "ms-security-docs: No Azure. Exit: config reviewed, tooling installed, nothing in the cloud.",
+  "Interlude I — The framework with no instructions" => "ms-security-docs: No code, no cloud. Publishes after W1, before Act 1.",
+  "Act 1 — Get one thing on the internet" => "ms-security-docs: Exit: one app reachable, cost model understood.",
+  "Act 2 — Three apps, three logins" => "ms-security-docs: Building the mess faithfully. Exit: three divergent auth systems live.",
+  "Act 3 — The reckoning" => "ms-security-docs: Assessment, zero code changes. Exit: compliance/control-matrix.md agreed as source of truth.",
+  "Interlude II — What a citation actually is" => "ms-security-docs: No code, no cloud.",
+  "Act 4 — Buy vs build the identity layer" => "ms-security-docs: Exit: vendor decision recorded with scored requirements.",
+  "Act 5 — Strangle the auth" => "ms-security-docs: Exit: all three apps on the platform, no second door left open.",
+  "Act 6 — Audit, evidence, and data integrity" => "ms-security-docs: Exit: end-to-end evidence chain for a single user action.",
+  "Act 7 — Platform hardening" => "ms-security-docs: All its issues closed",
+  "Act 8 — Validation and the evidence pack" => "ms-security-docs: Depth optional."
 }.freeze
 POINTS = %w[1 2 3 5 8 13].freeze
-# tempotag's one lane is core.
-LANES = %w[cli engine github infra model web core].freeze
+# tempotag's one lane is core; ms-security-docs' are docs and its three apps.
+LANES = %w[cli engine github infra model web core docs caretasks patient-directory referral-intake].freeze
 BASELINES = ['Baseline start', 'Baseline finish'].freeze
 ICEBOX = 'Icebox'.freeze
 # The administrator takes every role in workflow checks, and a field is read-only only when it is
