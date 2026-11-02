@@ -13,21 +13,22 @@ module ReviewFindingsTestHelper
     Role.find(2).add_permission!(:view_review_findings)
   end
 
-  # A row raising a finding, or with `source` and `outcome`, checking or answering one. The key's
-  # `@k` names the round that raised it, `round` without one.
-  def finding_row(key, round, **fields)
-    location, raised = key.split('@')
-    file, lines, rule = location.split(':')
+  # A row raising finding `k.n`, or with `source` and `outcome`, checking or answering it. `place`
+  # is `file:lines:rule`, where the finding is at `round`.
+  def finding_row(key, place, round, **fields)
+    raised, ordinal = key.split('.').map { |part| Integer(part) }
+    file, lines, rule = place.split(':')
     first, last = lines.split('-').map(&:to_i)
     { 'round' => round, 'source' => 'review', 'file' => file, 'line_start' => first,
-      'line_end' => last || first, 'rule_id' => rule, 'raised_round' => Integer(raised || round),
+      'line_end' => last || first, 'rule_id' => rule, 'raised_round' => raised, 'ordinal' => ordinal,
       'outcome' => 'new', 'tag' => 'Important',
       'severity' => 'files', 'visibility' => 'silent', 'summary' => 'A copy loses a file' }
       .merge(fields.stringify_keys)
   end
 
-  def answer_row(key, round, outcome = 'fixed', **fields)
-    finding_row(key, round, source: 'outcomes', outcome: outcome).except('tag', 'summary').merge(fields.stringify_keys)
+  def answer_row(key, place, round, outcome = 'fixed', **fields)
+    finding_row(key, place, round, source: 'outcomes', outcome: outcome).except('tag', 'summary')
+                                                                       .merge(fields.stringify_keys)
   end
 
   def round_row(round, **fields)

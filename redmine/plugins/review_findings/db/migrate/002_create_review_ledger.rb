@@ -1,5 +1,5 @@
 # The ledger (design 0005, §3.1): one review_rounds row per reviewed commit, and one review_findings
-# row per event on a finding, keyed by file, lines, rule and the round that raised it. It replaces
+# row per event on a finding, keyed by the round that raised it and its place in that round. It replaces
 # 001's table, which live Redmine held no rows in. A change migration: rolled back, it drops both tables and restores 001's,
 # so VERSION=0 leaves none.
 class CreateReviewLedger < ActiveRecord::Migration[8.1]
@@ -33,11 +33,13 @@ class CreateReviewLedger < ActiveRecord::Migration[8.1]
       t.integer :issue_id, null: false
       t.integer :round, null: false
       t.string :source, null: false
+      t.integer :raised_round, null: false
+      t.integer :ordinal, null: false
       t.string :file, null: false
       t.integer :line_start, null: false
       t.integer :line_end, null: false
       t.string :rule_id, null: false
-      t.integer :raised_round, null: false
+      t.string :fingerprint, limit: 64
       t.string :outcome, null: false
       t.string :tag
       t.string :severity, null: false
@@ -48,7 +50,7 @@ class CreateReviewLedger < ActiveRecord::Migration[8.1]
       t.integer :confirmed_by_id
       t.datetime :created_on, null: false
     end
-    add_index :review_findings, %i[issue_id file line_start line_end rule_id raised_round round source],
+    add_index :review_findings, %i[issue_id raised_round ordinal round source],
               unique: true, name: 'index_review_findings_on_event'
 
     create_table :review_rounds do |t|

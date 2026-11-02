@@ -6,26 +6,39 @@ class ReviewFindingTest < ActiveSupport::TestCase
            :review_findings, :review_rounds
 
   def finding(**fields)
-    ReviewFinding.new(finding_row('lib/a.rb:3-5:some-rule', 1, **fields).merge('issue_id' => 1))
+    ReviewFinding.new(finding_row('1.1', 'lib/a.rb:3-5:some-rule', 1, **fields).merge('issue_id' => 1))
   end
 
   test 'a raising row is valid' do
     assert finding.valid?, finding.errors.full_messages.join(', ')
   end
 
-  test 'its key names the file, the lines, the rule and the round that raised it' do
-    assert_equal 'lib/a.rb:3-5:some-rule@1', finding.key
-    assert_equal 'lib/a.rb:3:some-rule@1', finding(line_end: 3).key
-    assert_equal 'lib/a.rb:3-5:some-rule@1', finding(round: 2, outcome: 'fixed').key
+  test 'its key is the round that raised it and its place in that round, wherever it moves' do
+    assert_equal '1.1', finding.key
+    assert_equal '1.3', finding(ordinal: 3).key
+    assert_equal '1.1', finding(round: 2, outcome: 'fixed', file: 'lib/b.rb', line_start: 40, line_end: 42).key
   end
 
-  test 'a key needs a file, lines in order and a kebab-case rule' do
+  test 'its place is the file and its lines' do
+    assert_equal 'lib/a.rb:3-5', finding.place
+    assert_equal 'lib/a.rb:3', finding(line_end: 3).place
+  end
+
+  test 'a row needs a place in its round, a file, lines in order and a kebab-case rule' do
+    refute finding(ordinal: 0).valid?
+    refute finding(ordinal: nil).valid?
     refute finding(file: nil).valid?
     refute finding(file: '../a.rb').valid?
     refute finding(file: '/etc/a').valid?
     refute finding(line_start: 0).valid?
     refute finding(line_end: 2).valid?
     refute finding(rule_id: 'Some_Rule').valid?
+  end
+
+  test 'a fingerprint is empty or a SHA-256 in lowercase hex' do
+    assert finding(fingerprint: 'a' * 64).valid?
+    refute finding(fingerprint: 'A' * 64).valid?
+    refute finding(fingerprint: 'x').valid?
   end
 
   test 'a value outside the allowed ones is invalid' do
@@ -90,20 +103,24 @@ class ReviewFindingTest < ActiveSupport::TestCase
     statuses = ReviewFinding.by_finding(ReviewFinding.where(issue_id: 1)).values.to_h do |events|
       [events.first.key, events.first.status]
     end
-    assert_equal({ 'lib/remote.rb:7:repo-rename@1' => 'intentional',
-                   'lib/sync.rb:12-14:ignored-file-overwrite@1' => 'open',
-                   'lib/sync.rb:40:forced-update@1' => 'fixed',
-                   'lib/sync.rb:60-61:ignored-file-overwrite@2' => 'fixed, unchecked' }, statuses)
+    assert_equal({ '1.1' => 'open', '1.2' => 'fixed', '1.3' => 'intentional', '2.1' => 'fixed, unchecked' }, statuses)
   end
 
   test "an answer's original finding is its key's review row in the round the key names" do
     raised = finding
     check = finding(round: 2, outcome: 'fixed')
-    other = finding(rule_id: 'other-rule')
+    other = finding(ordinal: 2)
     again = finding(round: 2, raised_round: 2)
     answer = finding(round: 2, source: 'outcomes', outcome: 'fixed')
     assert_same raised, answer.original_finding([check, other, again, raised])
     assert_nil answer.original_finding([check, other, again])
+  end
+
+  test "a later row takes the rule of the row that raised its finding" do
+    raised = finding
+    check = finding(round: 2, outcome: 'fixed', rule_id: 'other-rule')
+    check.take_rule_from_original([raised])
+    assert_equal 'some-rule', check.rule_id
   end
 
   test 'a check, a supersede or an answer is refused without its raising row' do

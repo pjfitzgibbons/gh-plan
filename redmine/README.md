@@ -241,8 +241,9 @@ none open, and root's would stop Redmine writing. Put the query in double quotes
 string literals in single quotes.
 
 The table holds events, one row each time a review raises or checks a finding and each time a
-person answers it, so every query starts from one row per finding, keyed by its file, lines,
-rule and the round that raised it. The join on `issues` leaves out a finding whose issue was deleted, as the plugin's routes do.
+person answers it, so every query starts from one row per finding, keyed by the round that raised
+it and its place in that round, `raised_round` and `ordinal`. The join on `issues` leaves out a
+finding whose issue was deleted, as the plugin's routes do.
 
 Counts by rule and outcome, over accepted answers, each finding counted once by its latest answer.
 A finding no one has answered isn't in them:
@@ -250,7 +251,7 @@ A finding no one has answered isn't in them:
 ```sql
 WITH answered AS (
   SELECT f.*, ROW_NUMBER() OVER (
-    PARTITION BY f.issue_id, f.file, f.line_start, f.line_end, f.rule_id, f.raised_round
+    PARTITION BY f.issue_id, f.raised_round, f.ordinal
     ORDER BY f.round DESC) AS n
   FROM review_findings f
   JOIN issues i ON i.id = f.issue_id
@@ -266,15 +267,13 @@ ORDER BY rule_id, outcome;
 The findings no one has answered yet, by rule, leaving out those a later round superseded:
 
 ```sql
-SELECT f.rule_id, COUNT(DISTINCT f.issue_id || ' ' || f.file || ':' || f.line_start || '-'
-                              || f.line_end || '@' || f.raised_round) AS n
+SELECT f.rule_id, COUNT(DISTINCT f.issue_id || ' ' || f.raised_round || '.' || f.ordinal) AS n
 FROM review_findings f
 JOIN issues i ON i.id = f.issue_id
 WHERE NOT EXISTS (
   SELECT 1 FROM review_findings o
   WHERE (o.source = 'outcomes' OR o.outcome = 'superseded') AND o.issue_id = f.issue_id
-    AND o.file = f.file AND o.line_start = f.line_start AND o.line_end = f.line_end
-    AND o.rule_id = f.rule_id AND o.raised_round = f.raised_round)
+    AND o.raised_round = f.raised_round AND o.ordinal = f.ordinal)
 GROUP BY f.rule_id
 ORDER BY f.rule_id;
 ```
@@ -285,19 +284,19 @@ One rule's answered findings by week, each in the week it was first raised; chan
 ```sql
 WITH answered AS (
   SELECT f.*, ROW_NUMBER() OVER (
-    PARTITION BY f.issue_id, f.file, f.line_start, f.line_end, f.rule_id, f.raised_round
+    PARTITION BY f.issue_id, f.raised_round, f.ordinal
     ORDER BY f.round DESC) AS n
   FROM review_findings f
   JOIN issues i ON i.id = f.issue_id
   WHERE f.source = 'outcomes'
 ),
 found AS (
-  SELECT issue_id, file, line_start, line_end, rule_id, raised_round, MIN(created_on) AS found_on
+  SELECT issue_id, raised_round, ordinal, MIN(created_on) AS found_on
   FROM review_findings
-  GROUP BY issue_id, file, line_start, line_end, rule_id, raised_round
+  GROUP BY issue_id, raised_round, ordinal
 )
 SELECT strftime('%Y-%W', found.found_on) AS week, answered.outcome, COUNT(*) AS n
-FROM answered JOIN found USING (issue_id, file, line_start, line_end, rule_id, raised_round)
+FROM answered JOIN found USING (issue_id, raised_round, ordinal)
 WHERE answered.n = 1 AND answered.rule_id = 'ignored-file-overwrite'
 GROUP BY week, answered.outcome
 ORDER BY week, answered.outcome;
@@ -310,15 +309,15 @@ something, or its rule is `crash`:
 ```sql
 WITH ranked AS (
   SELECT f.*, ROW_NUMBER() OVER (
-    PARTITION BY f.issue_id, f.file, f.line_start, f.line_end, f.rule_id, f.raised_round
+    PARTITION BY f.issue_id, f.raised_round, f.ordinal
     ORDER BY f.round DESC, f.source = 'outcomes' DESC) AS n
   FROM review_findings f
   JOIN issues i ON i.id = f.issue_id
 )
 SELECT i.id AS issue, i.subject, l.round,
+       l.raised_round || '.' || l.ordinal AS key, l.rule_id,
        l.file || ':' || l.line_start
-         || CASE WHEN l.line_end <> l.line_start THEN '-' || l.line_end ELSE '' END
-         || ':' || l.rule_id || '@' || l.raised_round AS key,
+         || CASE WHEN l.line_end <> l.line_start THEN '-' || l.line_end ELSE '' END AS place,
        l.severity, l.summary
 FROM ranked l
 JOIN issues i ON i.id = l.issue_id

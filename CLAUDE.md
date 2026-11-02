@@ -51,9 +51,10 @@ settings: what this repo needs is here or in `.claude/`.
   runs `scripts/assess`, the round's CI, in a worktree of the commit, and writes
   `.tmp/<n>/<k>-findings.md`, with assess's result under `ci`, which `findings.py send`
   records in Redmine as the round. `pr` sends `.tmp/<n>/<k>-outcomes.md`, the outcome lines
-  accepted at Go, after its push. Round files stay until Done finds them all in Redmine. Claude
-  answers it in `.tmp/<n>/report.html`, which opens as the `Review #<n>` tab with Go and Ship. The
-  round is complete only once assess has passed, and the PR body's Testing names the last round.
+  accepted at Go, after its push. Round files stay until Done, which doesn't yet check that
+  Redmine holds them (design 0005's W5). Claude answers it in `.tmp/<n>/report.html`, which
+  opens as the `Review #<n>` tab with Go and Ship. The round is complete only once assess has
+  passed, and the PR body's Testing names the last round.
 - **Python:** `python3` on PATH. `/usr/bin/python3` is 3.9 and can't run the skill scripts.
 - **An issue's work:** Start, Go, Ship and Done in the extension's Next up panel
   ([`vscode/README.md`](vscode/README.md)).

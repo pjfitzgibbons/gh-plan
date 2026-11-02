@@ -26,7 +26,8 @@ class ReviewFindingsViewsTest < Redmine::IntegrationTest
     assert_response :success
     assert_select 'h2 a[href="/issues/1"]'
     assert_select 'table.list.review-findings tbody tr', 4
-    assert_select 'td', text: 'lib/sync.rb:60-61:ignored-file-overwrite@2'
+    assert_select 'td', text: /\A2\.1 ignored-file-overwrite/
+    assert_select 'td code', text: 'lib/sync.rb:60-61'
     assert_select 'td', text: /fixed, unchecked/
     assert_select 'td', text: 'fixed (round 2)'
   end
@@ -61,7 +62,7 @@ class ReviewFindingsViewsTest < Redmine::IntegrationTest
   end
 
   test "a finding's text renders escaped, as text" do
-    ReviewFinding.create!(issue_id: 3, **finding_row('lib/a.rb:1:crash', 0,
+    ReviewFinding.create!(issue_id: 3, **finding_row('0.1', 'lib/a.rb:1:crash', 0,
                                                      summary: '<script>alert(1)</script>',
                                                      body: '<a href="https://example.com">x</a>').symbolize_keys)
     get '/projects/ecookbook/review_findings', params: { issue_id: 3 }

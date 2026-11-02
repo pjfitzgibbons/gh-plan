@@ -6,12 +6,12 @@ checking its fix, or a person's answer. Rows are only added. It adds the two tab
 module named `review_findings`, a JSON API and a Findings tab. The schema, the allowed values and
 what each field holds are [design 0005 §3.1](../../../docs/design/0005-review-findings.md#schema).
 
-A finding's key is `file:lines:rule@round`, such as `lib/sync.rb:12-14:ignored-file-overwrite@2`:
-the lines as the raising round's commit had them, and that round. Its
-status is its key's latest row, by round, an answer after the review of its round: `open`,
-`fixed, unchecked` (answered `fixed`, not yet checked by a later round), `fixed` (checked),
-`intentional`, `wrong`, `doesnt-matter` or `superseded`. A finding is *open to fix* when it's open and silent
-and loses something, or its rule is `crash`.
+A finding's key is `k.n`, such as `2.3`: the round that raised it and its place among that round's
+findings. Where the finding is and its rule are fields of each row, so the code can move and the
+rule be renamed under one key. Its status is its key's latest row, by round, an answer after the
+review of its round: `open`, `fixed, unchecked` (answered `fixed`, not yet checked by a later
+round), `fixed` (checked), `intentional`, `wrong`, `doesnt-matter` or `superseded`. A finding is
+*open to fix* when it's open and silent and loses something, or its rule is `crash`.
 
 ## The Findings tab
 
@@ -44,22 +44,26 @@ A `review_round` has `round`, `commit` and `ci` (`success`, `failure` or `none`)
 `controls` and `new_rules`. Its `round` is the issue's `last_round` + 1, whatever its `ci`; a
 commit is reviewed once. A `POST` may leave out `review_findings`, as a clean round does.
 
-A `review_findings` row has `round`, `source`, `file`, `line_start`, `line_end`, `rule_id`,
-`raised_round`, `outcome` and `severity`, and any of `tag`, `visibility`, `summary`, `body` and `justification`:
+A `review_findings` row has `round`, `source`, `raised_round`, `ordinal`, `file`, `line_start`,
+`line_end`, `rule_id`, `outcome` and `severity`, and any of `tag`, `visibility`, `summary`, `body`,
+`justification` and `fingerprint`. Its file and lines are where the finding is at its round. A row
+after the one that raised its key takes that row's rule, and a different one it sends is dropped
+with a line in Redmine's log. By source:
 
 - **From `review`**, `new` raises a finding when `raised_round` is its own `round`, or reopens one
   whose fix didn't hold; `fixed` checks a fix, and `superseded` marks an open finding a later round
-  raised again on changed code. A row in a later round needs its `raised_round` to have raised the
-  key. Round 0 is a missed finding (§3.8).
+  raised again on changed code. A row in a later round needs its key to have been raised. Round 0
+  is a missed finding (§3.8).
 - **From `outcomes`**, a person's answer: `fixed`, `intentional`, `wrong` or `doesnt-matter`, with a
-  `justification` for any but `fixed`. It needs its `raised_round` to have raised the key, and
-  it records the sender as `confirmed_by_id`. It sends no `tag`, `summary` or `body`: the plugin
-  copies them from the row that raised the key, and drops any it sends with a line in Redmine's log.
+  `justification` for any but `fixed`. It needs its key to have been raised, and it records the
+  sender as `confirmed_by_id`. It sends no `tag`, `summary`, `body` or `fingerprint`: the plugin
+  copies the first three from the row that raised the key, and drops any it sends with a line in
+  Redmine's log.
 
 A row in a round other than 0 needs that round recorded, before or in the same `POST`.
 
 A row or round identical to one already there is skipped, so the same `POST` twice adds nothing. One
-whose event, `(file, line_start, line_end, rule_id, raised_round, round, source)`, or whose round, is already
+whose event, `(raised_round, ordinal, round, source)`, or whose round, is already
 there with other values gets a 422; a later answer goes in a later round. So does a value outside
 the allowed ones, an unknown field, or a round that isn't the next one. A 422 answers
 `{"errors": [...]}`, each naming its row, and nothing in the request is saved. An empty string is

@@ -25,8 +25,9 @@ SCHEMA = """
 CREATE TABLE issues (id integer PRIMARY KEY, subject varchar NOT NULL);
 CREATE TABLE "review_findings" ("id" integer PRIMARY KEY AUTOINCREMENT NOT NULL,
   "issue_id" integer NOT NULL, "round" integer NOT NULL, "source" varchar NOT NULL,
+  "raised_round" integer NOT NULL DEFAULT 0, "ordinal" integer NOT NULL DEFAULT 0,
   "file" varchar NOT NULL, "line_start" integer NOT NULL, "line_end" integer NOT NULL,
-  "rule_id" varchar NOT NULL, "raised_round" integer NOT NULL DEFAULT 0,
+  "rule_id" varchar NOT NULL, "fingerprint" varchar(64),
   "outcome" varchar NOT NULL, "tag" varchar,
   "severity" varchar NOT NULL, "visibility" varchar, "summary" varchar(255), "body" text,
   "justification" text, "confirmed_by_id" integer, "created_on" datetime(6) NOT NULL);
@@ -232,9 +233,26 @@ def fixture_db(tmp_path_factory) -> Path:
         " AND r.file = review_findings.file AND r.line_start = review_findings.line_start"
         " AND r.line_end = review_findings.line_end AND r.rule_id = review_findings.rule_id)"
     )
+    number_findings(db)
     db.commit()
     db.close()
     return path
+
+
+def number_findings(db: sqlite3.Connection) -> None:
+    """Gives each finding its place among its raising round's, in the order they were inserted."""
+    ordinals: dict[tuple, int] = {}
+    counts: dict[tuple, int] = {}
+    rows = db.execute(
+        "SELECT id, issue_id, raised_round, file, line_start, line_end, rule_id"
+        " FROM review_findings ORDER BY id"
+    ).fetchall()
+    for id_, issue, raised, *where in rows:
+        finding = (issue, raised, *where)
+        if finding not in ordinals:
+            counts[issue, raised] = counts.get((issue, raised), 0) + 1
+            ordinals[finding] = counts[issue, raised]
+        db.execute("UPDATE review_findings SET ordinal = ? WHERE id = ?", (ordinals[finding], id_))
 
 
 @pytest.fixture
@@ -404,9 +422,9 @@ def test_the_readme_gives_four_queries():
         (2, "week\toutcome\tn\n2026-41\tfixed\t1\n"),
         (
             3,
-            "issue\tsubject\tround\tkey\tseverity\tsummary\n"
-            "7\tseven\t2\tb.py:9:lost-commit@2\tcommits\tdrops a commit\\twith a tab\n"
-            "8\teight\t1\tc.py:1-4:crash@1\twork\tloses an edit\n",
+            "issue\tsubject\tround\tkey\trule_id\tplace\tseverity\tsummary\n"
+            "7\tseven\t2\t2.1\tlost-commit\tb.py:9\tcommits\tdrops a commit\\twith a tab\n"
+            "8\teight\t1\t1.1\tcrash\tc.py:1-4\twork\tloses an edit\n",
         ),
     ],
 )

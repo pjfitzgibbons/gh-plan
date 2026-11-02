@@ -13,8 +13,11 @@ writes, and `<k>-outcomes.md`, a person's answers to it. `0-findings-<m>.md` and
 `0-outcomes-<m>.md` hold missed findings, round 0, of issue m. Each file is a line per finding,
 written from the fenced `json` block below them, which is the POST's body:
 
-    vscode/done.js:214-219:ignored-file-overwrite@6 · New · silent/files — The fast-forward overwrites an ignored file
-    vscode/github.js:88:repo-rename@6 · Intentional · seen/nothing — a repo renamed on GitHub is refused
+    6.3 ignored-file-overwrite, vscode/done.js:214-219 · New · silent/files — The fast-forward overwrites an ignored file
+    6.4 repo-rename, vscode/github.js:88 · Intentional · seen/nothing — a repo renamed on GitHub is refused
+
+The key, `k.n`, comes first: the round that raised the finding and its place among that round's
+findings. The rule and the place after it say where the finding is at the file's round.
 
 `send` posts the files in round order, each round's findings before its outcomes, to
 `POST /issues/<n>/review_findings.json`, and only `pr` passes --outcomes. It checks each file's
@@ -45,8 +48,9 @@ OUTCOMES = {
 }
 SEVERITIES = ["work", "files", "commits", "tracker", "nothing"]
 VISIBILITIES = ["silent", "seen"]
-# What an answer takes from the row that raised it, never from its file (design 0005, §3.4).
-RAISED = ("tag", "summary", "body")
+# What Redmine drops from an answer: it takes the first three from the row that raised the finding
+# (design 0005, §3.4), and keeps a fingerprint only on a review row.
+DROPPED_FROM_ANSWER = ("tag", "summary", "body", "fingerprint")
 RULE = re.compile(r"^[a-z0-9]+(-[a-z0-9]+)*$")
 NAME = re.compile(r"^(?P<k>\d+)-(?P<kind>findings|outcomes)(?:-(?P<m>\d+))?\.md$")
 
@@ -62,11 +66,16 @@ def git(*args: str, cwd: Path | None = None) -> str:
 
 
 def key(row: dict) -> str:
-    """`file:lines:rule@k`, with one number when the finding is one line, and k the round that
-    raised it (design 0005, §3.1)."""
+    """`k.n`: the round that raised the finding and its place among that round's findings (design
+    0005, §3.1)."""
+    return f"{row['raised_round']}.{row['ordinal']}"
+
+
+def place(row: dict) -> str:
+    """Where the finding is at the row's round: `file:12`, or `file:12-14`."""
     start, end = row["line_start"], row["line_end"]
     lines = str(start) if start == end else f"{start}-{end}"
-    return f"{row['file']}:{lines}:{row['rule_id']}@{row['raised_round']}"
+    return f"{row['file']}:{lines}"
 
 
 def to_fix(row: dict) -> bool:
@@ -79,7 +88,7 @@ def to_fix(row: dict) -> bool:
 def indented(text: str) -> list[str]:
     """text's first line, then each further line indented under it, so no line of it can be read
     as a finding's or as the fence."""
-    first, *rest = (text or "").strip().splitlines() or [""]
+    first, *rest = (text or "").strip().split("\n")
     return [first.strip(), *[f"  {line.strip()}" for line in rest]]
 
 
@@ -95,7 +104,7 @@ def lines(data: dict) -> str:
         out.append("")
     for row in data.get("review_findings", []):
         weight = f"{row.get('visibility') or '-'}/{row.get('severity')}"
-        line = f"{key(row)} · {OUTCOMES.get(row.get('outcome'), row.get('outcome'))} · {weight}"
+        line = f"{key(row)} {row['rule_id']}, {place(row)} · {OUTCOMES.get(row.get('outcome'), row.get('outcome'))} · {weight}"
         text = row.get("justification") if row.get("source") == "outcomes" else row.get("summary")
         if text and text.strip():
             first, *rest = indented(text)
@@ -128,7 +137,7 @@ def write(path: Path, data: dict) -> None:
 
 def block(path: Path) -> tuple[list[str], dict]:
     """A round file's lines, and its block; Stop when it has no block that parses."""
-    text = path.read_text().splitlines()
+    text = path.read_text().split("\n")
     end = next((i for i in range(len(text) - 1, -1, -1) if text[i].strip()), None)
     if end is None or not re.fullmatch(r"`{3,}", text[end]):
         raise Stop(f"{path.name}: no fenced json block at its end")
@@ -153,7 +162,7 @@ def read(path: Path) -> dict:
     naming the first line that doesn't."""
     shown, data = block(path)
     try:
-        want = lines(data).rstrip("\n").splitlines()
+        want = lines(data).rstrip("\n").split("\n")
     except (KeyError, TypeError, AttributeError) as e:
         raise Stop(f"{path.name}: a row in its block lacks {e}") from None
     for i, (a, b) in enumerate(zip(shown + [None], want + [None], strict=False)):
@@ -230,6 +239,8 @@ class Issue:
         rows = {
             (x.get("key"), x.get("round"), x.get("source")): x for x in ledger["review_findings"]
         }
+        # The rule rename changes rule_id on Redmine's rows, and a later row takes the raising
+        # row's rule, so a file's rule doesn't tell whether Redmine holds the row.
         for row in data["review_findings"]:
             have = rows.get((key(row), row["round"], row["source"]))
             if not have or any(same(v) != same(have.get(k)) for k, v in kept_fields(row).items()):
@@ -272,12 +283,14 @@ class Issue:
         except ValueError:
             return str(path)
 
+    def findings_files(self) -> list[Path]:
+        """This issue's `<k>-findings.md` files, round 0's aside."""
+        return [path for path, issue in self.files(outcomes=False) if issue == self.n]
+
     def local_rounds(self) -> list[dict]:
         """The review_round of each `<k>-findings.md`, as far as its block reads."""
         out = []
-        for path, issue in self.files(outcomes=False):
-            if issue != self.n:
-                continue
+        for path in self.findings_files():
             try:
                 r = block(path)[1].get("review_round")
             except (Stop, OSError):
@@ -287,8 +300,9 @@ class Issue:
         return out
 
     def next_round(self, ledger: dict) -> int:
-        """The round after the last one, in Redmine or in a findings file not yet sent."""
-        local = [k for r in self.local_rounds() if isinstance(k := r.get("round"), int)]
+        """The round after the last one, in Redmine or in a findings file not yet sent, by its
+        name, so a file whose block doesn't read still holds its round."""
+        local = [round_of(path) for path in self.findings_files()]
         return max([ledger["last_round"], *local]) + 1
 
     def reviewed(self, commit: str, ledger: dict | None = None) -> bool:
@@ -298,23 +312,50 @@ class Issue:
         ledger = ledger or self.ledger()
         return any(r.get("commit") == commit for r in ledger["review_rounds"])
 
-    def add_missed(self, m: int, row: dict) -> Path:
-        """Adds a missed finding of issue m to `0-findings-<m>.md`; the file."""
+    def add_missed(self, m: int, row: dict) -> tuple[Path, dict]:
+        """Adds a missed finding of issue m to `0-findings-<m>.md`, keyed `0.n` with n after issue
+        m's missed findings in Redmine and in the file; the file and the row."""
         path = self.folder / f"0-findings-{m}.md"
         data = read(path) if path.exists() else {"review_findings": []}
-        if any(key(r) == key(row) for r in data["review_findings"]):
-            raise Stop(f"{self.shown(path)} already has {key(row)}")
+        if again := same_place(row, data["review_findings"]):
+            raise Stop(f"{self.shown(path)} already has {key(again)} at {place(row)}")
+        row = {**row, "ordinal": next_missed(self.ledger(m), data)}
         data["review_findings"].append(row)
         write(path, data)
-        return path
+        return path, row
 
 
 def kept_fields(row: dict) -> dict:
-    """The row's fields that Redmine keeps as sent: all but an answer's tag, summary and body,
-    which it copies from the row that raised the finding."""
-    if row["source"] != "outcomes":
-        return row
-    return {k: v for k, v in row.items() if k not in RAISED}
+    """The row's fields that Redmine keeps as sent: all but its rule, which a rename changes, and an
+    answer's tag, summary, body and fingerprint."""
+    dropped = ("rule_id", *(DROPPED_FROM_ANSWER if row["source"] == "outcomes" else ()))
+    return {k: v for k, v in row.items() if k not in dropped}
+
+
+def round_of(path: Path) -> int:
+    """The round a round file's name gives it."""
+    found = NAME.match(path.name)
+    if not found:
+        raise Stop(f"{path.name}: not a round file's name, <k>-findings.md or <k>-outcomes.md")
+    return int(found["k"])
+
+
+def same_place(row: dict, rows: list[dict]) -> dict | None:
+    """The row among rows at row's place under its rule."""
+    return next(
+        (r for r in rows if place(r) == place(row) and r.get("rule_id") == row["rule_id"]), None
+    )
+
+
+def next_missed(ledger: dict, data: dict) -> int:
+    """The n of the issue's next missed finding, `0.n`, after those in its ledger and in data."""
+    rows = [*ledger["review_findings"], *data["review_findings"]]
+    taken = [
+        r["ordinal"]
+        for r in rows
+        if r.get("raised_round") == 0 and isinstance(r.get("ordinal"), int)
+    ]
+    return max(taken, default=0) + 1
 
 
 def same(v):
@@ -415,11 +456,11 @@ def main(argv: list[str] | None = None) -> int:
         }
         issue = Issue(a.n, root_of())
         try:
-            path = issue.add_missed(a.m, row)
-        except (Stop, OSError) as e:
+            path, row = issue.add_missed(a.m, row)
+        except (Stop, Refused, OSError) as e:
             print(f"findings: {e}", file=sys.stderr)
             return 1
-        print(f"findings: added {key(row)} to {issue.shown(path)}")
+        print(f"findings: added {key(row)} {row['rule_id']}, {place(row)} to {issue.shown(path)}")
         return 0
     try:
         return 0 if Issue(a.n, root_of()).reviewed(a.commit) else 1

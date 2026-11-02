@@ -135,13 +135,13 @@ client of one of them:
   `rails runner`, on the database directly, so they need no API key.
 - **The lane board plugin** adds the Lanes tab. It only reads.
 - **The review findings plugin** keeps each issue's review as a ledger: a `review_rounds` row for
-  each round, and a `review_findings` row for each event on a finding, keyed `file:lines:rule@round`:
-  the reviewer raising it, a person answering it, a later round checking its fix. Rows are only
-  added. Its read API adds them up into each finding's latest status, the issue's last round and
+  each round, and a `review_findings` row for each event on a finding, keyed `k.n`, its raising
+  round and its place in it: the reviewer raising it, a person answering it, a later round checking
+  its fix. Rows are only added. Its read API adds them up into each finding's latest status, the issue's last round and
   per-rule counts of real findings and noise, as JSON
   ([design 0005 §3.1](design/0005-review-findings.md#schema)). It is the one plugin that writes:
   rows added per `POST`, in one transaction, skipping any already there.
-- **`findings.py`**, beside `pr`, is the one writer of the review findings plugin outside the extension. It sends each round's `<k>-findings.md` and `<k>-outcomes.md` that Redmine doesn't have yet, and deletes neither; they stay until Done finds every round in Redmine ([design 0005 §3.3](design/0005-review-findings.md#writer)).
+- **`findings.py`**, beside `pr`, is the one writer of the review findings plugin outside the extension. It sends each round's `<k>-findings.md` and `<k>-outcomes.md` that Redmine doesn't have yet, and deletes neither; they stay until Done, which from design 0005's W5 refuses while Redmine lacks a round ([design 0005 §3.3](design/0005-review-findings.md#writer)).
 - **`redmine-get`**, in `~/.local/bin/`, sends one GET with the Keychain key, so an agent can read
   issues without seeing the key.
 

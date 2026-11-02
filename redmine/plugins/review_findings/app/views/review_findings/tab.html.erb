@@ -14,7 +14,7 @@
     <% answer = events.find { |f| f.source == 'outcomes' } %>
     <tr class="<%= cycle('odd', 'even') %><%= ' open-to-fix' if i < @open %>">
       <td><%= link_to_issue latest.issue, tracker: false, subject: false %></td>
-      <td><%= latest.key %></td>
+      <td><%= latest.key %> <%= latest.rule_id %><br><code><%= latest.place %></code></td>
       <td><%= raised.round %></td>
       <td><%= i < @open ? 'Open to fix' : latest.status %><% if latest.round != raised.round %> (round <%= latest.round %>)<% end %></td>
       <td><%= latest.visibility %></td>

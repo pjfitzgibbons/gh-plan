@@ -83,7 +83,7 @@ Non-goals:
 
 The plugin adds two tables, `review_findings` and `review_rounds`, and a project module named `review_findings`. Both are a ledger: rows are only added, never changed or deleted. One `review_rounds` row is one reviewed commit. One `review_findings` row is one event on one finding: the reviewer raising it, a person answering it, or a later round checking its fix. #111 adds another table to the same plugin, for the issue's Done lines.
 
-**A finding's key** is `file:lines:rule@round`, for example `vscode/done.js:214-219:ignored-file-overwrite@6`, or `vscode/done.js:214:ignored-file-overwrite@6` for one line. The file and lines are as round 6's commit had them, and the round is the one that raised the finding. Every finding names a file and lines in it, in code or in a committed doc; a design finding points at the design's lines. Something the reviewer can't place is a note in the round's `summary`, not a finding. Later rows for the finding carry the same key even after the code moves. Two raises at the same `file:lines:rule` in different rounds are two findings when the code there changed in between; §3.5 says how a review tells them apart. Two findings with one key in one round should be very rare, since the rule is part of the key; when it happens they're one finding, weighted as the heavier (silent before seen, any loss before `nothing`), with the other's summary appended to the body.
+**A finding's key** is `k.n`: `k` is the round that raised it and `n` its place among that round's findings, counting from 1, so `6.3` is round 6's third finding and `0.2` the second missed finding (below). The key is set when the finding is raised and never changes. Where the finding is, and its rule, are fields of each row rather than parts of the key, so the code can move and the rule can be renamed while the finding keeps its key. Every finding names a file and lines in it, in code or in a committed doc; a design finding points at the design's lines. Something the reviewer can't place is a note in the round's `summary`, not a finding. Two raises at the same lines under one rule in different rounds are two findings when the code there changed in between; §3.5 says how a review tells them apart. Two raises in one round under one rule on overlapping lines are one finding before they're numbered, weighted as the heavier (silent before seen, any loss before `nothing`), with the other's summary appended to the body.
 
 `review_findings`:
 
@@ -93,10 +93,12 @@ The plugin adds two tables, `review_findings` and `review_rounds`, and a project
 | `issue_id` | integer, not null | An issue's id | The issue whose branch was reviewed |
 | `round` | integer, not null | 1 or more, or 0 for a missed finding | The round the event belongs to. A missed finding is a silent failure no round caught, found after the merge in use or in a later issue's review; it's recorded against the issue it escaped as a `review` row in round 0, answered like any finding, and becomes an eval case (§3.8) |
 | `source` | string, not null | `review`, `outcomes` | `review`: the reviewer wrote it. `outcomes`: a person accepted it at Go, from `<k>-outcomes.md` (§3.4) |
-| `file` | string, not null | A repo-relative path | The key's file |
-| `line_start`, `line_end` | integer, not null | 1 or more, `line_end` ≥ `line_start` | The key's lines |
-| `rule_id` | string, not null | A kebab-case rule `REVIEW.md` names | The key's rule, the finding's class of bug |
-| `raised_round` | integer, not null | 0 or more, not after `round` | The round that raised the finding: the key's `@round`. A raising row's is its own `round`, and its outcome is `new` |
+| `raised_round` | integer, not null | 0 or more, not after `round` | The round that raised the finding: the key's `k`. A raising row's is its own `round`, and its outcome is `new` |
+| `ordinal` | integer, not null | 1 or more | The finding's place among its raising round's findings: the key's `n` |
+| `file` | string, not null | A repo-relative path | Where the finding is at this row's round. On the raising row, where it was raised; on a later `review` row, where its lines are at that round's commit (§3.5); on an `outcomes` row, copied from the finding's latest `review` row |
+| `line_start`, `line_end` | integer, not null | 1 or more, `line_end` ≥ `line_start` | The finding's lines at this row's round, as `file` |
+| `rule_id` | string, not null | A kebab-case rule `REVIEW.md` names | The finding's class of bug, set by the row that raised it and copied onto each later row |
+| `fingerprint` | string(64) | A SHA-256, in hex | On a `review` row, a hash of the finding's lines at its round with each run of whitespace made one space; empty on an `outcomes` row. A fallback match when a finding's lines can't be mapped (§3.5) |
 | `outcome` | string, not null | `new`, `fixed`, `intentional`, `wrong`, `doesnt-matter`, `superseded` | The finding's state after this event (below) |
 | `tag` | string | `Important`, `Nit`, `Pre-existing`, `Security` | The reviewer's tag (#104), copied onto each answer |
 | `severity` | string, not null | `work`, `files`, `commits`, `tracker`, `nothing` | What the failure loses (§3.2) |
@@ -124,12 +126,12 @@ Empty is always SQL `NULL`: the model turns an empty string into `NULL` before i
 
 | Event | `round` | `source` | `outcome` | Status after |
 |---|---|---|---|---|
-| Round 6 raises it, `vscode/done.js:214-219:ignored-file-overwrite@6`, `silent/files` | 6 | `review` | `new` | Open to fix |
+| Round 6 raises it, `6.3`, `ignored-file-overwrite` at `vscode/done.js:214-219`, `silent/files` | 6 | `review` | `new` | Open to fix |
 | A person accepts `6-outcomes.md` at Go | 6 | `outcomes` | `fixed` | Fixed, waiting for a check |
 | Round 7 checks the fix: it held | 7 | `review` | `fixed` | Fixed and checked |
 | …or it didn't hold | 7 | `review` | `new` | Open to fix again |
 
-**Unique key.** `(issue_id, file, line_start, line_end, rule_id, raised_round, round, source)`, with a unique index: one event per finding per round from each source.
+**Unique key.** `(issue_id, raised_round, ordinal, round, source)`, with a unique index: one event per finding per round from each source.
 
 **Rounds.** A `review_rounds` row records one review of one commit, so a round with no findings, or one whose `ci` didn't pass, still leaves a trace. Its fields are `<k>-findings.md`'s: `issue_id`, `round`, `commit` (a full SHA), `ci` (`success`, `failure` or `none`), `ci_summary`, `repo` (`owner/repo`) and `pr_number`, the PR the commit was pushed to, `base`, `effort` (`medium` or `high`), `review_md` (`base` or `commit`), `summary` (with the reviewer's notes it couldn't place), and the lists `controls` and `new_rules`. A finding's commit and PR are its round's; a missed finding's PR is the last round's of the issue it escaped. Every review is numbered, whatever its `ci`. Two unique indexes, `(issue_id, round)` and `(issue_id, commit)`, mean a round number is used once and a commit is reviewed once. The issue's last round is its highest `review_rounds` row, and the API returns it as `last_round`, so nothing outside Redmine numbers a round.
 
@@ -179,8 +181,8 @@ Every one of the nine in the first bucket was fixed, except R3.1, which is an Op
 carry a key. Each seed is two rows, a `review` row of `new` and an `outcomes` row with its outcome,
 both with `issue_id` 82, `round` 3 to 6 from the label, `tag`, `severity`, `visibility` and
 `summary` from the transcript. Rounds three to six were never pushed, so the seeds have no
-`review_rounds` rows. The key's file and lines are the case's for the eight W7 rebuilds; for the
-other 30, the import file gives the lines in `2b3d8e5` where the finding's code is. No rule existed
+`review_rounds` rows. Each seed's key numbers it within its round, in the label's order, and its
+file and lines are the case's for the eight W7 rebuilds; for the other 30, the import file gives the lines in `2b3d8e5` where the finding's code is. No rule existed
 then, so the import file gives each a `rule_id` Claude drafts. A person confirms the lines and rule
 with the rest, and a seed whose code can't be placed, or whose rule they reject, is left out.
 `outcome` is `fixed` for all but six: R3.1, R3.6, R3.10,
@@ -269,19 +271,21 @@ outcome. None of them is confirmed until a person accepts the line that carries 
 line in `<k>-outcomes.md`, its key and then #106's outcome line, with a third part:
 
 ```
-vscode/done.js:214-219:ignored-file-overwrite@6 · Fixed · silent/files
-vscode/github.js:88:repo-rename@6 · Intentional · seen/nothing — a repo renamed on GitHub is refused with a message; Open row "Repo renamed"
+6.3 ignored-file-overwrite, vscode/done.js:214-219 · Fixed · silent/files
+6.4 repo-rename, vscode/github.js:88 · Intentional · seen/nothing — a repo renamed on GitHub is refused with a message; Open row "Repo renamed"
 ```
 
-- The key is the finding's, with the round that raised it. Its rule is the rule's id as `REVIEW.md` names
-  it; a new rule is added to `REVIEW.md` in the same round, so the person sees it in the diff.
+- The key comes first. The rule and the place after it are for the person to read: `findings.py
+  lines` writes them from the block, and `send` checks the lines match it. The rule is the rule's
+  id as `REVIEW.md` names it; a new rule is added to `REVIEW.md` in the same round, so the person
+  sees it in the diff.
 - The first part is the outcome: `Fixed`, `Intentional`, `Wrong` or `Doesnt-matter`.
 - The second is `visibility/severity`, with `-` for an empty visibility.
 - Any outcome but `Fixed` carries its justification after a dash, or on the lines below.
 
-The rule is part of the key, so a line can't change it. A person who thinks the rule is wrong
-answers `Wrong` and names the rule that fits, which counts the finding as that rule's noise
-(§3.7).
+An answer can't change the rule: Redmine copies it from the row that raised the finding. A person
+who thinks the rule is wrong answers `Wrong` and names the rule that fits, which counts the finding
+as that rule's noise (§3.7).
 
 An answer's row carries no tag, summary or body. Redmine copies them from the row that raised its
 key, and drops any an answer sends with a line in its log, so an edited file can't rewrite what the
@@ -312,10 +316,10 @@ findings.
 **Round 2 on** checks each finding whose latest row is an `outcomes` row of `fixed`. For each, the
 reviewer gets, as data in a fenced block it's told not to follow:
 
-- the key, the summary and body of the row that raised it, and the key's lines at this round's
+- the key, the summary and body of the row that raised it, and the finding's lines at this round's
   commit;
-- the fix: the diff from the round that answered it to this round's commit, within the key's file
-  and the code the fix touched;
+- the fix: the diff from the round that answered it to this round's commit, within the finding's
+  file and the code the fix touched;
 - that code's first and second degree relations: the symbols the fix changed, their callers and
   callees, the docs that name them, and code with the same syntax.
 
@@ -323,38 +327,46 @@ It answers each with a `review` row in this round: `fixed` when the fix held, `n
 A failed check is the same finding, `new` again, never a new one.
 A finding answered `intentional`, `wrong` or `doesnt-matter` was a person's call, and isn't checked
 again. A finding still `new` is waiting for an answer, not another review. A later round raises a
-new finding only when the fixed code shows a finding to fix (§3.2), with its key at this round's
+new finding only when the fixed code shows a finding to fix (§3.2), with its lines at this round's
 commit.
 
+Each check's row records the finding's lines at this round's commit, and its fingerprint there, so
+the next round maps from them.
+
 **The same finding or a new one.** A raise in a later round may land on an earlier finding's lines.
-The review maps each earlier finding's lines to this round's commit with `git blame -M --porcelain`
-from the raising round's commit: a line blamed on that boundary commit is unchanged, and blame gives
-its new number, so a block moved within the file keeps its lines. A raise under the same rule that
-overlaps an earlier finding's lines there is that finding's. When every line of the earlier finding
-changed, it sits between its nearest unchanged neighbours, and a raise in that gap overlaps it. When
-several earlier findings match, the one raised latest is taken.
+The review maps each earlier finding's lines to this round's commit from its latest `review` row,
+the lines as that row's round had them, with `git blame -M --porcelain` from that round's commit: a
+line blamed on that boundary commit is unchanged, and blame gives its new number, so a block moved
+within the file keeps its lines. Mapping from the latest row rather than the raising one keeps the
+span blame reads short, and the rows record the code's path from round to round. A raise under the
+same rule that overlaps an earlier finding's lines there is that finding's. When every line of the
+earlier finding changed, it sits between its nearest unchanged neighbours, and a raise in that gap
+overlaps it. When the lines can't be mapped at all, a raise under the same rule whose fingerprint is
+the earlier finding's is that finding, its code moved, in this file or another. When several
+earlier findings match, the one raised latest is taken.
 
 - If the finding is being checked this round, the raise is dropped, since the check covers it.
-- If the finding's lines are all unchanged, the raise is dropped: it says again what the earlier
-  round said about the same code.
-- Otherwise the code changed, and the raise is a new finding, keyed `@k`. If the earlier finding is
-  open with no answer, the review adds a `superseded` row for it in this round. A finding with an
-  answer keeps it.
+- If the finding's lines are all unchanged, or its fingerprint matched, the raise is dropped: it
+  says again what the earlier round said about the same code.
+- Otherwise the code changed, and the raise is a new finding, keyed `k.n` with this round's next
+  `n`. If the earlier finding is open with no answer, the review adds a `superseded` row for it in
+  this round. A finding with an answer keeps it.
 
 Each dropped raise is a note in the round's `summary`, naming the earlier key. Blame's default move
-threshold stands, so a moved block of a few lines reads as changed, and a raise on it is a new
-finding.
+threshold stands, so a moved block of a few lines reads as changed, and only an unchanged
+fingerprint keeps it the same finding.
 
-After a rebase the raising commit isn't an ancestor of this round's, and blame would stop at the
-merge base, with that commit's line numbers. The review maps the lines with a tree diff instead,
-`git diff -M -U0` from the raising commit, which follows renames and shifted lines but not moves:
-a moved block reads as changed.
+After a rebase the latest row's commit isn't an ancestor of this round's, and blame would stop at
+the merge base, with that commit's line numbers. The review maps the lines with a tree diff instead,
+`git diff -M -U0` from that commit, which follows renames and shifted lines but not moves: a moved
+block reads as changed unless its fingerprint matches.
 
-**New code in a later round.** When the diff since the last round, Skipped paths aside, changes a
-file that no fix being checked names, the author has widened the change. Round 1's review and
-security passes then run beside the check, over that diff alone, so code added after round 1 is
-reviewed and round 1's findings aren't raised again. Only the branch's own paths count, so a
-rebase that brings in `main`'s changes doesn't start them.
+**New code in a later round.** When the diff since the last round, Skipped paths aside, changes any
+file, round 1's review and security passes run beside the check, over that diff alone. A fixed file
+is in it too, since code added beside a fix is new code the check doesn't read. Code added after
+round 1 is reviewed, and round 1's findings aren't raised again: a raise on a finding being checked
+is dropped. Only the branch's own paths count, so a rebase that brings in `main`'s changes doesn't
+start them.
 
 **A rule's third finding becomes a check.** The issue's GET returns, per rule, how many keys the
 ledger has over every round. When the reviewer would raise a third finding under one rule, it
@@ -405,7 +417,7 @@ then `outcomes` after `review`. The plugin's GET works out each finding's status
 ```sql
 WITH ranked AS (
   SELECT f.*, ROW_NUMBER() OVER (
-    PARTITION BY f.issue_id, f.file, f.line_start, f.line_end, f.rule_id, f.raised_round
+    PARTITION BY f.issue_id, f.raised_round, f.ordinal
     ORDER BY f.round DESC, f.source = 'outcomes' DESC) AS n
   FROM review_findings f
   JOIN issues i ON i.id = f.issue_id
@@ -420,7 +432,7 @@ Counts by rule and outcome, over accepted answers, each finding counted once by 
 ```sql
 WITH answered AS (
   SELECT f.*, ROW_NUMBER() OVER (
-    PARTITION BY f.issue_id, f.file, f.line_start, f.line_end, f.rule_id, f.raised_round
+    PARTITION BY f.issue_id, f.raised_round, f.ordinal
     ORDER BY f.round DESC) AS n
   FROM review_findings f
   JOIN issues i ON i.id = f.issue_id
@@ -446,8 +458,7 @@ FROM latest l
 WHERE NOT EXISTS (
   SELECT 1 FROM review_findings o
   WHERE (o.source = 'outcomes' OR o.outcome = 'superseded') AND o.issue_id = l.issue_id
-    AND o.file = l.file AND o.line_start = l.line_start AND o.line_end = l.line_end
-    AND o.rule_id = l.rule_id AND o.raised_round = l.raised_round)
+    AND o.raised_round = l.raised_round AND o.ordinal = l.ordinal)
 GROUP BY rule_id
 ORDER BY rule_id;
 ```
@@ -458,12 +469,12 @@ week it was first raised:
 ```sql
 WITH answered AS (/* as above */),
 found AS (
-  SELECT issue_id, file, line_start, line_end, rule_id, raised_round, MIN(created_on) AS found_on
+  SELECT issue_id, raised_round, ordinal, MIN(created_on) AS found_on
   FROM review_findings
-  GROUP BY issue_id, file, line_start, line_end, rule_id, raised_round
+  GROUP BY issue_id, raised_round, ordinal
 )
 SELECT strftime('%Y-%W', found.found_on) AS week, answered.outcome, COUNT(*) AS n
-FROM answered JOIN found USING (issue_id, file, line_start, line_end, rule_id, raised_round)
+FROM answered JOIN found USING (issue_id, raised_round, ordinal)
 WHERE answered.n = 1 AND answered.rule_id = 'ignored-file-overwrite'
 GROUP BY week, answered.outcome
 ORDER BY week, answered.outcome;
@@ -475,9 +486,9 @@ The open findings to fix, across every issue, over the `latest` rows:
 WITH ranked AS (/* as above */),
 latest AS (SELECT * FROM ranked WHERE n = 1)
 SELECT i.id AS issue, i.subject, l.round,
+       l.raised_round || '.' || l.ordinal AS key, l.rule_id,
        l.file || ':' || l.line_start
-         || CASE WHEN l.line_end <> l.line_start THEN '-' || l.line_end ELSE '' END
-         || ':' || l.rule_id || '@' || l.raised_round AS key,
+         || CASE WHEN l.line_end <> l.line_start THEN '-' || l.line_end ELSE '' END AS place,
        l.severity, l.summary
 FROM latest l
 JOIN issues i ON i.id = l.issue_id
@@ -547,8 +558,8 @@ down, the script says so and prints nothing; it never falls back to a partial co
   that loses something, at the same place. A finding seen in several rounds is one case.
 - **A missed finding.** A silent failure that turned up after the merge, in use or in a later
   review. The case is the PR's last reviewed commit, and the expected answer is the bug that turned
-  up. Each is added as a `review` row of `new`, with `tag` `Important`, `round` 0 and its key, so
-  the store holds it with the rest. `findings.py add-missed <n> <file> <lines> <rule>` writes it
+  up. Each is added as a `review` row of `new`, with `tag` `Important`, `round` 0 and the key
+  `0.n`, `n` the issue's next missed finding, so the store holds it with the rest. `findings.py add-missed <n> <file> <lines> <rule>` writes it
   to `.tmp/<n>/0-findings-<m>.md` of the issue `<n>` whose work found it, against the issue `<m>`
   it escaped, and it's answered by an outcome line like any finding, `Fixed` once its fix ships. Until
   then it's in the open-to-fix query, as it should be: the bug is still in the code.
@@ -622,13 +633,15 @@ command:
 - **Redmine is down.** Nothing stands in for it (§3.3). `review.py` doesn't start a round it can't
   number, `send` stops with the files kept, and Done refuses until every round is in. The team
   brings Redmine back, and the next `pr` or `findings.py send <n>` carries on.
-- **A rule is renamed in `REVIEW.md`.** Old rows keep the old id, so a key under the old rule and
-  one under the new are two findings. `redmine-set rule OLD NEW` moves every row to the new id
-  through the plugin's rename route, all or none, with a journal note on each issue it touches,
-  and a second run writes nothing.
-- **The raising commit is gone**, after a force-push and a gc. The review fetches it from `origin`;
-  if that fails too, it can't map the finding's lines. A raise there is a new finding, and a check
-  gets the key without its current lines; the round's `summary` notes each.
+- **A rule is renamed in `REVIEW.md`.** Old rows keep the old id until `redmine-set rule OLD NEW`
+  moves every row to the new one through the plugin's rename route, all or none, with a journal
+  note on each issue it touches; a second run writes nothing. The rule isn't part of the key, so
+  each finding keeps its key, and a round file still in `.tmp/` under the old rule reads as already
+  in Redmine.
+- **The latest row's commit is gone**, after a force-push and a gc. The review fetches it from
+  `origin`; if that fails too, it can't map the finding's lines, and only the fingerprint can match
+  a raise to it. An unmatched raise is a new finding, and a check gets the key without its current
+  lines; the round's `summary` notes each.
 
 <a id="alternatives"></a>
 ## 4. Alternatives considered
@@ -652,10 +665,16 @@ command:
 - **A row per finding, keyed by a fingerprint of its code and updated in place.** A hash of the
   flagged lines, with an occurrence number for repeated snippets, follows code that moves. But an
   identical snippet added above renumbers the ones below, a finding on repeated code can't be
-  matched as the same finding, and each update overwrites what the row said before. A key a person
-  can read, fixed when the finding is raised and named by its round, keeps the whole history in a
-  row per event. `git blame -M` follows the code between rounds, which a hash can't do for repeated
-  snippets.
+  matched as the same finding, and each update overwrites what the row said before. The hash also
+  changes when the fix edits the lines, which is what a fix does, and when the reviewer reports a
+  slightly different range in the next round, which an exact hash can't match the way overlapping
+  lines do. A key fixed when the finding is raised keeps the whole history in a row per event, and
+  `git blame -M` follows the code between rounds. The fingerprint stays as a field, a fallback
+  match when the lines can't be mapped.
+- **`file:lines:rule@round` as the key.** It says where the finding was and what it is, but the rule
+  and the old place are then part of its identity: a renamed rule splits a finding in two, two
+  raises in one round can share a key, and every outcome line is long. Where a finding is changes
+  from round to round, so it's a field of each row, and the key is `k.n`.
 - **Issues as findings, under a Finding tracker.** No plugin, but every finding takes an issue
   number, shows in Next up and the Lanes tab unless every query excludes it, and its fields are
   custom fields, so each query joins `custom_values` once per field.

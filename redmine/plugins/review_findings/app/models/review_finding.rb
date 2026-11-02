@@ -26,12 +26,14 @@ class ReviewFinding < ApplicationRecord
   # Past an integer column's range, save raises instead of validating.
   INT_MAX = 2**31
 
-  # The finding's lines at the commit of the round that raised it, its rule, and that round.
-  KEY = %w[file line_start line_end rule_id raised_round].freeze
-  FIELDS = (KEY + %w[round source outcome tag severity visibility summary body justification]).freeze
+  # The round that raised the finding and its place among that round's findings: `k.n`.
+  KEY = %w[raised_round ordinal].freeze
+  FIELDS = (KEY + %w[round source file line_start line_end rule_id fingerprint outcome tag severity visibility
+                     summary body justification]).freeze
   # What an answer takes from the row that raised its key, never from the request (§3.4).
   RAISED = %w[tag summary body].freeze
-  ANSWER_FIELDS = (FIELDS - RAISED).freeze
+  ANSWER_FIELDS = (FIELDS - RAISED - %w[fingerprint]).freeze
+  FINGERPRINT = /\A[0-9a-f]{64}\z/
 
   # A finding's rows newest first: by round, then an `outcomes` row after the `review` row of its round.
   NEWEST_FIRST = 'round DESC, CASE source WHEN \'outcomes\' THEN 0 ELSE 1 END'.freeze
@@ -42,6 +44,7 @@ class ReviewFinding < ApplicationRecord
   before_validation :blanks_to_nil
 
   validates :round, :raised_round, numericality: { only_integer: true, greater_than_or_equal_to: 0, less_than: INT_MAX }
+  validates :ordinal, numericality: { only_integer: true, greater_than: 0, less_than: INT_MAX }
   validates :source, inclusion: { in: SOURCES }
   validates :file, presence: true, length: { maximum: 255 }, format: { without: %r{\A/|(?:\A|/)\.\.(?:/|\z)} }
   validates :line_start, :line_end, numericality: { only_integer: true, greater_than: 0, less_than: INT_MAX }
@@ -51,11 +54,17 @@ class ReviewFinding < ApplicationRecord
   validates :severity, inclusion: { in: SEVERITIES }
   validates :visibility, inclusion: { in: VISIBILITIES }, allow_nil: true
   validates :summary, length: { maximum: 255 }
+  validates :fingerprint, format: { with: FINGERPRINT }, allow_nil: true
   validate :lines_in_order, :raised_by_then, :visibility_unless_nothing, :outcome_for_source, :justified, :confirmed_only_by_answer
 
   def key
+    "#{raised_round}.#{ordinal}"
+  end
+
+  # Where the finding is at this row's round: `file:12` or `file:12-14`.
+  def place
     lines = line_start == line_end ? line_start.to_s : "#{line_start}-#{line_end}"
-    "#{file}:#{lines}:#{rule_id}@#{raised_round}"
+    "#{file}:#{lines}"
   end
 
   def key_fields
@@ -150,6 +159,7 @@ class ReviewFinding < ApplicationRecord
     row = row.except(*dropped)
     finding = new(row.merge('issue_id' => issue.id))
     log_dropped(finding, dropped)
+    finding.take_rule_from_original(found) unless finding.raises?
     finding.take_from_original(found, user) if finding.answer?
     refuse_invalid(finding)
 
@@ -187,7 +197,7 @@ class ReviewFinding < ApplicationRecord
     value.nil? || value.is_a?(String) || value.is_a?(Integer)
   end
 
-  # The fields a row may not send: an answer's tag, summary and body (§3.4).
+  # The fields a row may not send: an answer's tag, summary, body and fingerprint (§3.4).
   def self.detect_disallowed_fields(row)
     row['source'] == 'outcomes' ? row.keys - ANSWER_FIELDS : []
   end
@@ -199,9 +209,10 @@ class ReviewFinding < ApplicationRecord
                  'it takes them from the row that raised it')
   end
 
-  # 'skipped' when the row matches the event already recorded; Refused when it differs.
+  # 'skipped' when the row matches the event already recorded; Refused when it differs. The rule
+  # isn't compared: only the rename route changes it, so a row sent before a rename is the same event.
   def self.skip_or_refuse(repeat, row, finding)
-    repeat.assign_attributes(row.except('issue_id'))
+    repeat.assign_attributes(row.except('issue_id', 'rule_id'))
     repeat.blanks_to_nil
     return 'skipped' unless repeat.changed?
 
@@ -252,6 +263,17 @@ class ReviewFinding < ApplicationRecord
     found.find { |f| same_finding?(f) && f.raises? }
   end
 
+  # A later row takes the rule of the row that raised its finding, and drops a different one it
+  # sends with a log line (§3.1).
+  def take_rule_from_original(found)
+    original = original_finding(found)
+    return if original.nil? || original.rule_id == rule_id
+
+    self.class.logger&.info("review_findings: #{key}: dropped rule #{rule_id}; it takes #{original.rule_id} " \
+                            'from the row that raised it')
+    self.rule_id = original.rule_id
+  end
+
   # An answer takes the reviewer's tag, summary and body from the original finding, and the sender
   # confirms it (§3.4).
   def take_from_original(found, user)
@@ -290,7 +312,7 @@ class ReviewFinding < ApplicationRecord
   # renamed in REVIEW.md keeps one id across its findings (§3.10), with a journal note on each issue
   # it touches. A row with the old id on an issue of `tree` that isn't one of the given issues, such
   # as one in a closed project, refuses the rename; the check is inside the transaction, so a row
-  # sent meanwhile can't be left behind. A row whose new key another row already has refuses it too.
+  # sent meanwhile can't be left behind. The rule isn't part of a key, so every finding keeps its key.
   # Answers how many rows it renamed and how many issues it noted, or raises Refused having renamed
   # none.
   def self.rename_rule(issue_ids, tree, from, to, user)
@@ -312,8 +334,6 @@ class ReviewFinding < ApplicationRecord
         rows.each do |finding|
           finding.rule_id = to
           finding.save!
-        rescue ActiveRecord::RecordNotUnique
-          raise Refused, "#{finding.key} is already a finding of issue ##{issue.id}"
         end
         issue.journals.create!(user: user, notes: "#{user.name} renamed review rule #{from} to #{to} " \
                                                   "on #{rows.size} #{rows.size == 1 ? 'row' : 'rows'}.")

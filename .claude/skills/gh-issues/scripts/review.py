@@ -14,21 +14,23 @@ reviewed.
 Round 1 reads the branch's whole diff against its merge base with --base, plus the issue's
 description and the docs CLAUDE.md says to read. Two `claude -p` passes run on it at once: a
 review under REVIEW.md, and a security pass whose findings are all tagged Security. Each finding
-is keyed by its file and its lines at this round's commit, its rule, and the round that raised it:
-`file:lines:rule@k`.
+is keyed `k.n`, the round that raised it and its place among that round's findings, and its row
+carries its file, its lines at this round's commit, its rule, and a fingerprint of those lines.
 
 Round 2 on checks the fixes. One pass gets each finding whose latest row is an answer of Fixed,
 with the summary and body that raised it, its lines at this commit, and the diff of its file from
 the round that answered it to this commit, and says whether the fix held. A fix that held is recorded as `fixed`, one that
 didn't as `new`. The pass raises a new finding only when the fixed code shows a finding to fix.
-When the branch has changed, since the last round, a file that no fix names, Skipped paths aside,
-the review and security passes run too, over only the diff since that round, so a round's
+When the branch has changed any file since the last round, Skipped paths aside, the review and
+security passes run too, over only the diff since that round, fixed files included, so a round's
 findings aren't raised again and code added after round 1 is still reviewed.
 
 A finding a later round raises on an earlier finding's lines, which linemap.py maps to this
-commit, is that finding again when its code is unchanged, and is dropped with a note; so is one
-on a fix this round checks. When the code changed it's a new finding, and an earlier one still
-open gets a `superseded` row.
+commit from the finding's latest review row, is that finding again when its code is unchanged, and
+is dropped with a note; so is one on a fix this round checks. When the lines can't be mapped, a
+raise whose fingerprint is the earlier finding's is that finding, moved. When the code changed it's
+a new finding, and an earlier one still open gets a `superseded` row. Each check and supersede
+records where the finding is at this commit, so the next round maps from there.
 
 When a rule reaches its third finding over the issue's rounds, a pass writes a check for it,
 `.tmp/N/<k>-check-<rule>.py`, which is run in the commit's tree, up to a timeout. Each line it
@@ -286,6 +288,15 @@ def schema(security: bool) -> dict:
     }
 
 
+def check_answers(out: dict) -> dict[str, dict]:
+    """The check pass's answer for each key it judged, the first where it answered one twice."""
+    answers: dict[str, dict] = {}
+    for c in out.get("checks") or []:
+        if isinstance(c, dict) and isinstance(c.get("held"), bool):
+            answers.setdefault(c.get("key"), c)
+    return answers
+
+
 def check_schema(keys: list[str]) -> dict:
     """A later round's pass: whether each fix held, and any new finding to fix."""
     out = schema(False)
@@ -419,15 +430,15 @@ def check_prompt(review_md: str, n: int, k: int, fixes: list[dict], stat: str) -
     """A later round's pass over the fixes. Each fix is the finding's key, summary and body, its
     lines at this commit, and the diff of its file since the round that answered it."""
     shown = "\n\n".join(
-        f"{fenced(json.dumps({x: f[x] for x in ('key', 'summary', 'body', 'now')}))}\n\n"
+        f"{fenced(json.dumps({x: f[x] for x in ('key', 'summary', 'body', 'at', 'now')}))}\n\n"
         f"Its file's diff since round {f['answered']}:\n\n{fenced(f['diff'] or '(no change)')}"
         for f in fixes
     )
     return f"""You are checking round {k} of the branch for issue #{n}. Each finding below was
 raised by an earlier round and answered Fixed by its author. For each, read the fix in its context
 with the Read, Grep and Glob tools: the code the fix changed, the symbols it touched, their callers
-and callees, the docs that name them, and code with the same syntax. The key's lines are as the
-round that raised it had them; `now` says where they are at this commit. Return a check for each key:
+and callees, the docs that name them, and code with the same syntax. `at` is where the finding was
+at the last round that placed it; `now` says where those lines are at this commit. Return a check for each key:
 held true when the failure it describes is gone, false when it isn't, with the body saying why.
 
 Raise a new finding only when the fixed code shows a finding to fix under REVIEW.md: silent and
@@ -627,8 +638,8 @@ def weight(row: dict) -> tuple[bool, bool, bool]:
 
 
 def merged(a: dict, b: dict) -> dict:
-    """Two findings with one key in one round, as one row: the heavier one's fields, the lighter
-    one's tag, weighting and summary added to the body."""
+    """Two of a round's findings under one rule on overlapping lines, as one row: the heavier one's
+    fields, the lighter one's tag, weighting and summary added to the body."""
     heavy, light = (a, b) if weight(a) >= weight(b) else (b, a)
     out = dict(heavy)
     out["body"] = (heavy.get("body") or "") + (
@@ -674,7 +685,8 @@ def line(row: dict, rules: list[str]) -> str:
     weight = row["severity"] + (f"/{row['visibility']}" if row["visibility"] else "")
     word = findings.OUTCOMES[row["outcome"]]
     return (
-        f"  {findings.key(row)}  {row['tag'] or '-'}  {word}  {weight}{rule}\n    {row['summary']}"
+        f"  {findings.key(row)} {row['rule_id']}, {findings.place(row)}  {row['tag'] or '-'}"
+        f"  {word}  {weight}{rule}\n    {row['summary']}"
     )
 
 
@@ -764,11 +776,11 @@ def description(n: int) -> str:
 
 
 def beyond(
-    rounds: list[dict], root: Path, commit: str, fork: str, paths: list[str], checks: list[dict]
+    rounds: list[dict], root: Path, commit: str, fork: str, paths: list[str]
 ) -> tuple[str, list[str]]:
     """A later round's new code: the commit the last of rounds reviewed, and the branch's paths,
-    less Skipped paths, changed since then that no fix being checked names. The last round's
-    commit when it's gone, after a rebase and a gc, is the merge base."""
+    less Skipped paths, changed since then, a fixed file's too, since code added beside a fix is
+    new. The last round's commit when it's gone, after a rebase and a gc, is the merge base."""
     shown = [r for r in rounds if isinstance(r.get("round"), int) and r.get("commit")]
     last = max(shown, key=lambda r: r["round"])["commit"] if shown else fork
     try:
@@ -777,29 +789,38 @@ def beyond(
         last = fork
         names = git("diff", "--name-only", "--no-renames", "-z", last, commit, cwd=root)
     # Only the branch's paths: a rebase brings main's changes, which aren't the branch's code.
-    since = set(names.split("\0")) & set(paths)
-    fixed = {f["latest"]["file"] for f in checks}
-    return last, sorted(since - fixed)
+    return last, sorted(set(names.split("\0")) & set(paths))
 
 
-# A finding's key, as each of its rows carries it (design 0005, §3.1).
-KEYED = ("file", "line_start", "line_end", "rule_id", "raised_round")
+# What each of a finding's rows carries over from the one before: its key and rule (§3.1).
+KEYED = ("raised_round", "ordinal", "rule_id")
+
+
+def latest_review(ledger: dict, finding: dict) -> dict:
+    """The finding's latest review row, which says where it was at that row's round; its latest
+    row when the ledger holds no review row of it."""
+    rows = [
+        r
+        for r in ledger["review_findings"]
+        if r.get("key") == finding["key"] and r.get("source") == "review"
+    ]
+    return max(rows, key=lambda r: r["round"]) if rows else finding["latest"]
 
 
 def placer(ledger: dict, root: Path, commit: str, fork: str):
-    """A function of an earlier finding: its lines at commit, mapped from the commit of the round
-    that raised it, or the merge base for a missed finding; None when they can't be mapped. Each
-    finding is mapped once."""
+    """A function of an earlier finding: its lines at commit, mapped from those of its latest
+    review row at that row's round's commit, or the merge base for a missed finding; None when they
+    can't be mapped. Each finding is mapped once."""
     commits = {r["round"]: r["commit"] for r in ledger["review_rounds"]}
     placed: dict[str, linemap.Lines | None] = {}
 
     def place(finding: dict) -> linemap.Lines | None:
         if finding["key"] not in placed:
-            latest = finding["latest"]
-            since = commits.get(latest["raised_round"], fork)
+            last = latest_review(ledger, finding)
+            since = commits.get(last["round"], fork)
             try:
                 placed[finding["key"]] = linemap.where(
-                    root, latest["file"], latest["line_start"], latest["line_end"], since, commit
+                    root, last["file"], last["line_start"], last["line_end"], since, commit
                 )
             except subprocess.CalledProcessError:
                 placed[finding["key"]] = None
@@ -824,15 +845,15 @@ def raising_row(ledger: dict, finding: dict) -> dict:
 UNPLACED = "unknown: its round's commit isn't in the repo, or the file was deleted"
 
 
-def paths(latest: dict, lines) -> list[str]:
-    """The key's file and, when it was renamed, its path now, so the diff follows the rename."""
-    return list(dict.fromkeys([latest["file"], *([lines.file] if lines else [])]))
+def paths(last: dict, lines) -> list[str]:
+    """The finding's file and, when it was renamed, its path now, so the diff follows the rename."""
+    return list(dict.fromkeys([last["file"], *([lines.file] if lines else [])]))
 
 
 def fixes(ledger: dict, root: Path, commit: str, fork: str, place) -> list[dict]:
     """The findings a later round checks: each whose latest row is an answer of Fixed, with the
-    summary and body that raised it, its lines at commit, and its file's diff from the commit of
-    the round that answered it, or the merge base for a missed finding, to commit."""
+    summary and body that raised it, where it was and its lines at commit, and its file's diff from
+    the commit of the round that answered it, or the merge base for a missed finding, to commit."""
     commits = {r["round"]: r["commit"] for r in ledger["review_rounds"]}
     out = []
     for f in ledger["findings"]:
@@ -840,12 +861,13 @@ def fixes(ledger: dict, root: Path, commit: str, fork: str, place) -> list[dict]
         if latest.get("source") != "outcomes" or latest.get("outcome") != "fixed":
             continue
         raised = raising_row(ledger, f)
+        last = latest_review(ledger, f)
         answered = latest["round"]
         since = commits.get(answered, fork)
         lines = place(f)
         try:
             diff = git(
-                "diff", "-M", "--no-ext-diff", since, commit, "--", *paths(latest, lines), cwd=root
+                "diff", "-M", "--no-ext-diff", since, commit, "--", *paths(last, lines), cwd=root
             )
         except subprocess.CalledProcessError:
             diff = f"(the diff from {since[:7]} couldn't be read)"
@@ -854,22 +876,42 @@ def fixes(ledger: dict, root: Path, commit: str, fork: str, place) -> list[dict]
                 "key": f["key"],
                 "summary": raised.get("summary") or "",
                 "body": raised.get("body") or "",
+                "at": findings.place(last),
                 "now": lines.shown() if lines else UNPLACED,
                 "answered": answered,
                 "diff": diff,
                 "raised": raised,
                 "latest": latest,
+                "last": last,
+                "lines": lines,
             }
         )
     return out
 
 
+def placed_now(lines: linemap.Lines | None, last: dict) -> dict:
+    """Where a finding is at this round's commit: the lines of it still there, or the gap where
+    they were; where its latest review row had it when its lines can't be mapped."""
+    if lines is None:
+        return {x: last[x] for x in ("file", "line_start", "line_end")}
+    first, end = lines.span()
+    first = max(first, 1)
+    return {"file": lines.file, "line_start": first, "line_end": max(end or first, first)}
+
+
+def located(row: dict, root: Path, commit: str) -> dict:
+    """The row with the fingerprint of its lines at commit."""
+    found = linemap.fingerprint(root, commit, row["file"], row["line_start"], row["line_end"])
+    return {**row, "fingerprint": found}
+
+
 def checked(fix: dict, check: dict, k: int) -> dict:
     """A check of a fix, as round k's review row: fixed when it held, new when it didn't, with the
-    weighting the answer gave it."""
+    weighting the answer gave it, at the finding's lines at this round's commit."""
     latest, raised = fix["latest"], fix["raised"]
     return {
         **{x: latest[x] for x in KEYED},
+        **placed_now(fix["lines"], fix["last"]),
         "round": k,
         "source": "review",
         "outcome": "fixed" if check["held"] else "new",
@@ -882,17 +924,41 @@ def checked(fix: dict, check: dict, k: int) -> dict:
 
 
 def raise_row(f: dict, k: int) -> dict:
+    """A finding a pass raised, as round k's review row; numbered once the round's raises are
+    settled."""
     return {**f, "round": k, "raised_round": k, "source": "review", "outcome": "new"}
 
 
-def assemble(rows: list[dict], found: list[dict]) -> list[dict]:
-    """The round's rows, one per key: the checks first, then the findings, two with one key merged
-    into one."""
-    out = {findings.key(r): r for r in rows}
+def label(row: dict) -> str:
+    """A raise before it's numbered: its rule and place."""
+    return f"{row['rule_id']} at {findings.place(row)}"
+
+
+def same_lines(a: dict, b: dict) -> bool:
+    """Whether two rows are under one rule on overlapping lines of one file."""
+    return (
+        a["rule_id"] == b["rule_id"]
+        and a["file"] == b["file"]
+        and a["line_start"] <= b["line_end"]
+        and b["line_start"] <= a["line_end"]
+    )
+
+
+def combined(found: list[dict]) -> list[dict]:
+    """The round's raises, two under one rule on overlapping lines merged into one (§3.1)."""
+    out: list[dict] = []
     for f in found:
-        key = findings.key(f)
-        out[key] = merged(out[key], f) if key in out else f
-    return list(out.values())
+        i = next((i for i, kept in enumerate(out) if same_lines(kept, f)), None)
+        if i is None:
+            out.append(f)
+        else:
+            out[i] = merged(out[i], f)
+    return out
+
+
+def numbered(raises: list[dict]) -> list[dict]:
+    """The round's raises, each given its place among them, `n` of the key `k.n`."""
+    return [{**r, "ordinal": n} for n, r in enumerate(raises, 1)]
 
 
 def overlaps(lines: linemap.Lines, row: dict) -> bool:
@@ -904,23 +970,38 @@ def overlaps(lines: linemap.Lines, row: dict) -> bool:
     return first <= row["line_end"] and (last is None or row["line_start"] <= last)
 
 
-def earlier_finding(row: dict, known: list[dict], place) -> tuple[dict, linemap.Lines] | None:
-    """The earlier finding of the raise's rule whose lines the raise is on, with those lines; the
-    latest raised of several, as one that superseded another is."""
-    for f in sorted(known, key=lambda f: f["latest"]["raised_round"], reverse=True):
-        if f["latest"]["rule_id"] != row["rule_id"]:
-            continue
+def latest_raised_first(known: list[dict]) -> list[dict]:
+    return sorted(
+        known, key=lambda f: (f["latest"]["raised_round"], f["latest"]["ordinal"]), reverse=True
+    )
+
+
+def earlier_finding(row: dict, known: list[dict], ledger: dict, place) -> tuple[dict, bool] | None:
+    """The earlier finding of the raise's rule that the raise is on, and whether its code is the
+    same: by its lines at this commit, or, when none overlaps, by its fingerprint. The latest
+    raised of several, as one that superseded another is."""
+    ours = [f for f in latest_raised_first(known) if f["latest"]["rule_id"] == row["rule_id"]]
+    for f in ours:
         lines = place(f)
         if lines and overlaps(lines, row):
-            return f, lines
+            return f, lines.unchanged() or same_fingerprint(row, latest_review(ledger, f))
+    for f in ours:
+        if same_fingerprint(row, latest_review(ledger, f)):
+            return f, True
     return None
 
 
-def superseding(f: dict, by: dict, k: int) -> dict:
-    """Round k's review row closing an open finding that a new one on its changed lines replaces."""
+def same_fingerprint(row: dict, earlier: dict) -> bool:
+    return bool(row.get("fingerprint")) and row.get("fingerprint") == earlier.get("fingerprint")
+
+
+def superseding(f: dict, by: dict, k: int, lines: linemap.Lines | None, last: dict) -> dict:
+    """Round k's review row closing an open finding that a new one on its changed lines replaces,
+    at the finding's lines at this round's commit."""
     latest = f["latest"]
     return {
         **{x: latest[x] for x in KEYED},
+        **placed_now(lines, last),
         "round": k,
         "source": "review",
         "outcome": "superseded",
@@ -933,29 +1014,48 @@ def superseding(f: dict, by: dict, k: int) -> dict:
 
 
 def sift(
-    raises: list[dict], ledger: dict, checks: list[dict], place, k: int
-) -> tuple[list[dict], dict[str, dict], list[str]]:
-    """Round k's raises that are new findings, a superseded row for each open finding one of them
-    replaces, by its key, and a note for each raise that's an earlier finding again (§3.5)."""
-    kept, superseded, notes = [], {}, []
+    raises: list[dict], ledger: dict, checks: list[dict], place
+) -> tuple[list[dict], dict[str, tuple[dict, dict]], list[str]]:
+    """Round k's raises that are new findings; each open finding one of them replaces, by its key,
+    with the raise; and a note for each raise that's an earlier finding again (§3.5)."""
+    kept, replaced, notes = [], {}, []
     checking = {f["key"] for f in checks}
     for r in raises:
-        found = earlier_finding(r, ledger["findings"], place)
+        found = earlier_finding(r, ledger["findings"], ledger, place)
         if found is None:
             kept.append(r)
             continue
-        f, lines = found
+        f, same = found
         if f["key"] in checking:
             notes.append(
-                f"dropped {findings.key(r)}, on {f['key']}'s lines, which this round's check covers"
+                f"dropped {label(r)}, on {f['key']}'s lines, which this round's check covers"
             )
-        elif lines.unchanged():
-            notes.append(f"dropped {findings.key(r)}, which is {f['key']} on unchanged code")
+        elif same:
+            notes.append(f"dropped {label(r)}, which is {f['key']} on unchanged code")
         else:
             kept.append(r)
             if f["status"] == "open":
-                superseded[f["key"]] = superseding(f, r, k)
-    return kept, superseded, notes
+                replaced[f["key"]] = (f, r)
+    return kept, replaced, notes
+
+
+def superseded_rows(
+    replaced: dict[str, tuple[dict, dict]],
+    raises: list[dict],
+    ledger: dict,
+    place,
+    k: int,
+    at: tuple[Path, str],
+) -> list[dict]:
+    """A superseded row for each open finding a numbered raise replaces, with the fingerprint of
+    its lines at the round's commit."""
+    rows = []
+    for f, r in replaced.values():
+        # combined merged r into a raise that spans it, so one always overlaps it.
+        by = next(n for n in raises if same_lines(n, r))
+        row = superseding(f, by, k, place(f), latest_review(ledger, f))
+        rows.append(located(row, *at))
+    return rows
 
 
 def matches(text: str) -> tuple[list[tuple[str, int, int, str]], list[str]]:
@@ -976,8 +1076,10 @@ def matches(text: str) -> tuple[list[tuple[str, int, int, str]], list[str]]:
 
 def profile(script: Path, tree: str, scratch: str) -> str:
     """The sandbox a rule's check runs in: no network, no Keychain, no file written outside
-    scratch, and no file read under HOME but script, tree and the interpreter's own files."""
+    scratch, no file read under HOME but script, tree and the interpreter's own files, and no
+    program run or app asked to act for it but the interpreter."""
     home = os.path.realpath(Path.home())
+    python = os.path.realpath(sys.executable)
     # A path as a quoted string, its quotes and backslashes escaped.
     q = json.dumps
     return f"""(version 1)
@@ -989,6 +1091,11 @@ def profile(script: Path, tree: str, scratch: str) -> str:
 (allow file-read-data (literal {q(os.path.realpath(script))}) (subpath {q(tree)}))
 (allow file-read-data (subpath {q(os.path.realpath(sys.base_prefix))}))
 (deny mach-lookup (global-name "com.apple.SecurityServer") (global-name "com.apple.securityd"))
+(deny process-exec)
+(allow process-exec (literal {q(python)}) (subpath {q(os.path.realpath(sys.base_prefix))}))
+(deny appleevent-send)
+(deny mach-lookup (global-name "com.apple.coreservices.launchservicesd")
+  (global-name "com.apple.lsd.mapdb") (global-name "com.apple.lsd.modifydb"))
 """
 
 
@@ -1002,7 +1109,8 @@ def codify(
     name = f"{k}-check-{rule}.py"
     own = [r for r in rows if r["rule_id"] == rule and r["outcome"] == "new"]
     shown = [
-        {x: r.get(x) for x in ("summary", "body")} | {"key": findings.key(r)} for r in earlier + own
+        {x: r.get(x) for x in ("summary", "body")} | {"at": findings.place(r)}
+        for r in earlier + own
     ]
     try:
         out = ask(
@@ -1050,7 +1158,6 @@ def codify(
         ]
     found, odd = matches(done.stdout)
     heavy = max(own, key=weight)
-    taken = {findings.key(r) for r in rows}
     added = []
     for file, start, end, message in found:
         row = {
@@ -1066,8 +1173,7 @@ def codify(
             "summary": message[:255],
             "body": f"{name} matched it: {message}",
         }
-        if findings.key(row) not in taken:
-            taken.add(findings.key(row))
+        if not any(same_lines(row, r) for r in rows + added):
             added.append(row)
     said = f"{rule} reached its third finding, so {name} checks for it: {len(found)} match{'' if len(found) == 1 else 'es'}, {len(added)} new."
     if odd:
@@ -1075,15 +1181,14 @@ def codify(
     return rows + added, [said]
 
 
-def to_codify(ledger: dict, rows: list[dict]) -> list[str]:
-    """The rules whose new findings this round bring them to their third over the issue's rounds."""
-    held = {f["key"] for f in ledger["findings"]}
-    new = {}
-    for r in rows:
-        if r["outcome"] == "new" and findings.key(r) not in held:
-            new.setdefault(r["rule_id"], set()).add(findings.key(r))
+def to_codify(ledger: dict, raises: list[dict]) -> list[str]:
+    """The rules whose findings this round raises bring them to their third over the issue's
+    rounds."""
+    new: dict[str, int] = {}
+    for r in raises:
+        new[r["rule_id"]] = new.get(r["rule_id"], 0) + 1
     counts = ledger.get("rules") or {}
-    return sorted(rule for rule, keys in new.items() if counts.get(rule, 0) + len(keys) >= CODIFY)
+    return sorted(rule for rule, count in new.items() if counts.get(rule, 0) + count >= CODIFY)
 
 
 def review(
@@ -1121,7 +1226,7 @@ def review(
     checks = fixes(ledger, root, commit, fork, place) if k > 1 else []
     # The last round reviewed, in Redmine or in a findings file not yet sent.
     rounds = [*ledger["review_rounds"], *issue.local_rounds()]
-    last, new = beyond(rounds, root, commit, fork, paths, checks) if k > 1 else (fork, paths)
+    last, new = beyond(rounds, root, commit, fork, paths) if k > 1 else (fork, paths)
     # (name, prompt, schema, security) for each pass.
     passes = []
     if checks:
@@ -1133,8 +1238,8 @@ def review(
             f"review: round {k}, checking {len(checks)} fix{'' if len(checks) == 1 else 'es'} at --effort {level}"
         )
     if new:
-        # Code beyond the fixes gets the review and security passes, over only what's changed
-        # since the last round reviewed, so an earlier round's findings aren't raised again.
+        # What's changed since the last round reviewed gets the review and security passes, so an
+        # earlier round's findings aren't raised again; sift drops a raise on a fix being checked.
         diff = git("diff", "--no-ext-diff", last, commit, "--", *new, cwd=root)
         about = description(n)
         for security in (False, True):
@@ -1177,22 +1282,19 @@ def review(
             if name == CHECK:
                 minor = [f for f in kept if not findings.to_fix(f)]
                 notes += [
-                    f"dropped {findings.key(f)}, not a finding to fix, which a check doesn't raise"
+                    f"dropped {label(f)}, not a finding to fix, which a check doesn't raise"
                     for f in minor
                 ]
                 kept = [f for f in kept if findings.to_fix(f)]
-            found += [raise_row(f, k) for f in kept]
-            answers: dict[str, dict] = {}
-            for c in out.get("checks") or []:
-                if isinstance(c, dict) and isinstance(c.get("held"), bool):
-                    answers.setdefault(c.get("key"), c)
-            for fix in checks:
-                if fix["key"] in answers:
-                    rows.append(checked(fix, answers[fix["key"]], k))
-                else:
-                    notes.append(
-                        f"the check pass didn't answer {fix['key']}, so it's still to check"
-                    )
+                answers = check_answers(out)
+                for fix in checks:
+                    if fix["key"] in answers:
+                        rows.append(located(checked(fix, answers[fix["key"]], k), root, commit))
+                    else:
+                        notes.append(
+                            f"the check pass didn't answer {fix['key']}, so it's still to check"
+                        )
+            found += [located(raise_row(f, k), root, commit) for f in kept]
         held = sum(r["outcome"] == "fixed" for r in rows)
         if checks:
             said.insert(0, f"{held} of {len(checks)} fixes held.")
@@ -1205,9 +1307,9 @@ def review(
             for f in checks
             if f["now"] == UNPLACED
         ]
-        found, superseded, dropped = sift(found, ledger, checks, place, k)
+        found, replaced, dropped = sift(found, ledger, checks, place)
         notes += dropped
-        rows = assemble(rows, found)
+        found = combined(found)
         ctx = {
             "n": n,
             "k": k,
@@ -1218,7 +1320,7 @@ def review(
             "level": level,
             "timeout": timeout,
         }
-        for rule in to_codify(ledger, rows):
+        for rule in to_codify(ledger, found):
             earlier = [
                 r
                 for r in ledger["review_findings"]
@@ -1226,13 +1328,15 @@ def review(
                 and r.get("source") == "review"
                 and r.get("outcome") == "new"
             ]
-            before = len(rows)
-            rows, wrote = codify(ctx, rule, rows, earlier, runner)
+            before = len(found)
+            found, wrote = codify(ctx, rule, found, earlier, runner)
             said += wrote
-            added, more, dropped = sift(rows[before:], ledger, checks, place, k)
-            rows, notes = rows[:before] + added, notes + dropped
-            superseded |= more
-        rows += superseded.values()
+            matched = [located(r, root, commit) for r in found[before:]]
+            added, more, dropped = sift(matched, ledger, checks, place)
+            found, notes = found[:before] + added, notes + dropped
+            replaced |= more
+        found = numbered(found)
+        rows += found + superseded_rows(replaced, found, ledger, place, k, (root, commit))
     finally:
         remove(root, tree)
     rules = listed(review_md, "Rules")

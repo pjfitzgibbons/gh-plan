@@ -6,8 +6,10 @@ class ReviewFindingsApiTest < Redmine::ApiTest::Base
            :issue_statuses, :trackers, :projects_trackers, :enabled_modules, :enumerations,
            :journals, :watchers, :review_findings, :review_rounds
 
-  OPEN = 'lib/sync.rb:12-14:ignored-file-overwrite@1'.freeze
-  UNCHECKED = 'lib/sync.rb:60-61:ignored-file-overwrite@2'.freeze
+  OPEN = '1.1'.freeze
+  OPEN_AT = 'lib/sync.rb:12-14:ignored-file-overwrite'.freeze
+  UNCHECKED = '2.1'.freeze
+  UNCHECKED_AT = 'lib/sync.rb:60-61:ignored-file-overwrite'.freeze
 
   def setup
     super
@@ -45,9 +47,9 @@ class ReviewFindingsApiTest < Redmine::ApiTest::Base
     assert_equal 8, body['review_findings'].size
     statuses = body['findings'].to_h { |f| [f['key'], f['status']] }
     assert_equal 'open', statuses[OPEN]
-    assert_equal 'fixed', statuses['lib/sync.rb:40:forced-update@1']
+    assert_equal 'fixed', statuses['1.2']
     assert_equal 'fixed, unchecked', statuses[UNCHECKED]
-    assert_equal 'intentional', statuses['lib/remote.rb:7:repo-rename@1']
+    assert_equal 'intentional', statuses['1.3']
     assert_equal [1, 1], body.values_at('open_to_fix', 'fixed_unchecked')
     assert_equal({ 'forced-update' => 1, 'ignored-file-overwrite' => 2, 'repo-rename' => 1 }, body['rules'])
   end
@@ -68,8 +70,8 @@ class ReviewFindingsApiTest < Redmine::ApiTest::Base
   end
 
   test 'a POST adds the next round and its rows, and the same POST again adds nothing' do
-    rows = [finding_row('lib/b.rb:9:crash', 3, severity: 'nothing', visibility: 'seen'),
-            finding_row(UNCHECKED, 3, outcome: 'fixed', tag: nil, summary: nil, body: 'Scans the new path')]
+    rows = [finding_row('3.1', 'lib/b.rb:9:crash', 3, severity: 'nothing', visibility: 'seen'),
+            finding_row(UNCHECKED, UNCHECKED_AT, 3, outcome: 'fixed', tag: nil, summary: nil, body: 'Scans the new path')]
     assert_difference ['ReviewRound.count'], 1 do
       assert_difference 'ReviewFinding.count', 2 do
         post_ledger(rows, round: round_row(3, controls: ['REVIEW.md']))
@@ -119,8 +121,8 @@ class ReviewFindingsApiTest < Redmine::ApiTest::Base
 
   test 'a row whose event is there with other values is refused, and nothing in the request is saved' do
     assert_no_difference ['ReviewRound.count', 'ReviewFinding.count'] do
-      post_ledger([finding_row('lib/c.rb:1:crash', 3, severity: 'nothing', visibility: 'seen'),
-                   answer_row(UNCHECKED, 2, 'wrong', justification: 'Changed my mind')],
+      post_ledger([finding_row('3.1', 'lib/c.rb:1:crash', 3, severity: 'nothing', visibility: 'seen'),
+                   answer_row(UNCHECKED, UNCHECKED_AT, 2, 'wrong', justification: 'Changed my mind')],
                   round: round_row(3))
     end
     assert_response :unprocessable_content
@@ -129,76 +131,91 @@ class ReviewFindingsApiTest < Redmine::ApiTest::Base
   end
 
   test 'a later answer goes in a later round' do
-    post_ledger([answer_row(UNCHECKED, 3, 'wrong', justification: 'The path is never renamed')], round: round_row(3))
+    post_ledger([answer_row(UNCHECKED, UNCHECKED_AT, 3, 'wrong', justification: 'The path is never renamed')], round: round_row(3))
     assert_response :success
     assert_equal 'wrong', ledger['findings'].find { |f| f['key'] == UNCHECKED }['status']
   end
 
   test 'an answer or a check needs a round that raised the finding' do
-    post_ledger([answer_row('lib/new.rb:1:crash@1', 2)])
+    post_ledger([answer_row('1.9', 'lib/new.rb:1:crash', 2)])
     assert_response :unprocessable_content
-    assert_equal ["row 1: lib/new.rb:1:crash@1: round 1 didn't raise it"], json['errors']
-    post_ledger([finding_row('lib/new.rb:1:crash@1', 2, outcome: 'fixed')])
+    assert_equal ["row 1: 1.9: round 1 didn't raise it"], json['errors']
+    post_ledger([finding_row('1.9', 'lib/new.rb:1:crash', 2, outcome: 'fixed')])
     assert_response :unprocessable_content
     assert_match(/round 1 didn't raise it/, json['errors'].first)
   end
 
   test 'a supersede is the review closing an open finding it raised again as a new one' do
-    post_ledger([finding_row('lib/sync.rb:13-15:ignored-file-overwrite', 3),
-                 finding_row(OPEN, 3, outcome: 'superseded', body: 'Round 3 raised it again')],
+    post_ledger([finding_row('3.1', 'lib/sync.rb:13-15:ignored-file-overwrite', 3),
+                 finding_row(OPEN, OPEN_AT, 3, outcome: 'superseded', body: 'Round 3 raised it again')],
                 round: round_row(3))
     assert_response :success
     statuses = ledger['findings'].to_h { |f| [f['key'], f['status']] }
-    assert_equal ['superseded', 'open'], statuses.values_at(OPEN, 'lib/sync.rb:13-15:ignored-file-overwrite@3')
+    assert_equal ['superseded', 'open'], statuses.values_at(OPEN, '3.1')
     assert_equal 1, ledger['open_to_fix']
   end
 
   test 'a row in a round Redmine has not recorded is refused' do
-    post_ledger([finding_row('lib/c.rb:1:crash', 5)])
+    post_ledger([finding_row('5.1', 'lib/c.rb:1:crash', 5)])
     assert_response :unprocessable_content
     assert_match(/round 5 isn't recorded/, json['errors'].first)
   end
 
   test 'a missed finding is a round 0 review row, answered like any other' do
-    post_ledger([finding_row('lib/d.rb:4-6:ignored-file-overwrite', 0, tag: 'Important'),
-                 answer_row('lib/d.rb:4-6:ignored-file-overwrite', 0)])
+    post_ledger([finding_row('0.1', 'lib/d.rb:4-6:ignored-file-overwrite', 0, tag: 'Important'),
+                 answer_row('0.1', 'lib/d.rb:4-6:ignored-file-overwrite', 0)])
     assert_response :success
-    assert_equal 'fixed, unchecked', ledger['findings'].find { |f| f['key'] == 'lib/d.rb:4-6:ignored-file-overwrite@0' }['status']
+    assert_equal 'fixed, unchecked', ledger['findings'].find { |f| f['key'] == '0.1' }['status']
   end
 
   test 'an answer is confirmed by the sender' do
-    post_ledger([answer_row(OPEN, 1)])
+    post_ledger([answer_row(OPEN, OPEN_AT, 1)])
     assert_response :success
     assert_equal User.find_by(login: 'jsmith'), ReviewFinding.find_by(file: 'lib/sync.rb', line_start: 12, source: 'outcomes').confirmed_by
   end
 
   test "an answer takes the raising row's tag, summary and body, and its own weighting" do
-    post_ledger([answer_row(OPEN, 1, 'doesnt-matter', severity: 'nothing', visibility: 'seen', justification: 'Never run')])
+    post_ledger([answer_row(OPEN, OPEN_AT, 1, 'doesnt-matter', severity: 'nothing', visibility: 'seen', justification: 'Never run')])
     assert_response :success
     answer = ReviewFinding.find_by(file: 'lib/sync.rb', line_start: 12, source: 'outcomes')
     assert_equal ['Important', 'The copy overwrites an ignored file without a word', nil, 'nothing', 'seen'],
                  [answer.tag, answer.summary, answer.body, answer.severity, answer.visibility]
-    post_ledger([answer_row(OPEN, 1, 'doesnt-matter', severity: 'nothing', visibility: 'seen', justification: 'Never run')])
+    post_ledger([answer_row(OPEN, OPEN_AT, 1, 'doesnt-matter', severity: 'nothing', visibility: 'seen', justification: 'Never run')])
     assert_equal({ 'created' => 0, 'skipped' => 1 }, json)
   end
 
   test "an answer's tag, summary and body are dropped, with a log line" do
     log = StringIO.new
     logger, ReviewFinding.logger = ReviewFinding.logger, Logger.new(log)
-    post_ledger([answer_row(OPEN, 1, tag: 'Nit', summary: 'Nothing is lost', body: 'It is fine')])
+    post_ledger([answer_row(OPEN, OPEN_AT, 1, tag: 'Nit', summary: 'Nothing is lost', body: 'It is fine',
+                            fingerprint: 'a' * 64)])
     assert_response :success
     answer = ReviewFinding.find_by(file: 'lib/sync.rb', line_start: 12, source: 'outcomes')
-    assert_equal ['Important', 'The copy overwrites an ignored file without a word', nil],
-                 [answer.tag, answer.summary, answer.body]
-    assert_match "#{OPEN}: dropped an answer's tag, summary, body", log.string
+    assert_equal ['Important', 'The copy overwrites an ignored file without a word', nil, nil],
+                 [answer.tag, answer.summary, answer.body, answer.fingerprint]
+    assert_match "#{OPEN}: dropped an answer's tag, summary, body, fingerprint", log.string
+  ensure
+    ReviewFinding.logger = logger
+  end
+
+  test 'a later row takes the rule of the row that raised its finding, and drops another with a log line' do
+    log = StringIO.new
+    logger, ReviewFinding.logger = ReviewFinding.logger, Logger.new(log)
+    post_ledger([finding_row(UNCHECKED, 'lib/sync.rb:62-63:other-rule', 3, outcome: 'fixed')], round: round_row(3))
+    assert_response :success
+    check = ReviewFinding.find_by(issue_id: 1, raised_round: 2, ordinal: 1, round: 3)
+    assert_equal ['ignored-file-overwrite', 62], [check.rule_id, check.line_start]
+    assert_match "#{UNCHECKED}: dropped rule other-rule; it takes ignored-file-overwrite", log.string
   ensure
     ReviewFinding.logger = logger
   end
 
   test 'an unknown field, a bad value, or a row that is not an object is refused' do
-    post_ledger([finding_row('lib/c.rb:1:crash', 2, fingerprint: 'x')])
-    assert_match(/can't send fingerprint/, json['errors'].first)
-    post_ledger([finding_row('lib/c.rb:1:crash', 2, severity: 'data')])
+    post_ledger([finding_row('2.9', 'lib/c.rb:1:crash', 2, key: '2.9')])
+    assert_match(/can't send key/, json['errors'].first)
+    post_ledger([finding_row('2.9', 'lib/c.rb:1:crash', 2, fingerprint: 'x')])
+    assert_match(/Fingerprint/, json['errors'].first)
+    post_ledger([finding_row('2.9', 'lib/c.rb:1:crash', 2, severity: 'data')])
     assert_match(/Severity/, json['errors'].first)
     post_ledger(['row'])
     assert_equal ['row 1: is not an object'], json['errors']
@@ -209,7 +226,7 @@ class ReviewFindingsApiTest < Redmine::ApiTest::Base
 
   test 'a POST without manage_review_findings gets 403' do
     assert_no_difference 'ReviewFinding.count' do
-      post_ledger([finding_row('lib/c.rb:1:crash', 2)], user: 'dlopper')
+      post_ledger([finding_row('2.9', 'lib/c.rb:1:crash', 2)], user: 'dlopper')
     end
     assert_response :forbidden
   end
@@ -217,7 +234,7 @@ class ReviewFindingsApiTest < Redmine::ApiTest::Base
   # Another window's send commits the same round first; this one hits a unique index, rolls back
   # and runs again, skipping the rows (§3.3).
   test 'two sends of one round leave one set of rows' do
-    rows = [finding_row('lib/e.rb:1:crash', 3), finding_row('lib/e.rb:2:crash', 3)]
+    rows = [finding_row('3.1', 'lib/e.rb:1:crash', 3), finding_row('3.2', 'lib/e.rb:2:crash', 3)]
     other_window = Module.new do
       define_method(:record) do |issue, sent, user, **round|
         unless @raced
@@ -244,13 +261,13 @@ class ReviewFindingsApiTest < Redmine::ApiTest::Base
   test 'a send that fails twice answers 500 and saves nothing' do
     ReviewFinding.stubs(:record).raises(ActiveRecord::StatementTimeout, 'database is locked')
     assert_no_difference 'ReviewFinding.count' do
-      post_ledger([finding_row('lib/c.rb:1:crash', 2)])
+      post_ledger([finding_row('2.9', 'lib/c.rb:1:crash', 2)])
     end
     assert_response :internal_server_error
   end
 
   test 'rules.json counts real and noise per rule, each key once by its latest answer' do
-    post_ledger([answer_row(UNCHECKED, 3, 'wrong', justification: 'Never renamed')], round: round_row(3))
+    post_ledger([answer_row(UNCHECKED, UNCHECKED_AT, 3, 'wrong', justification: 'Never renamed')], round: round_row(3))
     get '/projects/1/review_findings/rules.json', headers: signed_in('dlopper')
     assert_response :success
     assert_equal [{ 'rule_id' => 'forced-update', 'real' => 1, 'noise' => 0 },
@@ -311,16 +328,17 @@ class ReviewFindingsApiTest < Redmine::ApiTest::Base
     assert_equal before, rule_ids
   end
 
-  test 'a rename onto a key another row has renames none' do
-    post_ledger([finding_row('lib/sync.rb:12-14:copy-overwrite', 1)])
+  test 'a rename keeps every key, and a row sent again from before it is skipped' do
+    rows = [finding_row('3.1', 'lib/f.rb:2:ignored-file-overwrite', 3)]
+    post_ledger(rows, round: round_row(3))
     assert_response :success
-    before = rule_ids
-    assert_no_difference 'Journal.count' do
-      rename_rule('copy-overwrite')
-    end
-    assert_response :unprocessable_content
-    assert_match(/is already a finding of issue #1/, json['errors'].first)
-    assert_equal before, rule_ids
+    keys = ledger['findings'].map { |f| f['key'] }
+    rename_rule('file-overwrite')
+    assert_response :success
+    assert_equal keys, ledger['findings'].map { |f| f['key'] }
+    post_ledger(rows, round: round_row(3))
+    assert_response :success
+    assert_equal({ 'created' => 0, 'skipped' => 1, 'round' => 'skipped' }, json)
   end
 
   test 'a rename without manage_review_findings gets 403' do

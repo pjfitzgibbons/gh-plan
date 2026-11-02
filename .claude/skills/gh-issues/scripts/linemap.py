@@ -6,8 +6,11 @@ ancestor of the later one, `git blame -M` does it, so a block moved within the f
 lines. After a rebase it isn't, and blame would take the merge base as its boundary, with that
 commit's line numbers; a tree diff, `git diff -M -U0`, maps it instead, following renames and
 shifts but not moves, so a moved block reads as changed. Both follow a renamed file.
+
+`fingerprint` hashes a finding's lines at a commit, for a match when `where` can't map them.
 """
 
+import hashlib
 import re
 import subprocess
 from dataclasses import dataclass
@@ -229,3 +232,17 @@ def where(root: Path, file: str, start: int, end: int, since: str, commit: str) 
         moved = {old: shifted(old, found) for old in range(start, end + 1)}
         around = shifted_nearest(start, end, found)
     return Lines(now, moved, gap(*around))
+
+
+def fingerprint(root: Path, commit: str, file: str, start: int, end: int) -> str | None:
+    """A SHA-256, in hex, of the lines start to end of file at commit, with each run of whitespace
+    made one space, so reindenting a block keeps it; None when the file or the lines aren't there."""
+    try:
+        text = git(root, "show", f"{commit}:{file}")
+    except subprocess.CalledProcessError:
+        return None
+    lines = text.removesuffix("\n").split("\n")
+    if end > len(lines):
+        return None
+    flat = " ".join("\n".join(lines[start - 1 : end]).split())
+    return hashlib.sha256(flat.encode()).hexdigest()
