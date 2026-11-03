@@ -4362,6 +4362,25 @@ class ReviewRounds(unittest.TestCase):
         other = row(2, line_start=1, line_end=1)
         self.assertEqual(self.sift([other], ledger, c3)[0], [other])
 
+    def test_a_raise_on_the_same_code_elsewhere_isnt_a_finding_whose_lines_are_still_there(self):
+        subprocess.run(["git", "checkout", "-q", "-b", "side", self.c1], **self.run_in)
+        (self.repo / "other.sh").write_text("push; branch -D\n")
+        subprocess.run(["git", "add", "other.sh"], **self.run_in)
+        subprocess.run(["git", "commit", "-q", "-m", "Copy"], **self.run_in)
+        c3 = review.git("rev-parse", "HEAD", cwd=self.repo).strip()
+        store = FakeLedger()
+        mark = linemap.fingerprint(self.repo, self.c1, "sync.sh", 4, 4)
+        store.send(
+            "POST",
+            "/issues/9/review_findings.json",
+            a_round(commit=self.c1, rows=[row(fingerprint=mark)]),
+        )
+        ledger = store.send("GET", "/issues/9/review_findings.json")
+        raised = review.located(row(2, file="other.sh", line_start=1, line_end=1), self.repo, c3)
+        self.assertEqual(raised["fingerprint"], mark)
+        # 1.1's line is still at sync.sh:4, so the copy in other.sh is a finding of its own.
+        self.assertEqual(self.sift([raised], ledger, c3)[0], [raised])
+
     def test_a_finding_is_mapped_from_where_its_latest_review_row_put_it(self):
         c3 = self.commit("# sync\nstep 1\nstep 2\nstep 3\npush && branch -D\n", "Header")
         c4 = self.commit("# one\n# sync\nstep 1\nstep 2\nstep 3\npush && branch -D\n", "More")

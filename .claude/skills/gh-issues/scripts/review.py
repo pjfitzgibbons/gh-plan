@@ -978,17 +978,23 @@ def latest_raised_first(known: list[dict]) -> list[dict]:
 
 def earlier_finding(row: dict, known: list[dict], ledger: dict, place) -> tuple[dict, bool] | None:
     """The earlier finding of the raise's rule that the raise is on, and whether its code is the
-    same: by its lines at this commit, or, when none overlaps, by its fingerprint. The latest
-    raised of several, as one that superseded another is."""
+    same: by its lines at this commit, or, when none overlaps, by the fingerprint of one whose
+    lines can't be mapped. The latest raised of several, as one that superseded another is."""
     ours = [f for f in latest_raised_first(known) if f["latest"]["rule_id"] == row["rule_id"]]
     for f in ours:
         lines = place(f)
         if lines and overlaps(lines, row):
             return f, lines.unchanged() or same_fingerprint(row, latest_review(ledger, f))
     for f in ours:
-        if same_fingerprint(row, latest_review(ledger, f)):
+        if unmapped(place(f)) and same_fingerprint(row, latest_review(ledger, f)):
             return f, True
     return None
+
+
+def unmapped(lines: linemap.Lines | None) -> bool:
+    """Whether none of a finding's lines could be followed to this commit, so its code may have
+    moved; a finding whose lines are still there is where they are."""
+    return lines is None or lines.extent() is None
 
 
 def same_fingerprint(row: dict, earlier: dict) -> bool:
@@ -1051,7 +1057,7 @@ def superseded_rows(
     its lines at the round's commit."""
     rows = []
     for f, r in replaced.values():
-        # combined merged r into a raise that spans it, so one always overlaps it.
+        # r is a numbered raise itself, or combined merged it into one that overlaps it.
         by = next(n for n in raises if same_lines(n, r))
         row = superseding(f, by, k, place(f), latest_review(ledger, f))
         rows.append(located(row, *at))

@@ -221,7 +221,7 @@ lines still match it, so a file edited on one side only stops `send`, naming the
 line has the outcome line's shape (§3.4), with the summary after the dash:
 
 ```
-vscode/done.js:214-219:ignored-file-overwrite · New · silent/files — The fast-forward overwrites an ignored file in the main checkout without a word
+6.3 ignored-file-overwrite, vscode/done.js:214-219 · New · silent/files — The fast-forward overwrites an ignored file in the main checkout without a word
 ```
 
 Every round reviews a commit Ship has pushed, so the round's commit is on GitHub, and
