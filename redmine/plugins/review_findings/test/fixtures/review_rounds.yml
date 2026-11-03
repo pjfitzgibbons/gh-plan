@@ -1,0 +1,27 @@
+# Invented rounds on Redmine's fixture issues 1 and 2 (project 1).
+issue_1_round_1:
+  issue_id: 1
+  round: 1
+  commit: "1111111111111111111111111111111111111111"
+  ci: success
+  repo: example/app
+  pr_number: 7
+  controls: "[]"
+  new_rules: "[]"
+issue_1_round_2:
+  issue_id: 1
+  round: 2
+  commit: "2222222222222222222222222222222222222222"
+  ci: failure
+  ci_summary: "assess: 1 failed"
+  repo: example/app
+  pr_number: 7
+  controls: "[]"
+  new_rules: "[]"
+issue_2_round_1:
+  issue_id: 2
+  round: 1
+  commit: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  ci: success
+  controls: "[]"
+  new_rules: "[]"

@@ -28,8 +28,9 @@ subprojects; --create makes one there with sharing: tree.
 
 A rule renamed in REVIEW.md keeps its old id on the findings already recorded, so the review_findings
 plugin's counts split it in two (design 0005 §3.10). `rule OLD NEW` renames it on every finding in
---project and its subprojects, in one transaction, and the plugin adds a journal note to the issue of
-each confirmed one. A finding on an issue the key can't manage findings in refuses the whole rename.
+--project and its subprojects, in one transaction, and the plugin adds a journal note to each issue
+it touches. A finding on an issue the key can't manage findings in, or one whose new key another
+finding of its issue already has, refuses the whole rename.
 
 The API key comes from the Keychain item redmine-gh-plan (REDMINE_KEYCHAIN picks another), and
 goes only in a request header. REDMINE_URL defaults to http://127.0.0.1:3010.
@@ -278,7 +279,7 @@ def set_rule(redmine, old: str, new: str, a) -> str:
     n, confirmed = found["findings"], found["confirmed"]
     if not n:
         return f"no findings you can see have rule {old}; nothing written"
-    print(f"  rule_id: {old} → {new} on {count(n, 'finding')}, {confirmed} of them confirmed")
+    print(f"  rule_id: {old} → {new} on {count(n, 'finding')}, {confirmed} of them answered")
     if a.check:
         return f"rule {old}: {count(n, 'finding')} to rename; nothing written"
     said = redmine.send("PUT", path, {"new_rule_id": new})
@@ -289,7 +290,7 @@ def set_rule(redmine, old: str, new: str, a) -> str:
             "check them in Redmine"
         )
     return (
-        f"rule {old} renamed to {new} on {count(said['renamed'], 'finding')}, with "
+        f"rule {old} renamed to {new} on {count(said['renamed'], 'row')}, with "
         f"{count(said['noted'], 'journal note')}"
     )
 

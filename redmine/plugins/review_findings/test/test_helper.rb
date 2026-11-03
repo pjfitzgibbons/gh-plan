@@ -13,8 +13,26 @@ module ReviewFindingsTestHelper
     Role.find(2).add_permission!(:view_review_findings)
   end
 
-  def finding_row(fingerprint, round = 1, **fields)
-    { 'fingerprint' => fingerprint, 'round' => round, 'tag' => 'Important', 'severity' => 'files',
-      'visibility' => 'silent', 'summary' => 'A copy loses a file' }.merge(fields.stringify_keys)
+  # A row raising finding `k.n`, or with `source` and `outcome`, checking or answering it. `place`
+  # is `file:lines:rule`, where the finding is at `round`.
+  def finding_row(key, place, round, **fields)
+    raised, ordinal = key.split('.').map { |part| Integer(part) }
+    file, lines, rule = place.split(':')
+    first, last = lines.split('-').map(&:to_i)
+    { 'round' => round, 'source' => 'review', 'file' => file, 'line_start' => first,
+      'line_end' => last || first, 'rule_id' => rule, 'raised_round' => raised, 'ordinal' => ordinal,
+      'outcome' => 'new', 'tag' => 'Important',
+      'severity' => 'files', 'visibility' => 'silent', 'summary' => 'A copy loses a file' }
+      .merge(fields.stringify_keys)
+  end
+
+  def answer_row(key, place, round, outcome = 'fixed', **fields)
+    finding_row(key, place, round, source: 'outcomes', outcome: outcome).except('tag', 'summary')
+                                                                       .merge(fields.stringify_keys)
+  end
+
+  def round_row(round, **fields)
+    { 'round' => round, 'commit' => round.to_s(16) * 40, 'ci' => 'success', 'repo' => 'example/app',
+      'pr_number' => 7 }.merge(fields.stringify_keys)
   end
 end

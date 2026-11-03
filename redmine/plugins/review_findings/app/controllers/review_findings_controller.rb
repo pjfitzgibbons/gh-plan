@@ -1,24 +1,24 @@
 # The review findings API (design 0005, §3.1), JSON only, and the project's Findings tab (§5, L5).
 class ReviewFindingsController < ApplicationController
   menu_item :review_findings
-  before_action :find_issue, only: %i[index update]
+  before_action :find_issue, only: %i[index create]
   before_action :find_project_by_project_id, only: %i[tab rules rule rename]
   before_action :authorize
-  accept_api_auth :index, :update, :rules, :rule, :rename
+  accept_api_auth :index, :create, :rules, :rule, :rename
 
   def index
-    findings = ReviewFinding.where(issue_id: @issue.id).order(:round, :id)
-    render json: { 'review_findings' => findings.as_json }
+    render json: ReviewFinding.ledger(@issue)
   end
 
-  # Two sends of one round meet at the unique index, or wait on SQLite's write lock: the loser
-  # rolls back and runs once more, finding the rows the winner saved (§3.10). A second failure is
+  # Two sends of one round meet at the unique indexes, or wait on SQLite's write lock: the loser
+  # rolls back and runs once more, skipping the rows the winner added (§3.3). A second failure is
   # a 500, and the sender keeps its file to send again.
-  def update
-    rows = params.to_unsafe_h['review_findings']
+  def create
+    body = params.to_unsafe_h
+    rows = body.fetch('review_findings', [])
     attempts = 0
     begin
-      counts = ReviewFinding.record(@issue, rows, User.current)
+      counts = ReviewFinding.record(@issue, rows, User.current, round: body['review_round'])
     rescue ActiveRecord::RecordNotUnique, ActiveRecord::StatementTimeout
       attempts += 1
       retry if attempts < 2
@@ -29,9 +29,9 @@ class ReviewFindingsController < ApplicationController
     render json: { 'errors' => e.messages }, status: :unprocessable_content
   end
 
-  # The findings of the issues the user may see findings in, or of the one `issue_id` names, each
-  # open silent finding first. An issue outside those is a 404. @latest is each fingerprint's latest
-  # round, so a row a later round superseded says so.
+  # One line per finding of the issues the user may see findings in, or of the one `issue_id`
+  # names, from each key's latest row, each open finding to fix first. An issue outside those is a
+  # 404.
   def tab
     ids = issue_ids(:view_review_findings)
     if params[:issue_id].present?
@@ -40,11 +40,11 @@ class ReviewFindingsController < ApplicationController
 
       ids = [@issue.id]
     end
-    rows = ReviewFinding.where(issue_id: ids)
-    @open = rows.open_silent.pluck(:id).to_set
-    @findings = rows.includes(issue: %i[project status priority]).order(:issue_id, :round, :id).to_a
-                    .partition { |f| @open.include?(f.id) }.flatten
-    @latest = @findings.group_by { |f| [f.issue_id, f.fingerprint] }.transform_values { |fs| fs.map(&:round).max }
+    rows = ReviewFinding.where(issue_id: ids).includes(issue: %i[project status priority])
+    @findings = ReviewFinding.by_finding(rows).values
+                             .partition { |events| events.first.to_fix? && events.first.status == 'open' }
+    @open = @findings.first.size
+    @findings = @findings.flatten(1)
   end
 
   # Over the issues of the project and its sub-projects that the user may see findings in.
