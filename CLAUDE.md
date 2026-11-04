@@ -37,6 +37,9 @@ settings: what this repo needs is here or in `.claude/`.
 - **Python lint:** `uv run ruff check .` and `uv run ruff format --check .`; `uv run ruff format .`
   fixes the format. `uv run ty check` type-checks the code, the suites' `test_*.py` aside.
 - **The VS Code extension:** `npm test` and `npm run lint`, in `vscode/`, after `npm install`.
+- **An issue's tmux session:** `plan-session <n>` opens `plan-<n>` in the issue's worktree, with
+  Claude Code beside Neovim and a shell; [`tmux/README.md`](tmux/README.md) installs it and lists
+  the keys.
 - **Review findings:** weigh severity, visibility and frequency. Fix silent failures that lose
   work, files, commits or the tracker's state, and hard crashes, even rare ones. A rare warning or
   a clean error-stop can stay.

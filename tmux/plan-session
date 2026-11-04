@@ -1,0 +1,167 @@
+#!/usr/bin/env python3
+"""plan-session N: go to issue N's tmux session, `plan-N`, making it first if it isn't running.
+
+The session runs in the issue's worktree, the one `git worktree list` shows on a branch
+`<type>/<N>-<slug>`, with one window, `plan`, of three panes: `claude` in the left half, `nvim`
+at the top of the right half, and a shell, tmux's default, below it. Inside tmux it switches the client to the session; outside, it attaches to it. A session that
+already runs is only switched to, so a second call never starts a second Claude.
+
+It reads git and drives tmux, nothing else: it makes no worktree and no branch (Start in the
+extension's Next up panel does), and an issue with no worktree, or with two, is refused before
+anything is made. Run it from inside any checkout of the repo.
+"""
+
+import os
+import re
+import subprocess
+import sys
+import time
+from pathlib import Path
+
+USAGE = "usage: plan-session N, where N is the Redmine issue whose worktree to open"
+ISSUE_OPTION = "@plan_issue"  # plan.tmux's keys read the session's issue number from it
+
+
+class Refused(Exception):
+    """A reason to stop before anything is made; the message is shown as it is."""
+
+
+def main(argv: list[str]) -> int:
+    try:
+        issue = issue_number(argv)
+        worktree = only_worktree(issue, issue_worktrees(issue, worktree_list()))
+        session = f"plan-{issue}"
+        if not session_running(session):
+            make_session(session, issue, worktree)
+        enter(session)
+    except Refused as reason:
+        print(f"plan-session: {reason}", file=sys.stderr)
+        return 1
+    return 0
+
+
+def issue_number(argv: list[str]) -> int:
+    if len(argv) != 1 or not re.fullmatch(r"[0-9]+", argv[0]):
+        print(USAGE, file=sys.stderr)
+        raise SystemExit(2)
+    return int(argv[0])
+
+
+def worktree_list() -> str:
+    """`git worktree list --porcelain` for the checkout plan-session runs in."""
+    return run(["git", "worktree", "list", "--porcelain"]).stdout
+
+
+def issue_worktrees(issue: int, porcelain: str) -> list[Path]:
+    """The worktrees whose branch is issue `issue`'s, `<type>/<issue>-<slug>`."""
+    branch = re.compile(rf"refs/heads/(feat|fix|chore)/{issue}-[^/]+")
+    return [path for path, ref in checked_out_branches(porcelain) if branch.fullmatch(ref)]
+
+
+def checked_out_branches(porcelain: str) -> list[tuple[Path, str]]:
+    """(worktree, branch ref) for each worktree on a branch; a detached one has no branch line."""
+    found = []
+    for block in porcelain.split("\n\n"):
+        fields = dict(line.split(" ", 1) for line in block.splitlines() if " " in line)
+        if "worktree" in fields and "branch" in fields:
+            found.append((Path(fields["worktree"]), fields["branch"]))
+    return found
+
+
+def only_worktree(issue: int, worktrees: list[Path]) -> Path:
+    if not worktrees:
+        raise Refused(f"#{issue} has no worktree; press Start on it in Next up to make one")
+    if len(worktrees) > 1:
+        both = ", ".join(str(path) for path in worktrees)
+        raise Refused(f"#{issue} has {len(worktrees)} worktrees, {both}; remove all but one")
+    return worktrees[0]
+
+
+def session_running(session: str) -> bool:
+    """Whether tmux has the session; no tmux server running means it hasn't."""
+    return tmux(["has-session", "-t", f"={session}"], check=False).returncode == 0
+
+
+def make_session(session: str, issue: int, worktree: Path) -> None:
+    """The session in the worktree, its panes laid out as `session_commands` says. The panes get
+    this process's PATH, so they find the `nvim` and `claude` the caller would."""
+    made = tmux(session_commands(session, issue, worktree), check=False)
+    if made.returncode == 0:
+        return
+    if made.stderr.startswith("duplicate session"):  # another plan-session is making it
+        wait_until_complete(session)
+        return
+    # tmux stops at the first command that fails, and new-session succeeded, so the half-made
+    # session is this call's. It would only be switched to next time; remove it so a rerun remakes it.
+    tmux(["kill-session", "-t", f"={session}"], check=False)
+    raise Refused(f"tmux couldn't make session {session}: {made.stderr.strip()}")
+
+
+def wait_until_complete(session: str, seconds: float = 5.0) -> None:
+    """Wait for another plan-session to finish making the session; it is never removed here."""
+    deadline = time.monotonic() + seconds
+    while not session_complete(session):
+        if time.monotonic() > deadline:
+            raise Refused(f"session {session} is still half-made by another plan-session")
+        time.sleep(0.1)
+
+
+def session_commands(session: str, issue: int, worktree: Path) -> list[str]:
+    """One tmux call that makes the whole session, so no other client sees it half-made.
+
+    ┌──────────┬──────────┐
+    │          │ nvim     │
+    │ claude   ├──────────┤
+    │          │ shell    │
+    └──────────┴──────────┘
+
+    Each split acts on the window's active pane, the one the last split made, so no pane index is
+    named, and a person's `pane-base-index` doesn't matter. Claude's pane is left active. The
+    issue option comes last: a session that has it is whole (`session_complete`)."""
+    window = f"={session}:"
+    start = ["-c", str(worktree), "-e", f"PATH={os.environ.get('PATH', '')}"]
+    return [
+        *["new-session", "-d", "-s", session, *start, "-n", "plan", "claude", ";"],
+        *["split-window", "-h", "-t", window, *start, "nvim", ";"],
+        *["split-window", "-v", "-t", window, *start, ";"],
+        *["select-pane", "-L", "-t", window, ";"],
+        *["set-option", "-t", window, ISSUE_OPTION, str(issue)],
+    ]
+
+
+def session_complete(session: str) -> bool:
+    """Whether the session runs with its issue set, which `session_commands` does last."""
+    shown = tmux(
+        ["display-message", "-p", "-t", f"={session}:", f"#{{{ISSUE_OPTION}}}"], check=False
+    )
+    return shown.returncode == 0 and shown.stdout.strip() != ""
+
+
+def enter(session: str) -> None:
+    """Switch to the session inside tmux; attach to it, replacing this process, outside."""
+    if os.environ.get("TMUX"):
+        tmux(["switch-client", "-t", f"={session}"])
+        return
+    try:
+        os.execvp("tmux", ["tmux", "attach-session", "-t", f"={session}"])
+    except OSError as error:
+        raise Refused(f"couldn't run tmux: {error}") from error
+
+
+def tmux(args: list[str], check: bool = True) -> subprocess.CompletedProcess[str]:
+    return run(["tmux", *args], check=check)
+
+
+def run(cmd: list[str], check: bool = True) -> subprocess.CompletedProcess[str]:
+    """Run a command and capture its output; with check, a failure is refused with its stderr."""
+    try:
+        done = subprocess.run(cmd, capture_output=True, text=True, stdin=subprocess.DEVNULL)
+    except OSError as error:
+        raise Refused(f"couldn't run {cmd[0]}: {error}") from error
+    if check and done.returncode != 0:
+        raise Refused(f"{' '.join(cmd[:3])} failed: {done.stderr.strip()}")
+    return done
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))
