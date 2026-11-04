@@ -11,6 +11,7 @@ import importlib.util
 import os
 import shutil
 import subprocess
+import sys
 import tempfile
 import threading
 import time
@@ -226,7 +227,9 @@ def test_first_call_inside_tmux_switches_the_client_to_the_new_session(plan):
     plan.attach("tmux", "attach-session", "-t", "=outer")
     eventually(lambda: plan.client_sessions() == ["outer"])
 
-    plan.tmux("send-keys", "-t", "=outer:", f"{SCRIPT} 7", "Enter")
+    # The pane's login shell runs macOS's path_helper, which puts /usr/bin, and its Python 3.9,
+    # first; the README asks for 3.10 or newer, so the script runs under the suite's own Python.
+    plan.tmux("send-keys", "-t", "=outer:", f"{sys.executable} {SCRIPT} 7", "Enter")
 
     eventually(lambda: plan.client_sessions() == ["plan-7"])
     assert plan.windows("plan-7") == ["plan"]
@@ -267,6 +270,38 @@ def test_an_issue_with_two_worktrees_is_refused_naming_both_and_nothing_is_made(
     assert str(first) in done.stderr
     assert str(second) in done.stderr
     assert plan.tmux("list-sessions").returncode != 0
+
+
+def test_a_listed_worktree_whose_folder_is_gone_is_refused_naming_prune_and_nothing_is_made(plan):
+    shutil.rmtree(plan.worktree("feat/7-thing"))
+
+    done = plan.plan_session("7")
+
+    assert done.returncode == 1
+    assert "git worktree prune" in done.stderr
+    assert plan.tmux("list-sessions").returncode != 0
+
+
+def test_a_running_session_is_gone_to_while_a_rebase_has_detached_its_worktree(plan):
+    worktree = plan.worktree("feat/7-thing")
+    plan.attach(str(SCRIPT), "7")
+    eventually(lambda: plan.client_sessions() == ["plan-7"])
+    plan.git("checkout", "-q", "--detach", cwd=worktree)
+
+    plan.attach(str(SCRIPT), "7")
+
+    eventually(lambda: plan.client_sessions() == ["plan-7", "plan-7"])
+
+
+def test_only_claudes_pane_lets_escapes_through_tmux(plan):
+    plan.worktree("feat/7-thing")
+    plan.attach(str(SCRIPT), "7")
+    eventually(lambda: plan.client_sessions() == ["plan-7"])
+
+    fields = "#{pane_start_command}=#{allow-passthrough}"
+    listed = plan.tmux("list-panes", "-t", "=plan-7:", "-F", fields).stdout.split()
+
+    assert sorted(listed) == ["=off", "claude=on", "nvim=off"]
 
 
 def test_a_missing_or_non_numeric_issue_is_a_usage_error(plan):
@@ -326,23 +361,65 @@ def test_prefix_i_and_g_outside_a_plan_session_keep_tmux_own_actions(plan):
     assert plan.log("gh") == ""
 
 
-def test_checked_out_branches_skips_detached_and_bare_worktrees():
-    porcelain = (
-        "worktree /repo\nbare\n\n"
-        "worktree /wt/a\nHEAD abc\nbranch refs/heads/feat/7-a\n\n"
-        "worktree /wt/b\nHEAD def\ndetached\n"
+def porcelain_z(*blocks: str) -> str:
+    """`git worktree list --porcelain -z` output from blocks written one line per `\\n`."""
+    return "".join(block.replace("\n", "\0") + "\0\0" for block in blocks)
+
+
+def test_listed_worktrees_reads_each_branch_and_marks_the_main_checkout():
+    porcelain = porcelain_z(
+        "worktree /repo\nbare",
+        "worktree /wt/a\nHEAD abc\nbranch refs/heads/feat/7-a",
+        "worktree /wt/b\nHEAD def\ndetached",
     )
 
-    assert plan_session.checked_out_branches(porcelain) == [(Path("/wt/a"), "refs/heads/feat/7-a")]
+    assert plan_session.listed_worktrees(porcelain) == [
+        plan_session.Worktree(Path("/repo"), None, main=True),
+        plan_session.Worktree(Path("/wt/a"), "feat/7-a", main=False),
+        plan_session.Worktree(Path("/wt/b"), None, main=False),
+    ]
 
 
-def test_issue_worktrees_matches_only_the_issue_branch_shape():
-    porcelain = "\n\n".join(
-        f"worktree /wt/{n}\nbranch refs/heads/{branch}"
-        for n, branch in enumerate(["feat/7-a", "feat/70-b", "spike/7-c", "fix/7", "chore/7-d"])
+def test_issue_worktrees_matches_the_branches_start_makes():
+    branches = [
+        "main",
+        "feat/7-a",
+        "feat/70-b",
+        "spike/7-c",
+        "fix/7",
+        "chore/7-d",
+        "7-e",
+        "feat/7-",
+    ]
+    porcelain = porcelain_z(
+        *(f"worktree /wt/{n}\nbranch refs/heads/{branch}" for n, branch in enumerate(branches))
     )
 
-    assert plan_session.issue_worktrees(7, porcelain) == [Path("/wt/0"), Path("/wt/4")]
+    found = plan_session.issue_worktrees(7, porcelain)
+
+    assert found == [Path("/wt/1"), Path("/wt/5"), Path("/wt/6"), Path("/wt/7")]
+
+
+def test_issue_worktrees_finds_a_detached_worktree_in_starts_folder():
+    porcelain = porcelain_z(
+        "worktree /r/repo\nbranch refs/heads/main",
+        "worktree /r/repo.worktrees/8\nHEAD abc\ndetached",
+        "worktree /r/repo.worktrees/7\nHEAD def\ndetached",
+    )
+
+    assert plan_session.issue_worktrees(7, porcelain) == [Path("/r/repo.worktrees/7")]
+
+
+def test_a_worktree_whose_path_has_a_line_break_is_refused_and_nothing_is_made(plan):
+    worktree = plan.root / "two\nlines" / "7"  # a line break splits plain porcelain; -z keeps it
+    plan.git("worktree", "add", "-q", "-b", "feat/7-thing", str(worktree))
+
+    done = plan.plan_session("7")
+
+    assert done.returncode == 1
+    assert "line break" in done.stderr
+    assert repr(str(worktree)) in done.stderr
+    assert plan.tmux("list-sessions").returncode != 0
 
 
 def use_plan_environment(plan, monkeypatch):

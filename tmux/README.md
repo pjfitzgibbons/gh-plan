@@ -16,7 +16,7 @@ echo "source-file '$PWD/tmux/plan.tmux'" >> ~/.tmux.conf
 tmux source-file ~/.tmux.conf   # when a tmux server is already running
 ```
 
-They need tmux 3.2 or newer, `python3` 3.10 or newer, and `nvim`, `claude` and `gh` on PATH.
+They need tmux 3.3 or newer, `python3` 3.10 or newer, and `nvim`, `claude` and `gh` on PATH.
 `plan.tmux` sets only the options below; anything else in `~/.tmux.conf` stays as it is.
 
 ## plan-session
@@ -34,21 +34,26 @@ outside it attaches to it. The first call makes the session in the worktree, wit
 └──────────┴──────────┘
 ```
 
-Claude's pane is the active one. The shell is tmux's default, the `SHELL` the tmux server started
+Claude's pane is the active one, and the only one that lets escape sequences through tmux
+(`allow-passthrough`), for Claude Code's `/copy`. The shell is tmux's default, the `SHELL` the tmux server started
 with, zsh on macOS.
 
-A later call only goes to the session, so a second Claude never starts. `plan-session` reads git
-and drives tmux, and makes no worktree or branch: an issue with no worktree is refused, naming
-Start, and one with two worktrees is refused, naming both. Either exits 1 having made nothing.
+A later call only goes to the session, before looking for the worktree, so a second Claude never
+starts. The worktree is found as Start finds it: on a branch `<n>-<slug>`, with or without its type,
+or in Start's folder, `<main checkout>.worktrees/<n>`, even when a rebase has detached it.
+`plan-session` reads git and drives tmux, and makes no worktree or branch: an issue with no worktree
+is refused, naming Start; one whose worktree git lists but whose folder is gone is refused, naming
+`git worktree prune`; one whose worktree path has a line break is refused; and one with two
+worktrees is refused, naming both. Each exits 1 having made nothing.
 
 ## Keys
 
 `prefix` is tmux's prefix key, `C-b` unless `~/.tmux.conf` changes it.
 
-tmux owns the panes: the terminal around it, Ghostty or another, shows one pane, and its own
-splits stay unused. Splits made in both nest one set of panes inside the other, and neither's keys
-then reach the pane they name. tmux's own split keys (`prefix %`, `prefix "`, `prefix` and an
-arrow) work in a `plan-<n>` session as in any other.
+tmux owns the panes. Keep the terminal around it, Ghostty or another, to one pane, and split with
+tmux: `prefix %` splits a pane left and right, `prefix "` top and bottom, and `prefix` with an arrow
+moves to the next pane. A Ghostty split sits outside tmux, beside the whole session: Ghostty's split
+keys move between Ghostty's splits, never between tmux's panes.
 
 | Key | Where | Does |
 |---|---|---|
@@ -65,10 +70,12 @@ Vim. In any session but a `plan-<n>` one, `prefix i` and `prefix g` keep tmux's 
 a `plan-<n>` session gives up. `REDMINE_URL` is read from the tmux server's environment, the one
 it started with.
 
-`plan.tmux` also sets `set-clipboard on` and `allow-passthrough on`, so a program's own copy,
-such as Claude Code's `/copy`, reaches the clipboard through tmux. That needs a terminal that
-takes OSC 52, the escape that sets the clipboard, such as iTerm2 with *Applications in terminal
-may access clipboard* on; `y` in copy mode works in any terminal.
+`plan.tmux` also sets `set-clipboard on`, so a program's own copy, such as Claude Code's `/copy`,
+reaches the clipboard through tmux. That needs a terminal that takes OSC 52, the escape that sets
+the clipboard, such as iTerm2 with *Applications in terminal may access clipboard* on; `y` in copy
+mode works in any terminal. `set-clipboard` is on for every pane, so anything printed in any pane, a
+file `cat`ed or a test's output, can replace the clipboard without showing on screen; check what
+a paste holds before it runs.
 
 ## Plugins that help
 

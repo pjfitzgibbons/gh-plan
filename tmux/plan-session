@@ -1,14 +1,16 @@
 #!/usr/bin/env python3
 """plan-session N: go to issue N's tmux session, `plan-N`, making it first if it isn't running.
 
-The session runs in the issue's worktree, the one `git worktree list` shows on a branch
-`<type>/<N>-<slug>`, with one window, `plan`, of three panes: `claude` in the left half, `nvim`
-at the top of the right half, and a shell, tmux's default, below it. Inside tmux it switches the client to the session; outside, it attaches to it. A session that
-already runs is only switched to, so a second call never starts a second Claude.
+The session runs in the issue's worktree, found as Start finds it: the one `git worktree list`
+shows on a branch `<N>-<slug>`, with or without a `feat/`, `fix/` or `chore/` prefix, or at
+Start's folder, `<main checkout>.worktrees/<N>`, whatever its HEAD. It has one window, `plan`, of three panes: `claude` in the left half, `nvim`
+at the top of the right half, and a shell, tmux's default, below it. Inside tmux it switches
+the client to the session; outside, it attaches to it. A session that already runs is only gone
+to, before any worktree is looked for, so a second call never starts a second Claude.
 
 It reads git and drives tmux, nothing else: it makes no worktree and no branch (Start in the
-extension's Next up panel does), and an issue with no worktree, or with two, is refused before
-anything is made. Run it from inside any checkout of the repo.
+extension's Next up panel does), and an issue with no worktree, with one git lists but whose
+folder is gone, whose path has a line break, or with two, is refused before anything is made. Run it from inside any checkout of the repo.
 """
 
 import os
@@ -17,9 +19,11 @@ import subprocess
 import sys
 import time
 from pathlib import Path
+from typing import NamedTuple
 
 USAGE = "usage: plan-session N, where N is the Redmine issue whose worktree to open"
 ISSUE_OPTION = "@plan_issue"  # plan.tmux's keys read the session's issue number from it
+BRANCH_TYPES = ("feat", "fix", "chore")  # Start's prefixes, vscode/start.js's PREFIX
 
 
 class Refused(Exception):
@@ -29,9 +33,9 @@ class Refused(Exception):
 def main(argv: list[str]) -> int:
     try:
         issue = issue_number(argv)
-        worktree = only_worktree(issue, issue_worktrees(issue, worktree_list()))
         session = f"plan-{issue}"
         if not session_running(session):
+            worktree = only_worktree(issue, issue_worktrees(issue, worktree_list()))
             make_session(session, issue, worktree)
         enter(session)
     except Refused as reason:
@@ -48,33 +52,75 @@ def issue_number(argv: list[str]) -> int:
 
 
 def worktree_list() -> str:
-    """`git worktree list --porcelain` for the checkout plan-session runs in."""
-    return run(["git", "worktree", "list", "--porcelain"]).stdout
+    """`git worktree list --porcelain -z` for the checkout plan-session runs in: NUL ends each
+    line, so a path is given as it is, never quoted as `core.quotePath` quotes a non-ASCII one."""
+    return run(["git", "worktree", "list", "--porcelain", "-z"]).stdout
+
+
+class Worktree(NamedTuple):
+    path: Path
+    branch: str | None  # the branch's name; None when detached, as in a rebase or bisect
+    main: bool  # the main checkout, which git lists first
 
 
 def issue_worktrees(issue: int, porcelain: str) -> list[Path]:
-    """The worktrees whose branch is issue `issue`'s, `<type>/<issue>-<slug>`."""
-    branch = re.compile(rf"refs/heads/(feat|fix|chore)/{issue}-[^/]+")
-    return [path for path, ref in checked_out_branches(porcelain) if branch.fullmatch(ref)]
+    """The worktrees on issue `issue`'s branch, and the one at Start's folder for it, as Start's
+    `existingWorktree` finds them."""
+    listed = listed_worktrees(porcelain)
+    folder = start_folder(listed, issue)
+    return [
+        tree.path
+        for tree in listed
+        if on_issue_branch(tree, issue) or (not tree.main and tree.path == folder)
+    ]
 
 
-def checked_out_branches(porcelain: str) -> list[tuple[Path, str]]:
-    """(worktree, branch ref) for each worktree on a branch; a detached one has no branch line."""
+def listed_worktrees(porcelain: str) -> list[Worktree]:
+    """Each worktree `git worktree list --porcelain -z` lists, the main checkout first. Each line
+    ends in NUL, and an empty line, so two NULs, ends each worktree's block."""
     found = []
-    for block in porcelain.split("\n\n"):
-        fields = dict(line.split(" ", 1) for line in block.splitlines() if " " in line)
-        if "worktree" in fields and "branch" in fields:
-            found.append((Path(fields["worktree"]), fields["branch"]))
+    for block in porcelain.strip("\0").split("\0\0"):
+        fields = dict(line.split(" ", 1) for line in block.split("\0") if " " in line)
+        if "worktree" in fields:
+            branch = fields.get("branch", "").removeprefix("refs/heads/") or None
+            found.append(Worktree(Path(fields["worktree"]), branch, main=not found))
     return found
+
+
+def on_issue_branch(tree: Worktree, issue: int) -> bool:
+    """Whether the worktree's branch is `<issue>-<slug>`, with or without a type prefix."""
+    prefixes = "|".join(BRANCH_TYPES)
+    return bool(tree.branch and re.match(rf"(?:(?:{prefixes})/)?{issue}-", tree.branch))
+
+
+def start_folder(listed: list[Worktree], issue: int) -> Path | None:
+    """Where Start puts issue `issue`'s worktree: `<main checkout>.worktrees/<issue>`."""
+    if not listed:
+        return None
+    main = listed[0].path
+    return main.parent / f"{main.name}.worktrees" / str(issue)
 
 
 def only_worktree(issue: int, worktrees: list[Path]) -> Path:
     if not worktrees:
-        raise Refused(f"#{issue} has no worktree; press Start on it in Next up to make one")
+        raise Refused(
+            f"#{issue} has no worktree on a branch for it or in Start's folder; "
+            "press Start on it in Next up to make one"
+        )
     if len(worktrees) > 1:
         both = ", ".join(str(path) for path in worktrees)
         raise Refused(f"#{issue} has {len(worktrees)} worktrees, {both}; remove all but one")
-    return worktrees[0]
+    worktree = worktrees[0]
+    if "\n" in str(worktree):
+        raise Refused(
+            f"#{issue}'s worktree path has a line break, {worktree!r}; move it to one without"
+        )
+    if not worktree.is_dir():
+        raise Refused(
+            f"git still lists {worktree} as #{issue}'s worktree, but it's gone; "
+            "run git worktree prune, then press Start on it in Next up"
+        )
+    return worktree
 
 
 def session_running(session: str) -> bool:
@@ -116,12 +162,15 @@ def session_commands(session: str, issue: int, worktree: Path) -> list[str]:
     └──────────┴──────────┘
 
     Each split acts on the window's active pane, the one the last split made, so no pane index is
-    named, and a person's `pane-base-index` doesn't matter. Claude's pane is left active. The
-    issue option comes last: a session that has it is whole (`session_complete`)."""
+    named, and a person's `pane-base-index` doesn't matter. Claude's pane is left active, and is
+    the only one that lets escapes through tmux (`allow-passthrough`), for Claude Code's `/copy`;
+    the other panes, and every other session, keep tmux's default, off. The issue option comes
+    last: a session that has it is whole (`session_complete`)."""
     window = f"={session}:"
     start = ["-c", str(worktree), "-e", f"PATH={os.environ.get('PATH', '')}"]
     return [
         *["new-session", "-d", "-s", session, *start, "-n", "plan", "claude", ";"],
+        *["set-option", "-p", "-t", window, "allow-passthrough", "on", ";"],
         *["split-window", "-h", "-t", window, *start, "nvim", ";"],
         *["split-window", "-v", "-t", window, *start, ";"],
         *["select-pane", "-L", "-t", window, ";"],

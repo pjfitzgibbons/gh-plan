@@ -9,10 +9,10 @@ bind-key -T copy-mode-vi v send-keys -X begin-selection
 bind-key -T copy-mode-vi V send-keys -X select-line
 bind-key -T copy-mode-vi y send-keys -X copy-pipe-and-cancel pbcopy
 
-# A program's own copy, such as Claude Code's /copy, writes the clipboard with an OSC 52 escape:
-# set-clipboard passes it out to the terminal, and allow-passthrough lets escapes through tmux.
+# A program's own copy, such as Claude Code's /copy, writes the clipboard with an OSC 52 escape,
+# and set-clipboard passes it out to the terminal: any pane's output can then set the clipboard.
+# plan-session lets escapes through tmux (allow-passthrough) in Claude's pane alone.
 set-option -g set-clipboard on
-set-option -g allow-passthrough on
 
 # prefix i: the session's issue in Redmine. prefix g: its pull request, from its worktree.
 # plan-session sets @plan_issue on the session. In any other session both keep tmux's own action:
