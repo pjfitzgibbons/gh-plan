@@ -34,7 +34,9 @@ def main(argv: list[str]) -> int:
     try:
         issue = issue_number(argv)
         session = f"plan-{issue}"
-        if not session_running(session):
+        if session_running(session):
+            refuse_if_worktree_gone(session)
+        else:
             worktree = only_worktree(issue, issue_worktrees(issue, worktree_list()))
             make_session(session, issue, worktree)
         enter(session)
@@ -64,15 +66,28 @@ class Worktree(NamedTuple):
 
 
 def issue_worktrees(issue: int, porcelain: str) -> list[Path]:
-    """The worktrees on issue `issue`'s branch, and the one at Start's folder for it, as Start's
-    `existingWorktree` finds them."""
+    """The worktrees on issue `issue`'s branch, and Start's folder for it while detached, as
+    Start's `existingWorktree` finds them. Start's folder on another branch is refused, as Start
+    refuses it, so another issue's code never opens under this issue's session."""
     listed = listed_worktrees(porcelain)
     folder = start_folder(listed, issue)
-    return [
-        tree.path
-        for tree in listed
-        if on_issue_branch(tree, issue) or (not tree.main and tree.path == folder)
-    ]
+    found = []
+    for tree in listed:
+        if on_issue_branch(tree, issue):
+            found.append(tree.path)
+        elif in_start_folder(tree, folder) and tree.branch:
+            raise Refused(
+                f"{tree.path} is checked out on {tree.branch}, not a branch for #{issue}; "
+                "switch it back, then run plan-session again"
+            )
+        elif in_start_folder(tree, folder):
+            found.append(tree.path)
+    return found
+
+
+def in_start_folder(tree: Worktree, folder: Path | None) -> bool:
+    """Whether the worktree is the one Start made for the issue: its folder, not the main checkout."""
+    return not tree.main and tree.path == folder
 
 
 def listed_worktrees(porcelain: str) -> list[Worktree]:
@@ -115,12 +130,33 @@ def only_worktree(issue: int, worktrees: list[Path]) -> Path:
         raise Refused(
             f"#{issue}'s worktree path has a line break, {worktree!r}; move it to one without"
         )
-    if not worktree.is_dir():
+    if not folder_exists(worktree):
         raise Refused(
             f"git still lists {worktree} as #{issue}'s worktree, but it's gone; "
             "run git worktree prune, then press Start on it in Next up"
         )
     return worktree
+
+
+def folder_exists(path: Path) -> bool:
+    """Whether the folder is there; one that can't be looked at, under a parent it can't search,
+    is refused with the reason."""
+    try:
+        return path.is_dir()
+    except OSError as error:
+        raise Refused(f"couldn't look at {path}: {error.strerror or error}") from error
+
+
+def refuse_if_worktree_gone(session: str) -> None:
+    """A running session whose folder is gone, as Done leaves one when it removes the worktree, is
+    refused: going to it would land in panes on a folder that no longer exists."""
+    shown = tmux(["display-message", "-p", "-t", f"={session}:", "#{session_path}"])
+    folder = Path(shown.stdout.rstrip("\n"))
+    if not folder_exists(folder):
+        raise Refused(
+            f"session {session} runs in {folder}, which is gone; "
+            f"end it with tmux kill-session -t {session}, then run plan-session again"
+        )
 
 
 def session_running(session: str) -> bool:

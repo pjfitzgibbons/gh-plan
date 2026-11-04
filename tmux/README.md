@@ -16,7 +16,7 @@ echo "source-file '$PWD/tmux/plan.tmux'" >> ~/.tmux.conf
 tmux source-file ~/.tmux.conf   # when a tmux server is already running
 ```
 
-They need tmux 3.3 or newer, `python3` 3.10 or newer, and `nvim`, `claude` and `gh` on PATH.
+They need tmux 3.8 or newer, `python3` 3.10 or newer, and `nvim`, `claude` and `gh` on PATH.
 `plan.tmux` sets only the options below; anything else in `~/.tmux.conf` stays as it is.
 
 ## plan-session
@@ -39,12 +39,14 @@ Claude's pane is the active one, and the only one that lets escape sequences thr
 with, zsh on macOS.
 
 A later call only goes to the session, before looking for the worktree, so a second Claude never
-starts. The worktree is found as Start finds it: on a branch `<n>-<slug>`, with or without its type,
-or in Start's folder, `<main checkout>.worktrees/<n>`, even when a rebase has detached it.
-`plan-session` reads git and drives tmux, and makes no worktree or branch: an issue with no worktree
-is refused, naming Start; one whose worktree git lists but whose folder is gone is refused, naming
-`git worktree prune`; one whose worktree path has a line break is refused; and one with two
-worktrees is refused, naming both. Each exits 1 having made nothing.
+starts; a session whose folder is gone, as Done leaves one, is refused, naming `tmux kill-session`.
+The worktree is found as Start finds it: on a branch `<n>-<slug>`, with or without its type, or in
+Start's folder, `<main checkout>.worktrees/<n>`, while a rebase has detached it. Start's folder on
+another issue's branch is refused, naming the branch, as Start refuses it. `plan-session` reads git
+and drives tmux, and makes no worktree or branch: an issue with no worktree is refused, naming
+Start; one whose worktree git lists but whose folder is gone is refused, naming `git worktree
+prune`; one whose worktree path has a line break is refused; and one with two worktrees is refused,
+naming both. Each exits 1 having made nothing.
 
 ## Keys
 
@@ -66,7 +68,7 @@ keys move between Ghostty's splits, never between tmux's panes.
 
 Copy mode takes vi keys (`mode-keys vi`), so `h`, `j`, `k`, `l`, `w`, `/` and the rest move as in
 Vim. In any session but a `plan-<n>` one, `prefix i` and `prefix g` keep tmux's own actions:
-`prefix i` shows the window's details, and `prefix g`, from tmux 3.8, moves a floating pane, which
+`prefix i` shows the window's details, and `prefix g` moves a floating pane, which
 a `plan-<n>` session gives up. `REDMINE_URL` is read from the tmux server's environment, the one
 it started with.
 

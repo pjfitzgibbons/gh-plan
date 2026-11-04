@@ -361,6 +361,40 @@ def test_prefix_i_and_g_outside_a_plan_session_keep_tmux_own_actions(plan):
     assert plan.log("gh") == ""
 
 
+def test_a_running_session_whose_worktree_is_gone_is_refused_naming_kill_session(plan):
+    worktree = plan.worktree("feat/7-thing")
+    plan.attach(str(SCRIPT), "7")
+    eventually(lambda: plan.client_sessions() == ["plan-7"])
+    plan.git("worktree", "remove", "--force", str(worktree))
+
+    done = plan.plan_session("7")
+
+    assert done.returncode == 1
+    assert "tmux kill-session -t plan-7" in done.stderr
+    assert plan.client_sessions() == ["plan-7"]  # only the first client; nothing else went in
+
+
+def test_a_worktree_that_cant_be_looked_at_is_refused_with_the_reason(plan, monkeypatch):
+    def unsearchable(path):
+        raise PermissionError(13, "Permission denied", str(path))
+
+    monkeypatch.setattr(Path, "is_dir", unsearchable)
+
+    with pytest.raises(plan_session.Refused, match="couldn't look at /wt/7: Permission denied"):
+        plan_session.only_worktree(7, [Path("/wt/7")])
+
+
+def test_starts_folder_on_another_issues_branch_is_refused_naming_the_branch(plan):
+    folder = plan.repo.parent / "repo.worktrees" / "7"
+    plan.git("worktree", "add", "-q", "-b", "feat/8-other", str(folder))
+
+    done = plan.plan_session("7")
+
+    assert done.returncode == 1
+    assert f"{folder} is checked out on feat/8-other, not a branch for #7" in done.stderr
+    assert plan.tmux("list-sessions").returncode != 0
+
+
 def porcelain_z(*blocks: str) -> str:
     """`git worktree list --porcelain -z` output from blocks written one line per `\\n`."""
     return "".join(block.replace("\n", "\0") + "\0\0" for block in blocks)

@@ -54,8 +54,16 @@ jobs:
       - run: gem install --user-install --no-document sqlite3 -v 2.9.6
 
       # tests/test_plan_session.py runs tmux/plan-session on a tmux server of its own, and skips
-      # without tmux; installing it here keeps CI from skipping it.
-      - run: sudo apt-get update -q && sudo apt-get install -y -q --no-install-recommends tmux
+      # without tmux; installing it here keeps CI from skipping it. plan.tmux needs tmux 3.8, newer
+      # than Ubuntu's, so the 3.8 release is built from its tarball, checked against its SHA-256.
+      - run: |
+          sudo apt-get update -q
+          sudo apt-get install -y -q --no-install-recommends libevent-dev libncurses-dev bison pkg-config
+          curl -fsSL -o /tmp/tmux.tar.gz https://github.com/tmux/tmux/releases/download/3.8/tmux-3.8.tar.gz
+          echo "e79c699c7e949dccd0a4a125e17b8d1261e311b16979dbc8eb34542f3966d82e  /tmp/tmux.tar.gz" | sha256sum -c -
+          tar -xzf /tmp/tmux.tar.gz -C /tmp
+          cd /tmp/tmux-3.8 && ./configure -q && make -s -j"$(nproc)" && sudo make -s install
+          tmux -V
 
       # -v prints every check's output, not only a failure's. pytest takes its CI options from
       # PYTEST_ADDOPTS: -v names every test in the log; the annotate-failures plugin pins each
