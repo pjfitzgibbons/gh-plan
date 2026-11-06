@@ -21,6 +21,11 @@
 - [8. Work breakdown](#work-breakdown)
 - [9. Open questions](#open-questions)
 
+Status: partly replaced by [ADR 0014](../adr/0014-terminal-client.md). The terminal is the client,
+so the frames ([§3.1](#frame) to [§3.5](#pr-panel)) stop here, window switching ([§3.6](#switching))
+gives way to #141's `plan switch`, and the sidebar Worktrees view ([§3.8](#worktrees-view)) to
+#167's `plan worktrees`. Session state ([§3.7](#status)) is kept.
+
 <a id="context"></a>
 ## 1. Context and scope
 
