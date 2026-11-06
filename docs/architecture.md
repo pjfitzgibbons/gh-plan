@@ -180,7 +180,7 @@ too. When the review ends it runs `findings.py send` to record the round.
 | Database | SQLite, in a named volume | [ADR 0011](adr/0011-redmine-is-the-tracker.md) |
 | Theme | Opale, pinned by URL | [`redmine/README.md`](../redmine/README.md) |
 | Plugin and setup | Ruby, on Redmine's plugin API and `rails runner` | [ADR 0011](adr/0011-redmine-is-the-tracker.md) |
-| Editor integration | A VS Code extension in JavaScript, tested with `node --test` | [`vscode/README.md`](../vscode/README.md) |
+| Editor integration | A VS Code extension in JavaScript, tested with `node --test`, until the terminal client (tmux with `plan-session`, `pending` and `plan`'s views) and one Flask report server per machine take over, on `plan`'s Python core | [ADR 0014](adr/0014-terminal-client.md), [`vscode/README.md`](../vscode/README.md) |
 | Pull requests | Subprocess to `gh` | Requirement [`G3`](requirements.md) |
 | Keys | The macOS Keychain | Requirement [`G3`](requirements.md) |
 | Checks | `scripts/assess`, run by each review round as its CI, and by GitHub Actions on every PR and push to `main` | [`checks/README.md`](../checks/README.md) |
