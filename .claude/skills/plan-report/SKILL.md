@@ -1,17 +1,19 @@
 ---
 name: plan-report
-description: Stand-ins for gh-plan's `plan report` commands until they ship, for any repo tt tracks. "plan report status" shows what closed on the last few active days, work in progress and the next tasks. "plan report time" compares estimates against tracked time (tt / Timewarrior) and calls out timeslices to correct. Use when Peter asks for either, for a status or standup summary, estimate accuracy, hours per point, or whether time tracking is right.
+description: Stand-ins for gh-plan's `plan report` commands until they ship, for any repo tt tracks. "plan report status" shows what closed on the last few active days, work in progress and the next tasks. "plan report milestones" shows each milestone's progress in Redmine as an HTML page, with the next and last-closed issues. "plan report time" compares estimates against tracked time (tt / Timewarrior) and calls out timeslices to correct. Use when a person asks for any of them, for milestone progress, a status or standup summary, estimate accuracy, hours per point, or whether time tracking is right.
 ---
 
 # plan report
 
-Both scripts read GitHub, git and `timew export`, and write nothing. Run them from inside the repo. Issues are Redmine's now ([ADR 0011](../../../docs/adr/0011-redmine-is-the-tracker.md)), so until the scripts read Redmine they report only on the GitHub issues closed before it.
+These are a person's commands, linked into `~/.local/bin`. Give them the command to run; don't run it yourself.
+
+`status.py` and `time_report.py` read GitHub, git and `timew export`, and write nothing; `milestones.py` reads Redmine. Run them from inside the repo. Issues are Redmine's now ([ADR 0011](../../../docs/adr/0011-redmine-is-the-tracker.md)), so until the scripts read Redmine they report only on the GitHub issues closed before it.
 
 ## plan report status
 
 ```
-python3 ~/.claude/skills/plan-report/scripts/status.py                  # last 3 active days, next 5
-python3 ~/.claude/skills/plan-report/scripts/status.py --days 5 --next 8 --json
+report-status                  # last 3 active days, next 5
+report-status --days 5 --next 8 --json
 ```
 
 - **Done:** the last N *active days*, oldest first. An active day has tracked time for the repo or an issue closed, so weekends and gaps are skipped, not shown empty. Each day lists its closed issues with points and tracked hours. Issues closed as not planned are left out.
@@ -21,14 +23,29 @@ python3 ~/.claude/skills/plan-report/scripts/status.py --days 5 --next 8 --json
 
 Show the output as is, then add only what the data can't say.
 
+## plan report milestones
+
+Progress per milestone (Redmine version), read from Redmine. Writes only the HTML page; serve it with `report-server` (below).
+
+```
+report-milestones              # .tmp/milestones/progress.html
+report-milestones --all --next 8 --closed 8 --out <file.html>
+```
+
+- Each open milestone shows a bar, closed / total issues, the percentage, and points closed / total. Every issue counts, closed and rejected ones too; a rejected issue's points leave the points total.
+- The report opens with two plain lists, each issue keyed by its milestone: the first 5 of the Next up query in plan order, each with the open issues that block it (in yellow), and the last 5 closed.
+- Each milestone then lists all its issues as `#<n>(<points>)`, coloured by status, those ten included and not called out: open ones in plan order, then closed ones in the order they closed. A closed milestone holding one of the ten is shown.
+- **Serve it with `report-server`**, not the local-page skill, so the page's **Regenerate** button works: `report-server --open` from the repo (`--stop` stops it). The button posts to the server's `/regen`, which reruns this script in the repo and answers once the new page is written; the page then reloads. `/regen` takes only a POST from the server's own page.
+- **Plan order** is the script's, not Redmine's: milestone (version order, no milestone last), In Progress first, Ordinal, priority (highest first), issue number; and an issue never comes before an open issue that blocks it, even one in a later milestone.
+
 ## plan report time
 
 Stands in for gh-plan's `plan report time` (design 0002 §8, issue #65) until that ships. Works in any repo that tt tracks: intervals tagged `owner/repo#N` and `repo:owner/repo`, with N taken from the branch name.
 
 ```
-python3 ~/.claude/skills/plan-report/scripts/time_report.py                       # closed today, local time
-python3 ~/.claude/skills/plan-report/scripts/time_report.py --since 2026-10-01 --until 2026-10-12
-python3 ~/.claude/skills/plan-report/scripts/time_report.py --hours-per-point 1.0 --json
+report-time                       # closed today, local time
+report-time --since 2026-10-01 --until 2026-10-12
+report-time --hours-per-point 1.0 --json
 ```
 
 It reads GitHub and `timew export` and writes nothing. Exit 1 means it found timeslices to check.

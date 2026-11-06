@@ -11,10 +11,10 @@ HTML pages for Peter stay on this machine. The Artifact tool's publish is refuse
 1. **Write the page** with Write, as one self-contained `.html` file. Put it in the place the work
    names; if no place fits, use the repo's `.tmp/` (ignored, and removed by Done), as
    `.tmp/<issue or topic>/<name>.html`. Never write it to the scratchpad, which Peter can't find.
-2. **Serve it:**
+2. **Give a person the command that serves it,** linked into `~/.local/bin`, to run:
 
    ```sh
-   python3 ~/.claude/skills/local-page/scripts/serve_page.py <file.html> --open
+   serve-page <file.html> --open
    ```
 
    It serves the file's directory with `python3 -m http.server`, bound to 127.0.0.1 on a free
@@ -24,6 +24,6 @@ HTML pages for Peter stay on this machine. The Artifact tool's publish is refuse
 3. **Tell Peter** the file's path and the URL. The link opens in the VS Code window that was
    focused last, which may not be this worktree's (gh-plan #92); say so if more than one window
    is open.
-4. **Stop it** when the page is finished with: `serve_page.py <file.html> --stop`.
+4. **Stop it** when the page is finished with: `serve-page <file.html> --stop`.
 
 Pages load nothing from the network unless the page needs it; inline the CSS and scripts.
