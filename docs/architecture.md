@@ -118,6 +118,13 @@ field.
 <a id="components"></a>
 ## 6. Components
 
+[ADR 0014](adr/0014-terminal-client.md) proposes this structure. `plan` and the report server share
+one Python core. `plan` and `pr` write, and the report server only reads. Until #185, #186 and #187
+build the core, the extension and `pr` do its work, as §6.1 and §6.2 describe. The image is
+[`diagrams/structure.svg`](diagrams/structure.svg).
+
+![plan and the read-only report server share one Python core, whose adapters reach worktrees, Claude Code, the findings store, Redmine or Jira, and GitHub](diagrams/structure.svg)
+
 <a id="front-ends"></a>
 ### 6.1 Redmine and its clients
 
@@ -180,7 +187,7 @@ too. When the review ends it runs `findings.py send` to record the round.
 | Database | SQLite, in a named volume | [ADR 0011](adr/0011-redmine-is-the-tracker.md) |
 | Theme | Opale, pinned by URL | [`redmine/README.md`](../redmine/README.md) |
 | Plugin and setup | Ruby, on Redmine's plugin API and `rails runner` | [ADR 0011](adr/0011-redmine-is-the-tracker.md) |
-| Editor integration | A VS Code extension in JavaScript, tested with `node --test` | [`vscode/README.md`](../vscode/README.md) |
+| Editor integration | A VS Code extension in JavaScript, tested with `node --test`, until the terminal client (tmux with `plan-session`, `pending` and `plan`'s views) and one Flask report server per machine take over, on `plan`'s Python core | [ADR 0014](adr/0014-terminal-client.md), [`vscode/README.md`](../vscode/README.md) |
 | Pull requests | Subprocess to `gh` | Requirement [`G3`](requirements.md) |
 | Keys | The macOS Keychain | Requirement [`G3`](requirements.md) |
 | Checks | `scripts/assess`, run by each review round as its CI, and by GitHub Actions on every PR and push to `main` | [`checks/README.md`](../checks/README.md) |
@@ -365,14 +372,14 @@ The Findings tab is at `/projects/<identifier>/review_findings`
 <a id="invariants"></a>
 ## 10. Invariants
 
-1. Redmine is the tracker. Its database holds every issue, with its status and history, outside
-   the repos it plans, and nothing tracker-related is committed in them
+1. Each machine has one tracker. It holds every issue, with its status and history, outside the
+   repos it plans, and nothing tracker-related is committed in them
    ([ADR 0011](adr/0011-redmine-is-the-tracker.md)).
 2. The default branch carries the code, and every change reaches it through a pull request whose
-   `assess` check passed and whose review threads are resolved. An issue's status lives in Redmine:
-   the extension's Start and Done set it, and a `fixes #<n>` commit closes the issue when Redmine
-   fetches it (§7.4). A Done tick is a verification record, not status: it is recorded in the PR's
-   body, and status in Redmine.
+   `assess` check passed and whose review threads are resolved. An issue's status lives in the
+   tracker. A person's action sets it, apart from the tracker's own close on a `fixes` keyword
+   (§7.4). A Done tick is a verification record, not status: it is recorded in the PR's body, and
+   status in the tracker.
 3. Retired with the tool's `plan:` commits ([ADR 0011](adr/0011-redmine-is-the-tracker.md)), so the
    invariants after it keep their numbers.
 4. An issue's start date is written once: Start sets it only when the issue has none (§7.1).
@@ -391,7 +398,7 @@ The Findings tab is at `/projects/<identifier>/review_findings`
     [`C3`](requirements.md)).
 11. Retired while tracked time is paused ([ADR 0006](adr/0006-tracked-time.md)), so the invariants
     keep their numbers.
-12. An issue's review is a ledger. The review findings plugin only adds rows: a round, a finding
+12. An issue's review is a ledger. Its store only adds rows: a round, a finding
     raised, an answer and a check of a fix are each a row, and none is changed or deleted, except
     that a rule rename relabels the rows it names. A finding's status is never stored; the read
     API works it out from the finding's latest row

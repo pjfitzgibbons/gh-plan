@@ -111,7 +111,7 @@ settings: what this repo needs is here or in `.claude/`.
 - **Invariants** ([architecture §10](docs/architecture.md#invariants)); these two break most
   easily:
   - **2.** The default branch carries the code, and everything reaches it by PR. Status lives in
-    Redmine.
+    the tracker.
   - **6.** Only the named modules, and Ship's `pr` task, spawn a process or open a connection; every
     Redmine call goes through `vscode/redmine.js`.
 
