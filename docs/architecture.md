@@ -118,6 +118,13 @@ field.
 <a id="components"></a>
 ## 6. Components
 
+[ADR 0014](adr/0014-terminal-client.md) proposes this structure. `plan` and the report server share
+one Python core, and only `plan` writes. Today the extension and `pr` do that work, as §6.1 and §6.2
+describe, until #185, #186 and #187 build the core. The image is
+[`diagrams/structure.svg`](diagrams/structure.svg).
+
+![plan and the read-only report server share one Python core, whose adapters reach worktrees, Claude Code, the findings store, Redmine or Jira, and GitHub](diagrams/structure.svg)
+
 <a id="front-ends"></a>
 ### 6.1 Redmine and its clients
 

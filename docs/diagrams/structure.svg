@@ -1,0 +1,154 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 710" width="1000" height="710" role="img" aria-labelledby="title desc">
+  <title id="title">GH Plan's structure under ADR 0014</title>
+  <desc id="desc">A person runs plan in a terminal and reads pages from plan serve in a browser, copying command lines from one to the other. plan reads and writes; plan serve only reads. Both call one Python core, whose policy owns the ports. Adapters reach git worktrees, Claude Code, the review findings store, Redmine or Jira, and GitHub. Jira and GitHub are off the Mac, and the work machine's findings store is still to choose.</desc>
+  <style>
+    .bg { fill: #ffffff; }
+    .boundary { fill: none; stroke: #5b6472; stroke-width: 1.5; stroke-dasharray: 9 5; }
+    .box { fill: #f3f5f8; stroke: #5b6472; stroke-width: 1.2; }
+    .core { fill: #e8f0fb; stroke: #2f6fb3; stroke-width: 1.5; }
+    .policy { fill: #d3e3f8; stroke: #2f6fb3; stroke-width: 1.2; }
+    .adapter { fill: #ffffff; stroke: #2f6fb3; stroke-width: 1.2; }
+    .store { fill: #fff3e0; stroke: #a86a12; stroke-width: 1.2; }
+    .t, .h, .s, .m, .mb { fill: #1c2430; font-family: -apple-system, "Segoe UI", Helvetica, Arial, sans-serif; font-size: 13px; }
+    .h { font-weight: 600; font-size: 14px; }
+    .s { fill: #465061; font-size: 12px; }
+    .m, .mb { font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 12px; }
+    .mb { font-weight: 700; font-size: 14px; }
+    .title { fill: #1c2430; font-family: -apple-system, "Segoe UI", Helvetica, Arial, sans-serif; font-size: 18px; font-weight: 600; }
+    .c { text-anchor: middle; }
+    .line { fill: none; stroke: #1c2430; stroke-width: 1.6; }
+    .read { stroke-dasharray: 6 4; }
+    .copy { stroke-dasharray: 1 5; stroke-linecap: round; stroke-width: 2.2; }
+    .head { fill: #1c2430; }
+    @media (prefers-color-scheme: dark) {
+      .bg { fill: #14181f; }
+      .boundary { stroke: #98a2b3; }
+      .box { fill: #222936; stroke: #98a2b3; }
+      .core { fill: #17263a; stroke: #6ea8e6; }
+      .policy { fill: #1f3857; stroke: #6ea8e6; }
+      .adapter { fill: #14181f; stroke: #6ea8e6; }
+      .store { fill: #33260f; stroke: #d9a24d; }
+      .t, .h, .m, .mb, .title { fill: #e8ecf2; }
+      .s { fill: #b4bdcb; }
+      .line { stroke: #e8ecf2; }
+      .head { fill: #e8ecf2; }
+    }
+  </style>
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerUnits="userSpaceOnUse" markerWidth="12" markerHeight="12" orient="auto-start-reverse">
+      <path class="head" d="M0,0 L10,5 L0,10 Z"/>
+    </marker>
+  </defs>
+
+  <rect class="bg" width="1000" height="710"/>
+  <text class="title" x="24" y="38">GH Plan's structure under ADR 0014 (proposed)</text>
+
+  <!-- The Mac: Jira and GitHub sit in the notch, outside it. -->
+  <path class="boundary" d="M20,62 H980 V518 H665 V642 H20 Z"/>
+  <text class="s" x="34" y="82">One Mac, with the keys in its Keychain</text>
+
+  <!-- People's tools -->
+  <rect class="box" x="60" y="94" width="380" height="58" rx="6"/>
+  <text class="h c" x="250" y="118">Terminal</text>
+  <text class="s c" x="250" y="138">Ghostty, tmux, plan-session. A person runs every write here.</text>
+  <rect class="box" x="600" y="94" width="340" height="58" rx="6"/>
+  <text class="h c" x="770" y="118">Browser</text>
+  <text class="s c" x="770" y="138">Report and review pages. No page holds a form.</text>
+  <path class="line copy" d="M598,123 H444" marker-end="url(#arrow)"/>
+  <text class="s c" x="520" y="102">a person copies</text>
+  <text class="s c" x="520" y="116">a plan or pr line</text>
+
+  <!-- The two processes -->
+  <path class="line" d="M250,152 V192" marker-end="url(#arrow)"/>
+  <text class="s" x="260" y="177">runs</text>
+  <path class="line read" d="M770,152 V192" marker-end="url(#arrow)"/>
+  <text class="s" x="780" y="177">GET only</text>
+  <rect class="box" x="60" y="194" width="380" height="72" rx="6"/>
+  <text class="mb c" x="250" y="216">plan</text>
+  <text class="s c" x="250" y="236">The flow's commands, with their checks and refusals</text>
+  <text class="m c" x="250" y="255">next status worktrees start open ship close</text>
+  <rect class="box" x="600" y="194" width="340" height="72" rx="6"/>
+  <text class="mb c" x="770" y="216">plan serve</text>
+  <text class="s c" x="770" y="236">Flask and Jinja, started by launchd at login</text>
+  <text class="s c" x="770" y="255">127.0.0.1, checks Host, no POST, writes nothing</text>
+
+  <!-- The core -->
+  <path class="line" d="M250,266 V304" marker-end="url(#arrow)"/>
+  <text class="s" x="260" y="291">reads and writes</text>
+  <path class="line read" d="M770,266 V304" marker-end="url(#arrow)"/>
+  <text class="s" x="780" y="291">reads only</text>
+  <rect class="core" x="40" y="306" width="920" height="184" rx="8"/>
+  <text class="h" x="56" y="328">The plan package: one Python core, 3.14 through uv</text>
+  <rect class="policy" x="56" y="338" width="888" height="44" rx="5"/>
+  <text class="t c" x="500" y="356"><tspan class="m">model.py</tspan>  and  <tspan class="m">usecases.py</tspan>: policy, which names no tool</text>
+  <text class="s c" x="500" y="373">Owns the ports, among them Tracker and ReviewFindings</text>
+
+  <!-- Adapters, each above what it reaches -->
+  <path class="line" d="M112,382 V408" marker-end="url(#arrow)"/>
+  <path class="line" d="M240,382 V408" marker-end="url(#arrow)"/>
+  <path class="line" d="M375,382 V408" marker-end="url(#arrow)"/>
+  <path class="line" d="M620,382 V408" marker-end="url(#arrow)"/>
+  <path class="line" d="M880,382 V408" marker-end="url(#arrow)"/>
+  <rect class="adapter" x="56" y="410" width="114" height="66" rx="5"/>
+  <text class="t c" x="113" y="438">Checkout and</text>
+  <text class="t c" x="113" y="455">round files</text>
+  <rect class="adapter" x="180" y="410" width="120" height="66" rx="5"/>
+  <text class="t c" x="240" y="438">Helper</text>
+  <text class="m c" x="240" y="455">helper_state</text>
+  <rect class="adapter" x="310" y="410" width="130" height="66" rx="5"/>
+  <text class="m c" x="375" y="447">ReviewFindings</text>
+  <rect class="adapter" x="450" y="410" width="340" height="66" rx="5"/>
+  <text class="m" x="462" y="428">Tracker</text>
+  <text class="s" x="522" y="428">chezmoi's machine value picks one</text>
+  <rect class="policy" x="460" y="436" width="160" height="32" rx="4"/>
+  <text class="t c" x="540" y="457">Redmine adapter</text>
+  <rect class="policy" x="630" y="436" width="150" height="32" rx="4"/>
+  <text class="t c" x="705" y="457">Jira adapter</text>
+  <rect class="adapter" x="800" y="410" width="144" height="66" rx="5"/>
+  <text class="t c" x="872" y="438">Forge</text>
+  <text class="m c" x="872" y="455">gh</text>
+
+  <!-- What the adapters reach -->
+  <path class="line" d="M113,476 V534" marker-end="url(#arrow)"/>
+  <path class="line" d="M240,476 V534" marker-end="url(#arrow)"/>
+  <path class="line" d="M375,476 V534" marker-end="url(#arrow)"/>
+  <path class="line" d="M540,476 V534" marker-end="url(#arrow)"/>
+  <path class="line" d="M740,476 V534" marker-end="url(#arrow)"/>
+  <path class="line" d="M880,476 V534" marker-end="url(#arrow)"/>
+
+  <rect class="store" x="40" y="536" width="130" height="92" rx="6"/>
+  <text class="h c" x="105" y="562">Worktrees</text>
+  <text class="s c" x="105" y="583">git, and each</text>
+  <text class="m c" x="105" y="601">.tmp/&lt;n&gt;/</text>
+  <rect class="store" x="180" y="536" width="120" height="92" rx="6"/>
+  <text class="h c" x="240" y="562">Claude Code</text>
+  <text class="s c" x="240" y="583">A helper, for</text>
+  <text class="s c" x="240" y="601">reviews and code</text>
+  <rect class="store" x="310" y="536" width="130" height="92" rx="6"/>
+  <text class="h c" x="375" y="562">Findings store</text>
+  <text class="s c" x="375" y="583">SQLite at home</text>
+  <text class="s c" x="375" y="601">Work's still to choose</text>
+  <rect class="store" x="450" y="536" width="200" height="92" rx="6"/>
+  <text class="h c" x="550" y="562">Redmine</text>
+  <text class="s c" x="550" y="583">Home Mac, Docker on localhost</text>
+  <text class="s c" x="550" y="601">Key from the Keychain</text>
+  <rect class="store" x="680" y="536" width="120" height="92" rx="6"/>
+  <text class="h c" x="740" y="562">Jira Cloud</text>
+  <text class="s c" x="740" y="583">Work Mac</text>
+  <text class="s c" x="740" y="601">CLI's web login</text>
+  <rect class="store" x="810" y="536" width="140" height="92" rx="6"/>
+  <text class="h c" x="880" y="562">GitHub</text>
+  <text class="s c" x="880" y="583">Pull requests</text>
+  <text class="s c" x="880" y="601">gh's own login</text>
+  <text class="s" x="680" y="648">Off the Mac</text>
+
+  <!-- Legend -->
+  <path class="line" d="M40,684 H84" marker-end="url(#arrow)"/>
+  <text class="s" x="92" y="688">reads and writes</text>
+  <path class="line read" d="M210,684 H254" marker-end="url(#arrow)"/>
+  <text class="s" x="262" y="688">reads only</text>
+  <path class="line copy" d="M346,684 H390" marker-end="url(#arrow)"/>
+  <text class="s" x="398" y="688">a person's copy and paste</text>
+  <rect class="store" x="562" y="676" width="22" height="15" rx="2"/>
+  <text class="s" x="592" y="688">holds state or runs outside the core</text>
+</svg>
