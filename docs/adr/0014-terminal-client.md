@@ -11,8 +11,8 @@
 <a id="status"></a>
 ## 1. Status
 
-Proposed. Changes [architecture §6.3](../architecture.md#platform) and, through #185, invariants 2
-and 6 in [architecture §10](../architecture.md#invariants). Replaces part of
+Proposed. Changes [architecture §6.3](../architecture.md#platform), invariants 1, 2 and 12 in
+[architecture §10](../architecture.md#invariants) and, through #185, invariant 6. Replaces part of
 [design 0007](../design/0007-vscode-frames.md). Once built, it also replaces what
 [design 0005](../design/0005-review-findings.md) says about keeping findings in Redmine, and what
 [ADR 0011](0011-redmine-is-the-tracker.md) says about bare issue numbers and Go. The report server
@@ -100,7 +100,8 @@ GitHub. Neither changes here.
 - **Go and Ship are one step.** The step that renders `.tmp/<n>/report.html` also stages the files,
   so `plan` has no `go` and `pr <n>` is the only step left. Staging goes through a manifest of files
   and directories, never `git add -A`: #189's hand-run `pr` put two tmux logs on `main`. Commands are
-  printed to copy, and commit and push stay in `pr`.
+  printed to copy, and commit and push stay in `pr`, which
+  `plan ship` runs.
 - **The terminal is the client the tool is built for:** Ghostty with tmux on both Macs, `plan-session`,
   `pending` (#178) and `plan`'s views, `plan switch` (#141) and `plan worktrees` (#167).
 - **The extension is off the code path.** It stays in the repo unchanged and unused, and retiring
@@ -167,17 +168,18 @@ GitHub. Neither changes here.
   as well as rendering them. It changes how Redmine behaves, so it is rechecked on each upgrade.
 - The Jira adapter is built on the work machine, from the `Tracker` port and the Redmine adapter.
 - `helper_state`'s mapping still needs one answer: what `claude agents --json` means by `blocked`.
-- Invariant 6 changes: the named modules become the Python core's. Invariant 2 changes in where
-  status lives and what sets it, the tracker and `plan`, and code still reaches the default branch
-  only by PR. Both rewordings are #185's.
-- #186 has no `plan go`, so its guardrail and L3 are rewritten, and `PR_STAGED` goes. #189's scope is
-  settled against this. Architecture §7.2 and its flow diagram, `docs/failure-modes.md`, ADR 0011
-  and ADR 0009 still describe Go and change with #192.
+- Invariant 6 changes: the named modules become the Python core's. That rewording is #185's, and
+  so is any finding on it. Invariants 1, 2 and 12 name the tracker and the findings store, and
+  architecture §6 names the tools that fill them, so they hold before and after #185.
+- #186 has no `plan go`, so its guardrail and L3 are rewritten, and `PR_STAGED` goes, with `pr` still
+  refusing a change made after staging. How it refuses is #192's. #189's scope is settled against
+  this. Architecture §7.2 and its flow diagram, `docs/failure-modes.md`, ADR 0011 and ADR 0009
+  still describe Go and change with #192.
 - Design 0007's frames, window switching (§3.6) and sidebar Worktrees view (§3.8) give way to the
   terminal forms in #141 and #167. Its session state (§3.7) stands, and those views read it.
 - Design 0006 needs changing on its own branch: its §3.2 builds `plan` in Node, where this ADR makes
   it Python. Its mod, if built, calls this core.
-- Architecture §6.3's *Editor integration* row names the terminal client, and invariant 2's "Status
-  lives in Redmine" becomes the tracker. §6.1 and §6.2 follow as #185 and #186 move the code.
+- Architecture §6.3's *Editor integration* row names the terminal client. §6.1 and §6.2 follow as
+  #185 and #186 move the code.
 - The ported logic's tests are written for the core under `uv run pytest`. The `node --test` suites
   stay with the extension.

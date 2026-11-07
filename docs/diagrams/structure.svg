@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 710" width="1000" height="710" role="img" aria-labelledby="title desc">
   <title id="title">GH Plan's structure under ADR 0014</title>
-  <desc id="desc">A person runs plan in a terminal and reads pages from plan serve in a browser, copying command lines from one to the other. plan reads and writes; plan serve only reads. Both call one Python core, whose policy owns the ports. Adapters reach git worktrees, Claude Code, the review findings store, Redmine or Jira, and GitHub. Jira and GitHub are off the Mac, and the work machine's findings store is still to choose.</desc>
+  <desc id="desc">A person runs plan and pr in a terminal and reads pages from plan serve in a browser, copying command lines from one to the other. plan reads and writes, pr, which plan ship runs, commits and pushes with git and gh, and plan serve only reads. plan and plan serve call one Python core, whose policy owns the ports. Adapters reach git worktrees, Claude Code, the review findings store, Redmine or Jira, and GitHub. Jira and GitHub are off the Mac, and the work machine's findings store is still to choose.</desc>
   <style>
     .bg { fill: #ffffff; }
     .boundary { fill: none; stroke: #5b6472; stroke-width: 1.5; stroke-dasharray: 9 5; }
@@ -59,22 +59,28 @@
   <text class="s c" x="520" y="116">a plan or pr line</text>
 
   <!-- The two processes -->
-  <path class="line" d="M250,152 V192" marker-end="url(#arrow)"/>
-  <text class="s" x="260" y="177">runs</text>
+  <path class="line" d="M225,152 V192" marker-end="url(#arrow)"/>
+  <text class="s" x="235" y="177">runs</text>
+  <path class="line" d="M425,152 V192" marker-end="url(#arrow)"/>
+  <text class="s" x="435" y="177">runs</text>
   <path class="line read" d="M770,152 V192" marker-end="url(#arrow)"/>
   <text class="s" x="780" y="177">GET only</text>
-  <rect class="box" x="60" y="194" width="380" height="72" rx="6"/>
-  <text class="mb c" x="250" y="216">plan</text>
-  <text class="s c" x="250" y="236">The flow's commands, with their checks and refusals</text>
-  <text class="m c" x="250" y="255">next status worktrees start open ship close</text>
+  <rect class="box" x="60" y="194" width="330" height="72" rx="6"/>
+  <text class="mb c" x="225" y="216">plan</text>
+  <text class="s c" x="225" y="236">The flow's commands, with their checks and refusals</text>
+  <text class="m c" x="225" y="255">next status worktrees start open ship close</text>
+  <rect class="box" x="404" y="194" width="176" height="72" rx="6"/>
+  <text class="mb c" x="492" y="216">pr</text>
+  <text class="s c" x="492" y="236">Run by plan ship or by hand</text>
+  <text class="m c" x="492" y="255">commit, push: git gh</text>
   <rect class="box" x="600" y="194" width="340" height="72" rx="6"/>
   <text class="mb c" x="770" y="216">plan serve</text>
   <text class="s c" x="770" y="236">Flask and Jinja, started by launchd at login</text>
   <text class="s c" x="770" y="255">127.0.0.1, checks Host, no POST, writes nothing</text>
 
   <!-- The core -->
-  <path class="line" d="M250,266 V304" marker-end="url(#arrow)"/>
-  <text class="s" x="260" y="291">reads and writes</text>
+  <path class="line" d="M225,266 V304" marker-end="url(#arrow)"/>
+  <text class="s" x="235" y="291">reads and writes</text>
   <path class="line read" d="M770,266 V304" marker-end="url(#arrow)"/>
   <text class="s" x="780" y="291">reads only</text>
   <rect class="core" x="40" y="306" width="920" height="184" rx="8"/>
