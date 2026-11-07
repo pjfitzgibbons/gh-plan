@@ -106,6 +106,7 @@ The diff leaves out each of these git globs, which `review.py` reads from this l
 - `**/node_modules/**`
 - `**/package-lock.json` and the next, lock files
 - `**/*.lock`, `uv.lock` among them
+- `tmux-*.log`, tmux debug logs
 
 ## Deep paths
 
