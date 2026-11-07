@@ -2460,7 +2460,8 @@ class Review(unittest.TestCase):
         self.assertTrue(all((Path(__file__).resolve().parents[4] / d).exists() for d in deep))
         skipped = review.listed(REVIEW_MD, "Skipped paths")
         self.assertEqual(
-            skipped, [".tmp/**", "**/node_modules/**", "**/package-lock.json", "**/*.lock"]
+            skipped,
+            [".tmp/**", "**/node_modules/**", "**/package-lock.json", "**/*.lock", "tmux-*.log"],
         )
 
     def test_a_deep_path_is_reviewed_at_high_and_any_other_at_medium(self):

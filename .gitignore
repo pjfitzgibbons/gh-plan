@@ -22,6 +22,9 @@ CLAUDE.local.md
 *.swp
 .tmp
 
+# tmux -v debug logs, written to the folder the server started in.
+tmux-*.log
+
 # Session handoff notes: local context, not project history.
 HANDOFF.md
 
