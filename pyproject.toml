@@ -18,8 +18,9 @@ addopts = ["-ra", "--strict-markers", "--strict-config", "--cov", "--cov-report=
 xfail_strict = true
 
 [tool.coverage.run]
-source = ["redmine", ".claude/hooks"]
-omit = ["*/test_*.py"]
+source = ["redmine", ".claude/hooks", ".claude/skills/plan-report/scripts"]
+# status.py and time_report.py wait to read Redmine, and only their parsing is tested until then.
+omit = ["*/test_*.py", "*/plan-report/scripts/status.py", "*/plan-report/scripts/time_report.py"]
 branch = true
 
 [tool.coverage.report]

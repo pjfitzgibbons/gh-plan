@@ -5,9 +5,9 @@ description: Stand-ins for gh-plan's `plan report` commands until they ship, for
 
 # plan report
 
-These are a person's commands, linked into `~/.local/bin`. Give them the command to run; don't run it yourself.
+These commands are linked into `~/.local/bin`. `report-status`, `report-time` and `report-milestones` only read and report, so run them yourself. `report-server` leaves a server running, so give a person that command, and any fix script `report-time` writes, to run.
 
-`status.py` and `time_report.py` read GitHub, git and `timew export`, and write nothing; `milestones.py` reads Redmine. Run them from inside the repo. Issues are Redmine's now ([ADR 0011](../../../docs/adr/0011-redmine-is-the-tracker.md)), so until the scripts read Redmine they report only on the GitHub issues closed before it.
+`status.py` and `time_report.py` read GitHub, git and `timew export`, and write nothing; `milestones.py` reads Redmine. Run them from inside the repo. Issues are Redmine's now ([ADR 0011](../../../docs/adr/0011-redmine-is-the-tracker.md)), so until `status.py` and `time_report.py` read Redmine they report only on the GitHub issues closed before it.
 
 ## plan report status
 
@@ -25,18 +25,19 @@ Show the output as is, then add only what the data can't say.
 
 ## plan report milestones
 
-Progress per milestone (Redmine version), read from Redmine. Writes only the HTML page; serve it with `report-server` (below).
+Progress per milestone (Redmine version), read from Redmine. Writes only the HTML page and, beside it, the options it ran with; serve it with `report-server` (below).
 
 ```
 report-milestones              # .tmp/milestones/progress.html
 report-milestones --all --next 8 --closed 8 --out <file.html>
+report-milestones --project tempotag   # default: plan
 ```
 
-- Each open milestone shows a bar, closed / total issues, the percentage, and points closed / total. Every issue counts, closed and rejected ones too; a rejected issue's points leave the points total.
+- Each open milestone shows a bar, closed / total issues, the percentage, and points closed / total. Every issue counts, closed and rejected ones too; a rejected issue's points leave the points total, and it isn't counted as unpointed.
 - The report opens with two plain lists, each issue keyed by its milestone: the first 5 of the Next up query in plan order, each with the open issues that block it (in yellow), and the last 5 closed.
 - Each milestone then lists all its issues as `#<n>(<points>)`, coloured by status, those ten included and not called out: open ones in plan order, then closed ones in the order they closed. A closed milestone holding one of the ten is shown.
-- **Serve it with `report-server`**, not the local-page skill, so the page's **Regenerate** button works: `report-server --open` from the repo (`--stop` stops it). The button posts to the server's `/regen`, which reruns this script in the repo and answers once the new page is written; the page then reloads. `/regen` takes only a POST from the server's own page.
-- **Plan order** is the script's, not Redmine's: milestone (version order, no milestone last), In Progress first, Ordinal, priority (highest first), issue number; and an issue never comes before an open issue that blocks it, even one in a later milestone.
+- **Serve it with `report-server`**, not the local-page skill, so the page's **Regenerate** button works: `report-server --open` from the repo (`--stop` stops it). It serves only the default page, not one written with `--out`. The button posts to the server's `/regen`, which reruns this script in the repo with the options the page was written with and answers once the new page is written; the page then reloads. `/regen` takes only a POST from the server's own page, at its `127.0.0.1` address.
+- **Plan order** is the script's, not Redmine's: milestone (version order, numbers by value, no milestone last), In Progress first, Ordinal, priority (highest first), issue number; and an issue never comes before an open issue that blocks it, even one in a later milestone or through a blocker outside the list.
 
 ## plan report time
 
@@ -77,9 +78,9 @@ Hours per point comes from `--hours-per-point`, or else the design default of 8.
 
 **`--assign` and `--from` are off until the scripts read Redmine:** Redmine and GitHub share issue numbers, so a slice tagged with a Redmine issue can read as one tagged after a GitHub issue closed, and retagging it would lose a correct tag. The script refuses them; show the call-outs without corrections. For the same reason, both closed-issue call-outs compare a Redmine tag with a GitHub issue's close, and say so; don't offer to stop, untag or retag those slices.
 
-Once they're back: present the call-outs, then the corrections, and say plainly that the guesses are guesses. When Peter says which issue the slices belong to, rerun with `--assign N`: it retags untagged slices, and slices tagged an issue after that issue closed, to #N. `--from M` (repeatable) also moves every finished slice tagged #M in the period to #N. It covers the whole day, so remove any slice of genuine #M work from the script before handing it over. `--assign` to the issue a slice already carries accepts it as it is and writes no fix.
+Once they're back: present the call-outs, then the corrections, and say plainly that the guesses are guesses. When a person says which issue the slices belong to, rerun with `--assign N`: it retags untagged slices, and slices tagged an issue after that issue closed, to #N. `--from M` (repeatable) also moves every finished slice tagged #M in the period to #N. It covers the whole day, so remove any slice of genuine #M work from the script before handing it over. `--assign` to the issue a slice already carries accepts it as it is and writes no fix.
 
-Never hand over loose `timew` commands. Write them with `--fix-script .tmp/timew-fix-<date>.sh`: tags are single-quoted (an unquoted `#` is a glob in zsh with `extendedglob`), and the script first checks that every @id still starts where it did, because Timewarrior @ids count back from the newest interval and shift as new ones arrive. **Peter runs the script.**
+Never hand over loose `timew` commands. Write them with `--fix-script .tmp/timew-fix-<date>.sh`: tags are single-quoted (an unquoted `#` is a glob in zsh with `extendedglob`), and the script first checks that every @id still starts where it did, because Timewarrior @ids count back from the newest interval and shift as new ones arrive. **A person runs the script.**
 
 ### Not covered yet
 

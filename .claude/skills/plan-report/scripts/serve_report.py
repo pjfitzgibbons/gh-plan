@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 """Serve the milestone page on 127.0.0.1, with a /regen endpoint behind its Regenerate button.
 
-    serve_report.py [--open]    serve .tmp/milestones/ of the repo it's run in, reusing a running server
-    serve_report.py --stop      stop that repo's server
+    report-server [--open]    serve .tmp/milestones/ of the repo it's run in, reusing a running server
+    report-server --stop      stop that repo's server
 
-POST /regen reruns milestones.py in the repo and answers 204 once the new page is written, or 500
-with the script's error. It only takes a POST from its own page (the Origin header): any web page
+POST /regen reruns milestones.py in the repo, with the options the page was written with, and
+answers 204 once the new page is written, or 500 with the script's error. It only takes a POST from its own page (the Origin header): any web page
 in a browser can post to 127.0.0.1, and a regen it didn't ask for would still read Redmine. One
 server per repo, on a port worked out from its path (8700-8799) so the address stays the same
 across restarts, and remembered in ~/.cache/plan-report/. --open opens the page in the system
@@ -26,10 +26,11 @@ from functools import partial
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
+from milestones import PAGE, Refused, repo_root, saved_options
+
 HOST = "127.0.0.1"
 STATE_DIR = Path.home() / ".cache" / "plan-report"
 MILESTONES = Path(__file__).resolve().with_name("milestones.py")
-PAGE = Path(".tmp/milestones/progress.html")
 
 
 class Handler(SimpleHTTPRequestHandler):
@@ -40,25 +41,39 @@ class Handler(SimpleHTTPRequestHandler):
     def do_POST(self):
         if self.path != "/regen":
             return self.send_error(404)
-        if self.headers.get("Origin") != f"http://{HOST}:{self.port}":
-            return self.send_error(403, "Regenerate only from this server's own page")
+        own = f"http://{HOST}:{self.port}"
+        if self.headers.get("Origin") != own:
+            return self.say(403, f"Regenerate only from this server's page: {own}/{PAGE.name}")
+        failure = self.regenerate()
+        if failure:
+            return self.say(500, f"report-milestones failed: {failure}")
+        self.send_response(204)
+        self.end_headers()
+
+    def regenerate(self) -> str | None:
+        """Rerun milestones.py; what went wrong, or None once the new page is written."""
+        options = saved_options(self.root / PAGE)
         with self.lock:
             try:
                 run = subprocess.run(
-                    [sys.executable, str(MILESTONES)],
+                    [sys.executable, str(MILESTONES), *options],
                     cwd=self.root,
                     capture_output=True,
                     text=True,
                     timeout=120,
                 )
             except subprocess.TimeoutExpired:
-                run = subprocess.CompletedProcess([], 1, "", "no answer from Redmine in 2 minutes")
+                return "no answer from Redmine in 2 minutes"
+            except OSError as e:
+                return f"can't run it in {self.root}: {e}"
         if run.returncode == 0:
-            self.send_response(204)
-            self.end_headers()
-            return
-        body = f"milestones.py failed: {(run.stderr or run.stdout).strip()[-2000:]}".encode()
-        self.send_response(500)
+            return None
+        return (run.stderr or run.stdout).strip()[-2000:] or f"exit {run.returncode}"
+
+    def say(self, status: int, message: str) -> None:
+        """Plain text, which the page's Regenerate shows as it is."""
+        body = message.encode()
+        self.send_response(status)
         self.send_header("Content-Type", "text/plain; charset=utf-8")
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
@@ -137,10 +152,10 @@ def start(root):
         if answers(port):
             break
         if proc.poll() is not None:
-            sys.exit(f"serve_report: the server for {root} exited; see {log.name}")
+            sys.exit(f"report-server: the server for {root} exited; see {log.name}")
         time.sleep(0.1)
     else:
-        sys.exit(f"serve_report: the server for {root} did not answer on port {port}")
+        sys.exit(f"report-server: the server for {root} did not answer on port {port}")
     state = {"pid": proc.pid, "port": port, "root": str(root)}
     state_file(root).write_text(json.dumps(state))
     return state
@@ -156,7 +171,10 @@ def main(argv=None):
     if a.serve:
         return serve(a.root, a.serve)
 
-    root = Path.cwd().resolve()
+    try:
+        root = repo_root()
+    except (Refused, OSError) as e:
+        sys.exit(f"report-server: {e}")
     if a.stop:
         try:
             state = json.loads(state_file(root).read_text())
@@ -170,7 +188,7 @@ def main(argv=None):
         state_file(root).unlink(missing_ok=True)
         return
     if not (root / PAGE).is_file():
-        sys.exit(f"serve_report: no {PAGE} in {root}; run milestones.py first")
+        sys.exit(f"report-server: no {PAGE} in {root}; run report-milestones first")
 
     state = running(root) or start(root)
     url = f"http://{HOST}:{state['port']}/{PAGE.name}"

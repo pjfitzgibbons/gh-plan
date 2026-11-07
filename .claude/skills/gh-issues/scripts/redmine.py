@@ -70,6 +70,8 @@ def every(redmine, path: str, key: str) -> list[dict]:
     sep = "&" if "?" in path else "?"
     while True:
         page = redmine.send("GET", f"{path}{sep}limit=100&offset={offset}")
+        if page is None:
+            raise Refused(f"Redmine GET {path}: an empty answer")
         found += page[key]
         offset += len(page[key])
         if not page[key] or offset >= page.get("total_count", 0):

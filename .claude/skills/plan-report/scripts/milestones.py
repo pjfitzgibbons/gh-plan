@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """Progress per milestone (Redmine version), with the next issues and the last ones closed.
 
-    milestones.py                          # open versions; writes .tmp/milestones/progress.html
-    milestones.py --all --next 8 --closed 8 --out report.html
+    report-milestones                      # open versions; writes .tmp/milestones/progress.html
+    report-milestones --all --next 8 --closed 8 --out report.html
+    report-milestones --project tempotag
 
 Every issue in a milestone is listed and counted, whatever its status: closed and rejected issues
 stay in the list, marked. Progress is closed issues (Rejected included, as Redmine closes it) over
@@ -14,25 +15,34 @@ recently closed. Below them each milestone
 lists all its issues as #<n>(<points>), coloured by status, with no other call-out: its open issues
 in plan order, then its closed ones in the order they closed.
 
-Plan order: milestone (in version order, no milestone last), then In Progress before the rest, then
-Ordinal, then priority (highest first), then issue number; and an issue never comes before an open
-issue that blocks it, whatever its milestone. A closed milestone is
-shown when it holds one of those issues. Reads Redmine through the gh-issues skill's client; writes only the HTML file.
+Plan order: milestone (in version order, numbers by value, no milestone last), then In Progress
+before the rest, then Ordinal, then priority (highest first), then issue number; and an issue never
+comes before an open issue that blocks it, whatever its milestone, even through a blocker outside
+the list. A closed milestone is shown when it holds one of those issues. Reads Redmine through the
+gh-issues skill's client; writes only the HTML file and, beside it, the options it ran with, which
+report-server's Regenerate reuses.
 """
 
 import argparse
-import html
+import json
+import os
+import re
+import subprocess
 import sys
-from collections.abc import Sequence, Set
+from collections.abc import Mapping, Sequence, Set
 from dataclasses import dataclass, field
 from datetime import datetime
+from html import escape
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "gh-issues/scripts"))
 
+from redmine import Redmine, Refused, by_name, every  # noqa: E402
+
 PROJECT = "plan"
 NEXT_UP = "Next up"
 NONE = "No milestone"
+PAGE = Path(".tmp/milestones/progress.html")
 
 
 @dataclass
@@ -54,7 +64,7 @@ class Issue:
             return "rejected"
         if self.closed:
             return "closed"
-        return "active" if self.status in ("In Progress", "Resolved", "Feedback") else "open"
+        return "active" if self.status == "In Progress" else "open"
 
 
 @dataclass
@@ -81,7 +91,19 @@ class Milestone:
         """(points closed, points in all, issues with no points)"""
         done = sum(i.points or 0 for i in self.issues if i.closed and i.status != "Rejected")
         total = sum(i.points or 0 for i in self.issues if i.status != "Rejected")
-        return done, total, sum(i.points is None for i in self.issues)
+        unpointed = sum(i.points is None and i.status != "Rejected" for i in self.issues)
+        return done, total, unpointed
+
+
+@dataclass
+class Plan:
+    """What the report shows."""
+
+    url: str
+    upcoming: list[Issue]
+    recent: list[Issue]
+    milestones: list[Milestone]
+    open_ids: Set[int]
 
 
 def parse(raw: dict, closed_ids: set[int]) -> Issue:
@@ -107,10 +129,37 @@ def parse(raw: dict, closed_ids: set[int]) -> Issue:
     )
 
 
-def plan_order(issues: list[Issue], versions: list[str]) -> list[Issue]:
+def natural_key(name: str) -> list[int | str]:
+    """Sorts M2 before M10, whatever the case."""
+    return [int(p) if p.isdigit() else p for p in re.split(r"(\d+)", name.casefold())]
+
+
+def version_order(versions: list[dict]) -> list[dict]:
+    return sorted(versions, key=lambda v: natural_key(v["name"]))
+
+
+def listed_blockers(i: Issue, listed: Set[int], chain: Mapping[int, Issue]) -> set[int]:
+    """The listed issues holding i back, directly or through open issues outside the list."""
+    found, seen, waiting = set(), {i.id}, list(i.blockers)
+    while waiting:
+        b = waiting.pop()
+        if b in seen:
+            continue
+        seen.add(b)
+        if b in listed:
+            found.add(b)
+        elif b in chain:
+            waiting.extend(chain[b].blockers)
+    return found
+
+
+def plan_order(
+    issues: list[Issue], versions: list[str], chain: Mapping[int, Issue] | None = None
+) -> list[Issue]:
     """Open issues in plan order: milestone (in the order of versions, no milestone last), In
     Progress first, Ordinal, priority, issue number; and never before an open issue that blocks it.
-    A blocking cycle is broken at its first issue by that key."""
+    chain holds the open issues outside the list, whose blockers count too. A blocking cycle is
+    broken at its first issue by that key."""
     rank = {v: n for n, v in enumerate(versions)}
 
     def key(i: Issue):
@@ -123,9 +172,10 @@ def plan_order(issues: list[Issue], versions: list[str]) -> list[Issue]:
         )
 
     left = {i.id: i for i in issues if not i.closed}
+    held_by = {i.id: listed_blockers(i, left.keys(), chain or {}) for i in left.values()}
     out = []
     while left:
-        ready = [i for i in left.values() if not i.blockers & left.keys()] or list(left.values())
+        ready = [i for i in left.values() if not held_by[i.id] & left.keys()] or list(left.values())
         out.append(left.pop(min(ready, key=key).id))
     return out
 
@@ -140,7 +190,7 @@ def build(
     when it holds a highlighted issue (one of the next or last closed)."""
     ms = {
         v["name"]: Milestone(v["name"], v.get("description") or "", v["status"], v.get("due_date"))
-        for v in sorted(versions, key=lambda v: v["name"])
+        for v in version_order(versions)
     }
     for i in issues:
         if i.version in ms:
@@ -148,10 +198,20 @@ def build(
     wanted = {n for n, m in ms.items() if show_closed or m.status != "closed"} | {
         i.version for i in highlighted
     }
+    chain = open_by_id(issues)
     for m in ms.values():
         done = sorted((i for i in m.issues if i.closed), key=lambda i: (i.closed_on or "", i.id))
-        m.issues = plan_order(m.issues, list(ms)) + done
+        m.issues = plan_order(m.issues, list(ms), chain) + done
     return [m for n, m in ms.items() if n in wanted]
+
+
+def open_by_id(issues: list[Issue]) -> dict[int, Issue]:
+    return {i.id: i for i in issues if not i.closed}
+
+
+def last_closed(issues: list[Issue], n: int) -> list[Issue]:
+    closed = (i for i in issues if i.closed)
+    return sorted(closed, key=lambda i: (i.closed_on or "", i.id), reverse=True)[:n]
 
 
 def chip(i: Issue) -> str:
@@ -247,78 +307,182 @@ document.getElementById("regen").addEventListener("click", async ev => {
 </script>"""
 
 
-def render_html(
-    upcoming: list[Issue],
-    recent: list[Issue],
-    milestones: list[Milestone],
-    base: str,
-    when: datetime,
-    open_ids: Set[int] = frozenset(),
-) -> str:
-    e = html.escape
+def issue_link(base: str, n: int) -> str:
+    return f'<a href="{escape(base)}/issues/{n}">#{n}</a>'
 
-    def row(n: int, i: Issue, when: str = "", blockers: Sequence[int] = ()) -> str:
-        pts = f"{i.points}pt" if i.points is not None else "–pt"
-        links = " ".join(f'<a href="{e(base)}/issues/{b}">#{b}</a>' for b in blockers)
-        return (
-            f'<li class="{i.kind}"><span class=place>{n}</span>'
-            f'<span class=id><a href="{e(base)}/issues/{i.id}">#{i.id}</a></span>'
-            f'<span class=ms>{e(i.version or NONE)}</span><span class="st {i.kind}">{e(i.status)}</span>'
-            f"{f'<span class=when>{e(when)}</span>' if when else ''}<span class=p>{pts}</span>"
-            f"<span class=subj>{e(i.subject)}</span>"
-            f"{f'<span class=blk>blocked by {links}</span>' if blockers else ''}</li>"
-        )
 
-    top = (
-        f"<section><h3>Next {len(upcoming)}</h3><ul>"
-        + "".join(
-            row(n, i, blockers=sorted(i.blockers & open_ids)) for n, i in enumerate(upcoming, 1)
-        )
-        + f"</ul><h3>Last {len(recent)} closed</h3><ul>"
-        + "".join(row(n, i, (i.closed_on or "")[:10]) for n, i in enumerate(recent, 1))
-        + "</ul></section>"
+def span_if(text: str, cls: str) -> str:
+    return f"<span class={cls}>{text}</span>" if text else ""
+
+
+def row(base: str, place: int, i: Issue, when: str = "", blockers: Sequence[int] = ()) -> str:
+    points = f"{i.points}pt" if i.points is not None else "–pt"
+    links = " ".join(issue_link(base, b) for b in blockers)
+    blocked = f"blocked by {links}" if blockers else ""
+    return (
+        f'<li class="{i.kind}"><span class=place>{place}</span>'
+        f"<span class=id>{issue_link(base, i.id)}</span>"
+        f'<span class=ms>{escape(i.version or NONE)}</span><span class="st {i.kind}">{escape(i.status)}</span>'
+        f"{span_if(escape(when), 'when')}<span class=p>{points}</span>"
+        f"<span class=subj>{escape(i.subject)}</span>{span_if(blocked, 'blk')}</li>"
     )
-    parts = []
-    for m in milestones:
-        tag = "closed" if m.status == "closed" else (f"due {m.due}" if m.due else "")
-        s = [f"<section><h2>{e(m.name)}{f'<span class=tag>{e(tag)}</span>' if tag else ''}</h2>"]
-        if m.description:
-            s.append(f"<p class=exit>{e(m.description)}</p>")
-        total = len(m.issues) or 1
-        segs = "".join(
-            f'<span style="width:{100 * m.count(k) / total:.2f}%;background:var(--{k})" '
-            f'title="{m.count(k)} {k}"></span>'
-            for k in ("closed", "rejected", "active")
-        )
-        done, pts, unpointed = m.points
-        extra = f" · {unpointed} unpointed" if unpointed else ""
-        s.append(
-            f'<div class=prog><div class=bar role=img aria-label="{m.percent}% closed">{segs}</div>'
-            f"<span class=nums><span class=pct>{m.percent}%</span>{m.done} / {len(m.issues)} closed"
-            f"<br><span class=pts>{m.count('active')} in progress · {m.count('rejected')} rejected · "
-            f"{done} / {pts} points{extra}</span></span></div>"
-        )
-        s.append(
-            "<p class=chips>"
-            + " ".join(
-                f'<a class="chip {i.kind}" href="{e(base)}/issues/{i.id}" title="{e(i.status)}: {e(i.subject)}">'
-                f"{chip(i)}</a>"
-                for i in m.issues
-            )
-            + "</p></section>"
-        )
-        parts.append("".join(s))
-    legend = "".join(
+
+
+def top_lists(plan: Plan) -> str:
+    next_rows = "".join(
+        row(plan.url, n, i, blockers=sorted(i.blockers & plan.open_ids))
+        for n, i in enumerate(plan.upcoming, 1)
+    )
+    closed_rows = "".join(
+        row(plan.url, n, i, (i.closed_on or "")[:10]) for n, i in enumerate(plan.recent, 1)
+    )
+    return (
+        f"<section><h3>Next {len(plan.upcoming)}</h3><ul>{next_rows}</ul>"
+        f"<h3>Last {len(plan.recent)} closed</h3><ul>{closed_rows}</ul></section>"
+    )
+
+
+def milestone_tag(m: Milestone) -> str:
+    if m.status == "closed":
+        return "closed"
+    return f"due {m.due}" if m.due else ""
+
+
+def progress(m: Milestone) -> str:
+    total = len(m.issues) or 1
+    segments = "".join(
+        f'<span style="width:{100 * m.count(k) / total:.2f}%;background:var(--{k})" '
+        f'title="{m.count(k)} {k}"></span>'
+        for k in ("closed", "rejected", "active")
+    )
+    done, points, unpointed = m.points
+    extra = f" · {unpointed} unpointed" if unpointed else ""
+    return (
+        f'<div class=prog><div class=bar role=img aria-label="{m.percent}% closed">{segments}</div>'
+        f"<span class=nums><span class=pct>{m.percent}%</span>{m.done} / {len(m.issues)} closed"
+        f"<br><span class=pts>{m.count('active')} in progress · {m.count('rejected')} rejected · "
+        f"{done} / {points} points{extra}</span></span></div>"
+    )
+
+
+def chip_link(base: str, i: Issue) -> str:
+    return (
+        f'<a class="chip {i.kind}" href="{escape(base)}/issues/{i.id}" '
+        f'title="{escape(i.status)}: {escape(i.subject)}">{chip(i)}</a>'
+    )
+
+
+def milestone_section(m: Milestone, base: str) -> str:
+    tag = span_if(escape(milestone_tag(m)), "tag")
+    exit_line = f"<p class=exit>{escape(m.description)}</p>" if m.description else ""
+    chips = " ".join(chip_link(base, i) for i in m.issues)
+    return (
+        f"<section><h2>{escape(m.name)}{tag}</h2>{exit_line}{progress(m)}"
+        f"<p class=chips>{chips}</p></section>"
+    )
+
+
+def legend() -> str:
+    return "".join(
         f'<span><span class=sw style="background:var(--{k})"></span>{k.replace("active", "in progress")}</span>'
         for k in ("closed", "rejected", "active", "open")
     )
+
+
+def render_html(plan: Plan, when: datetime) -> str:
+    sections = "".join(milestone_section(m, plan.url) for m in plan.milestones)
     return (
         f'<!doctype html><html lang=en><head><meta charset=utf-8><meta name=viewport content="width=device-width,'
         f'initial-scale=1"><title>Milestone progress</title><style>{CSS}</style></head><body><main>'
-        f"<h1>Milestone progress</h1><p class=sub>{e(base)} · {when:%a %b %d %H:%M}"
+        f"<h1>Milestone progress</h1><p class=sub>{escape(plan.url)} · {when:%a %b %d %H:%M}"
         f" <button id=regen class=regen>Regenerate</button><span id=regen-said></span></p>"
-        f"<div class=legend>{legend}</div>{top}{''.join(parts)}</main>{REGEN}</body></html>"
+        f"<div class=legend>{legend()}</div>{top_lists(plan)}{sections}</main>{REGEN}</body></html>"
     )
+
+
+def read(r: Redmine, path: str, key: str):
+    reply = r.send("GET", path)
+    if reply is None:
+        raise Refused(f"Redmine GET {path}: an empty answer")
+    return reply[key]
+
+
+def next_up_query(queries: list[dict], project: dict) -> dict:
+    """The project's own Next up, else its parent's, else a global one."""
+    scope = [project["id"], (project.get("parent") or {}).get("id"), None]
+    in_scope = [q for q in queries if q.get("project_id") in scope]
+    return by_name(
+        sorted(in_scope, key=lambda q: scope.index(q.get("project_id"))), NEXT_UP, "query"
+    )
+
+
+def assemble(
+    url: str, versions: list[dict], issues: list[Issue], next_ids: Set[int], a: argparse.Namespace
+) -> Plan:
+    """Next up picks the issues (open, Icebox left out); the report orders them."""
+    still_open = open_by_id(issues)
+    order = [v["name"] for v in version_order(versions)]
+    picked = [i for i in issues if i.id in next_ids]
+    upcoming = plan_order(picked, order, still_open)[: a.n_next]
+    recent = last_closed(issues, a.n_closed)
+    milestones = build(versions, issues, upcoming + recent, a.all)
+    return Plan(url, upcoming, recent, milestones, still_open.keys())
+
+
+def read_plan(r: Redmine, a: argparse.Namespace) -> Plan:
+    statuses = read(r, "/issue_statuses.json", "issue_statuses")
+    closed_ids = {s["id"] for s in statuses if s.get("is_closed")}
+    project = read(r, f"/projects/{a.project}.json", "project")
+    versions = read(r, f"/projects/{a.project}/versions.json", "versions")
+    query = next_up_query(every(r, "/queries.json", "queries"), project)
+    project_issues = f"/issues.json?project_id={a.project}"
+    raw = every(r, f"{project_issues}&status_id=*&include=relations&sort=id", "issues")
+    next_up = every(r, f"{project_issues}&query_id={query['id']}", "issues")
+    issues = [parse(i, closed_ids) for i in raw]
+    return assemble(r.url, versions, issues, {i["id"] for i in next_up}, a)
+
+
+def repo_root() -> Path:
+    run = subprocess.run(["git", "rev-parse", "--show-toplevel"], capture_output=True, text=True)
+    if run.returncode != 0:
+        raise Refused(f"{Path.cwd()} isn't inside a git repo")
+    return Path(run.stdout.strip())
+
+
+def write_atomically(path: Path, text: str) -> None:
+    """Renamed in, so a window reading the file, or a second run, never meets half of it."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    aside = path.with_name(f".{path.name}.{os.getpid()}")
+    aside.write_text(text, encoding="utf-8")
+    os.replace(aside, path)
+
+
+def rerun_options(a: argparse.Namespace) -> list[str]:
+    options = ["--next", str(a.n_next), "--closed", str(a.n_closed), "--project", a.project]
+    return [*options, "--all"] if a.all else options
+
+
+def options_file(page: Path) -> Path:
+    """One per page, so a page written with --out leaves the default page's options alone."""
+    return page.with_suffix(".options.json")
+
+
+def saved_options(page: Path) -> list[str]:
+    """The options the page was written with; none for a page from before they were kept."""
+    try:
+        return json.loads(options_file(page).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return []
+
+
+def report(a: argparse.Namespace) -> None:
+    out = a.out or repo_root() / PAGE
+    r = Redmine()
+    plan = read_plan(r, a)
+    write_atomically(options_file(out), json.dumps(rerun_options(a)))
+    write_atomically(out, render_html(plan, datetime.now()))
+    print(render_text(plan.upcoming, plan.recent, plan.milestones, plan.open_ids))
+    print(f"wrote {out}")
 
 
 def main(argv=None) -> int:
@@ -328,59 +492,14 @@ def main(argv=None) -> int:
     p.add_argument("--next", type=int, default=5, dest="n_next")
     p.add_argument("--closed", type=int, default=5, dest="n_closed")
     p.add_argument("--all", action="store_true", help="also show closed milestones")
-    p.add_argument("--out", type=Path, default=Path(".tmp/milestones/progress.html"))
+    p.add_argument("--project", default=PROJECT, help="Redmine project (default: %(default)s)")
+    p.add_argument("--out", type=Path, help=f"default: {PAGE} in the repo")
     a = p.parse_args(argv)
 
-    from redmine import Redmine
-
-    r = Redmine()
-
-    def every(query: str) -> list[dict]:
-        out, offset = [], 0
-        while True:
-            page = r.send(
-                "GET",
-                f"/issues.json?project_id={PROJECT}&{query}&include=relations"
-                f"&limit=100&offset={offset}",
-            )
-            out += page["issues"]
-            offset += 100
-            if offset >= page["total_count"]:
-                return out
-
-    closed_ids = {
-        s["id"]
-        for s in r.send("GET", "/issue_statuses.json")["issue_statuses"]
-        if s.get("is_closed")
-    }
-    versions = r.send("GET", f"/projects/{PROJECT}/versions.json")["versions"]
-    query = next(
-        (q["id"] for q in r.send("GET", "/queries.json")["queries"] if q["name"] == NEXT_UP), None
-    )
-    if query is None:
-        sys.exit(f"no Redmine query named {NEXT_UP!r}")
-    issues = [parse(i, closed_ids) for i in every("status_id=*&fixed_version_id=*")]
-    open_ids = {
-        i["id"] for i in every("status_id=open")
-    }  # a blocker may have no milestone, or be iceboxed
-    # The whole of Next up, which picks the issues (open, Icebox left out); the report orders them.
-    order = [v["name"] for v in sorted(versions, key=lambda v: v["name"])]
-    upcoming = plan_order([parse(i, closed_ids) for i in every(f"query_id={query}")], order)
-    recent = [
-        parse(i, closed_ids)
-        for i in r.send(
-            "GET",
-            f"/issues.json?project_id={PROJECT}&status_id=closed&sort=closed_on:desc"
-            f"&limit={a.n_closed}",
-        )["issues"]
-    ]
-
-    upcoming, recent = upcoming[: a.n_next], recent[: a.n_closed]
-    milestones = build(versions, issues, upcoming + recent, a.all)
-    a.out.parent.mkdir(parents=True, exist_ok=True)
-    a.out.write_text(render_html(upcoming, recent, milestones, r.url, datetime.now(), open_ids))
-    print(render_text(upcoming, recent, milestones, open_ids))
-    print(f"wrote {a.out}")
+    try:
+        report(a)
+    except (Refused, OSError, ValueError) as e:
+        sys.exit(f"report-milestones: {e}")
     return 0
 
 

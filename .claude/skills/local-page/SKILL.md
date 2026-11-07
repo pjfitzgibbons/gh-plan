@@ -21,9 +21,10 @@ HTML pages for Peter stay on this machine. The Artifact tool's publish is refuse
    port, and reuses a server already running for that directory. It prints the page's URL and
    the `vscode://pjfitzgibbons.worktask/browse?url=…` link. `--open` opens that link in VS Code's
    Integrated Browser, never the system browser.
-3. **Tell Peter** the file's path and the URL. The link opens in the VS Code window that was
+3. **Tell them** the file's path; the command prints the URL, on a port it picks. The link opens in the VS Code window that was
    focused last, which may not be this worktree's (gh-plan #92); say so if more than one window
    is open.
-4. **Stop it** when the page is finished with: `serve-page <file.html> --stop`.
+4. **Give them the command that stops it** when the page is finished with:
+   `serve-page <file.html> --stop`.
 
 Pages load nothing from the network unless the page needs it; inline the CSS and scripts.

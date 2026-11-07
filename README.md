@@ -36,17 +36,24 @@ gh-plan main checkout, never a worktree, which Done deletes:
    under *Settings*.
 3. **The extension:** build and install it, as [`vscode/README.md`](vscode/README.md) says in
    *Build, install, test*.
-4. **The commands:** link the gh-issues skill and its scripts, so every repo uses this checkout's
-   copy. `~/.local/bin` must come before `/usr/bin` on PATH, which has a `pr` of its own:
+4. **The commands:** link the gh-issues, plan-report and local-page skills and their scripts, so
+   every repo uses this checkout's copy. `~/.local/bin` must come before `/usr/bin` on PATH, which has a `pr` of its own:
 
    ```sh
    mkdir -p ~/.claude/skills ~/.local/bin
    ln -sfn "$PWD/.claude/skills/gh-issues" ~/.claude/skills/gh-issues
+   ln -sfn "$PWD/.claude/skills/plan-report" ~/.claude/skills/plan-report
+   ln -sfn "$PWD/.claude/skills/local-page" ~/.claude/skills/local-page
    ln -sfn ~/.claude/skills/gh-issues/scripts/pr.sh ~/.local/bin/pr
    ln -sfn ~/.claude/skills/gh-issues/scripts/new_issue.py ~/.local/bin/new_issue
    ln -sfn ~/.claude/skills/gh-issues/scripts/issue_body.py ~/.local/bin/issue_body
    ln -sfn ~/.claude/skills/gh-issues/scripts/redmine_set.py ~/.local/bin/redmine-set
    ln -sfn ~/.claude/skills/gh-issues/scripts/issue_relations.py ~/.local/bin/issue_relations
+   ln -sfn ~/.claude/skills/plan-report/scripts/status.py ~/.local/bin/report-status
+   ln -sfn ~/.claude/skills/plan-report/scripts/time_report.py ~/.local/bin/report-time
+   ln -sfn ~/.claude/skills/plan-report/scripts/milestones.py ~/.local/bin/report-milestones
+   ln -sfn ~/.claude/skills/plan-report/scripts/serve_report.py ~/.local/bin/report-server
+   ln -sfn ~/.claude/skills/local-page/scripts/serve_page.py ~/.local/bin/serve-page
    gh alias set --clobber --shell pc '~/.claude/skills/gh-issues/scripts/ghbody.sh pr-create "$@"'
    gh alias set --clobber --shell pb '~/.claude/skills/gh-issues/scripts/ghbody.sh pr-edit "$@"'
    ```
