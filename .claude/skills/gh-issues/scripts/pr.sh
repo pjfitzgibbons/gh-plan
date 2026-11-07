@@ -148,7 +148,7 @@ if [ -n "$(git status --porcelain)" ]; then
   fi
   # Commit what stage.py staged for the report, never a change made since or a file nobody listed.
   late=$(git diff --name-only; git ls-files --others --exclude-standard)
-  [ -z "$late" ] || { echo "pr: not staged, so not in the report; add each to .tmp/$n/manifest.txt and run stage.py $n, or delete or ignore it:" >&2; echo "$late" >&2; exit 2; }
+  [ -z "$late" ] || { echo "pr: not staged, so not in the report; add each to .tmp/$n/manifest.txt and run python3 $scripts/stage.py $n, or delete or ignore it:" >&2; echo "$late" >&2; exit 2; }
   git commit -q -F "$message"
   rm "$message"
   git log --oneline --stat -1

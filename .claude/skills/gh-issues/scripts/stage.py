@@ -2,10 +2,11 @@
 """stage.py N: stage exactly what .tmp/N/manifest.txt names, for the report to show and pr to commit.
 
 The manifest holds one path or directory per line, relative to the repo's root; blank lines don't
-count. A path is taken literally, so a glob or a pathspec's magic means nothing. The index is reset
-first, so a file staged earlier that the manifest no longer names doesn't ship. Any other change is
-refused by name once the manifest is staged, as pr would refuse it. Exits 2 on a refusal: the
-working tree is untouched, and a rerun after fixing the manifest starts over.
+count. A path is taken literally, so a glob or a pathspec's magic means nothing. A rebase, merge,
+cherry-pick or revert in progress is refused, as pr refuses it, since the reset would lose it. The
+index is then reset, so a file staged earlier that the manifest no longer names doesn't ship. Any
+other change is refused by name once the manifest is staged, as pr would refuse it. Exits 2 on a
+refusal: the working tree is untouched, and a rerun after fixing the manifest starts over.
 """
 
 import argparse
@@ -13,6 +14,15 @@ import os
 import subprocess
 import sys
 from pathlib import Path
+
+# What git keeps while each operation is under way, and the operation's name in pr's refusals.
+OPERATION_STATE = {
+    "rebase-merge": "rebase",
+    "rebase-apply": "rebase",
+    "MERGE_HEAD": "merge",
+    "CHERRY_PICK_HEAD": "cherry-pick",
+    "REVERT_HEAD": "revert",
+}
 
 
 class Refused(Exception):
@@ -25,6 +35,26 @@ def git(*args: str) -> str:
     if done.returncode != 0:
         raise Refused(done.stderr.strip())
     return done.stdout
+
+
+def operation_in_progress() -> str | None:
+    """The operation a reset would lose: its state is on disk until it finishes or aborts."""
+    for state, operation in OPERATION_STATE.items():
+        if Path(git("rev-parse", "--git-path", state).rstrip("\n")).exists():
+            return operation
+    return None
+
+
+def refuse_an_operation_in_progress() -> None:
+    """Refuse before the reset: it would end a merge, and drop a rebase's staged work."""
+    operation = operation_in_progress()
+    if operation == "rebase":
+        raise Refused(
+            "a rebase is in progress; finish it with git rebase --continue, or git rebase "
+            "--abort, then run stage.py again"
+        )
+    if operation:
+        raise Refused(f"a {operation} is in progress; finish or abort it, then run stage.py again")
 
 
 def entries(manifest: Path) -> list[str]:
@@ -63,12 +93,14 @@ def main(argv: list[str] | None = None) -> int:
     try:
         root = Path(git("rev-parse", "--show-toplevel").rstrip("\n"))
         os.chdir(root)  # The manifest's paths are the root's, wherever this ran from.
+        refuse_an_operation_in_progress()
         manifest = root / ".tmp" / str(args.n) / "manifest.txt"
         named = entries(manifest)
         if whole_tree(root, named):
             raise Refused(f"{manifest} names the whole tree; list each file or directory")
         stage(named)
         missed = left_out()
+        staged = git("diff", "--cached", "--name-status")
     except Refused as why:
         print(f"stage: {why}", file=sys.stderr)
         return 2
@@ -77,7 +109,7 @@ def main(argv: list[str] | None = None) -> int:
         print("\n".join(f"  {name}" for name in missed), file=sys.stderr)
         print("stage: add each to the manifest, or delete or ignore it", file=sys.stderr)
         return 2
-    print(git("diff", "--cached", "--name-status"), end="")
+    print(staged, end="")
     return 0
 
 

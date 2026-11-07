@@ -529,6 +529,73 @@ class Stage(unittest.TestCase):
         self.assertEqual(run.returncode, 2)
         self.assertNotIn("Traceback", run.stderr)
 
+    def commit_kept(self, text):
+        (self.tree / "kept.txt").write_text(text)
+        self.git("commit", "-q", "-am", text)
+
+    def diverge(self):
+        """Give side and main commits that conflict in kept.txt, leaving main checked out."""
+        self.git("checkout", "-q", "-b", "side")
+        self.commit_kept("side\n")
+        self.git("checkout", "-q", "main")
+        self.commit_kept("main\n")
+
+    def stop_on_a_conflict(self, *command):
+        """Run a git command expected to stop on a conflict, which is a non-zero exit."""
+        stopped = subprocess.run(
+            ["git", *command], cwd=self.tree, env=self.env, capture_output=True
+        )
+        self.assertNotEqual(stopped.returncode, 0, stopped.stdout)
+
+    def assert_stage_refuses(self, operation):
+        """stage.py names the operation and leaves it where it was, with the file in the manifest."""
+        self.manifest.write_text("kept.txt\n")
+        before = self.git("status")
+        run = self.stage()
+        self.assertEqual(run.returncode, 2, run.stdout)
+        self.assertIn(f"a {operation} is in progress", run.stderr)
+        self.assertNotIn("Traceback", run.stderr)
+        self.assertEqual(self.git("status"), before)
+
+    def test_a_merge_in_progress_is_refused_and_kept(self):
+        self.diverge()
+        self.stop_on_a_conflict("merge", "side")
+        self.assert_stage_refuses("merge")
+
+    def test_a_rebase_in_progress_is_refused_and_kept(self):
+        self.diverge()
+        self.git("checkout", "-q", "side")
+        self.stop_on_a_conflict("rebase", "main")
+        self.assert_stage_refuses("rebase")
+
+    def test_a_cherry_pick_in_progress_is_refused_and_kept(self):
+        self.diverge()
+        self.stop_on_a_conflict("cherry-pick", "side")
+        self.assert_stage_refuses("cherry-pick")
+
+    def test_a_revert_in_progress_is_refused_and_kept(self):
+        self.commit_kept("reverted\n")
+        self.commit_kept("later\n")
+        self.stop_on_a_conflict("revert", "--no-edit", "HEAD~1")
+        self.assert_stage_refuses("revert")
+
+    def test_a_failing_last_step_is_refused_without_a_traceback(self):
+        """A git that fails only on the final listing, once everything else has worked."""
+        shim = self.tree / ".tmp" / "bin"
+        shim.mkdir()
+        (shim / "git").write_text(
+            '#!/bin/sh\n[ "$1 $2" != "diff --cached" ] || { echo broken >&2; exit 1; }\n'
+            f'exec {shutil.which("git")} "$@"\n'
+        )
+        (shim / "git").chmod(0o755)
+        self.env["PATH"] = f"{shim}{os.pathsep}{self.env['PATH']}"
+        (self.tree / "kept.txt").write_text("two\n")
+        self.manifest.write_text("kept.txt\n")
+        run = self.stage()
+        self.assertEqual(run.returncode, 2, run.stdout)
+        self.assertIn("stage: broken", run.stderr)
+        self.assertNotIn("Traceback", run.stderr)
+
 
 class GhBody(unittest.TestCase):
     """ghbody.sh, which gh pc and gh pb run, with GHBODY_DRY: the PR title is the first commit's
