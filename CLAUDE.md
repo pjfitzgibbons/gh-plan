@@ -61,10 +61,10 @@ settings: what this repo needs is here or in `.claude/`.
   opens as the `Review #<n>` tab. The round is complete only once assess has
   passed, and the PR body's Testing names the last round.
 - **Python:** `python3` on PATH. `/usr/bin/python3` is 3.9 and can't run the skill scripts.
-- **An issue's work:** Start, Ship (`pr <n>`) and Done in the extension's Next up panel
-  ([`vscode/README.md`](vscode/README.md)).
+- **An issue's work:** Start and Done in the extension's Next up panel, and `pr <n>` in a terminal
+  to ship ([`vscode/README.md`](vscode/README.md)).
 - **An issue's body:** `redmine-get /issues/<n>.json`, or `?include=journals` for its history.
-- **A PR:** Ship, or `pr <n>`, from `.tmp/<n>/commit.txt` and `.tmp/<n>/pr-body.md`.
+- **A PR:** `pr <n>`, from `.tmp/<n>/commit.txt` and `.tmp/<n>/pr-body.md`.
 
 ## Done differently
 

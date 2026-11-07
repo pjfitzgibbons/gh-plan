@@ -15,8 +15,8 @@ Proposed. Changes [architecture §6.3](../architecture.md#platform), invariants 
 [architecture §10](../architecture.md#invariants) and, through #185, invariant 6. Replaces part of
 [design 0007](../design/0007-vscode-frames.md). Once built, it also replaces what
 [design 0005](../design/0005-review-findings.md) says about keeping findings in Redmine, and what
-[ADR 0011](0011-redmine-is-the-tracker.md) says about bare issue numbers and Go. The report server
-is designed in design 0008 (#187).
+[ADR 0011](0011-redmine-is-the-tracker.md) says about bare issue numbers. The report server is
+designed in design 0008 (#187).
 
 <a id="context"></a>
 ## 2. Context
@@ -171,10 +171,8 @@ GitHub. Neither changes here.
 - Invariant 6 changes: the named modules become the Python core's. That rewording is #185's, and
   so is any finding on it. Invariants 1, 2 and 12 name the tracker and the findings store, and
   architecture §6 names the tools that fill them, so they hold before and after #185.
-- #186 has no `plan go`, so its guardrail and L3 are rewritten, and `PR_STAGED` goes, with `pr` still
-  refusing a change made after staging. How it refuses is #192's. #189's scope is settled against
-  this. Architecture §7.2 and its flow diagram, `docs/failure-modes.md`, ADR 0011 and ADR 0009
-  still describe Go and change with #192.
+- #186 has no `plan go`, so its guardrail and L3 are rewritten. `PR_STAGED` went with #192, and `pr`
+  refuses any change that isn't staged. #189's scope is settled against this.
 - Design 0007's frames, window switching (§3.6) and sidebar Worktrees view (§3.8) give way to the
   terminal forms in #141 and #167. Its session state (§3.7) stands, and those views read it.
 - Design 0006 needs changing on its own branch: its §3.2 builds `plan` in Node, where this ADR makes
