@@ -43,8 +43,10 @@ settings: what this repo needs is here or in `.claude/`.
 - **Review findings:** weigh severity, visibility and frequency. Fix silent failures that lose
   work, files, commits or the tracker's state, and hard crashes, even rare ones. A rare warning or
   a clean error-stop can stay.
-- **Before Go:** `/code-review low` on the uncommitted changes, once `scripts/assess` passes, to
-  catch the major issues before they're committed. Before the first Go, the submission report,
+- **Before the report:** `/code-review low` on the uncommitted changes, once `scripts/assess`
+  passes, to catch the major issues before they're committed. Then list what ships in
+  `.tmp/<n>/manifest.txt`, a file or directory a line, and run `stage.py <n>`, which stages exactly
+  those; never `git add -A`. `pr <n>` is the one step left. Before the first `pr`, the submission report,
   `.tmp/<n>/report.html`, shows its fixes, the whole diff, `commit.txt` and `pr-body.md` in the
   `Review #<n>` tab.
 - **A review round:** after each push, `pr` starts Claude's review round `k` under the base's
@@ -54,12 +56,12 @@ settings: what this repo needs is here or in `.claude/`.
   runs `scripts/assess`, the round's CI, in a worktree of the commit, and writes
   `.tmp/<n>/<k>-findings.md`, with assess's result under `ci`, which `findings.py send`
   records in Redmine as the round. `pr` sends `.tmp/<n>/<k>-outcomes.md`, the outcome lines
-  accepted at Go, after its push. Round files stay until Done, which doesn't yet check that
+  accepted by running it, after its push. Round files stay until Done, which doesn't yet check that
   Redmine holds them (design 0005's W5). Claude answers it in `.tmp/<n>/report.html`, which
-  opens as the `Review #<n>` tab with Go and Ship. The round is complete only once assess has
+  opens as the `Review #<n>` tab. The round is complete only once assess has
   passed, and the PR body's Testing names the last round.
 - **Python:** `python3` on PATH. `/usr/bin/python3` is 3.9 and can't run the skill scripts.
-- **An issue's work:** Start, Go, Ship and Done in the extension's Next up panel
+- **An issue's work:** Start, Ship (`pr <n>`) and Done in the extension's Next up panel
   ([`vscode/README.md`](vscode/README.md)).
 - **An issue's body:** `redmine-get /issues/<n>.json`, or `?include=journals` for its history.
 - **A PR:** Ship, or `pr <n>`, from `.tmp/<n>/commit.txt` and `.tmp/<n>/pr-body.md`.
@@ -93,8 +95,9 @@ settings: what this repo needs is here or in `.claude/`.
 
 - **A person presses the buttons.** Every commit, push, `gh` write and Redmine write happens on
   Start, Ship or Done, or a `pr`, `new_issue`, `issue_body`, `redmine-set` or `issue_relations` a
-  person runs. Write `.tmp/<n>/commit.txt`, `pr-body.md`, `replies/` and issue drafts for them to
-  review; reads, inspections, the test suite and cleaning up your own mess you run yourself.
+  person runs. Write `.tmp/<n>/commit.txt`, `pr-body.md`, `manifest.txt`, `replies/` and issue drafts
+  for them to review; reads, inspections, the test suite, `stage.py` and cleaning up your own mess
+  you run yourself.
 - **The reviewer's two writes** fall outside a button (design 0005 §3.3). When a round's review
   ends, `findings.py send <n>` records the round and its findings as unconfirmed rows, and
   `gh pb` updates the PR body of the worktree's own issue. Nothing else is written: no push, no

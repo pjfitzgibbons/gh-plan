@@ -111,9 +111,8 @@ NITS = 3
 CODIFY = 3
 # Seconds a round's check may run.
 CHECK_TIMEOUT = 300
-# Left out of assess's environment: Ship's PR_STAGED, which pr.sh's tests mustn't inherit, and the
-# repo's venv, which uv would warn about and not use.
-UNSET = {"PR_STAGED", "VIRTUAL_ENV"}
+# Left out of assess's environment: the repo's venv, which uv would warn about and not use.
+UNSET = {"VIRTUAL_ENV"}
 # A later round's pass over the fixes.
 CHECK = "check of the fixes"
 # macOS's, by its full path, so PATH can't stand another in for it.

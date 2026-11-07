@@ -2,10 +2,12 @@
 # pr [done] [N]: commit, push and open or update the PR for the current branch, in one step that is
 # safe to repeat. Each step runs only when it has something to do:
 #
-#   commit  when the tree has changes: stages everything (.tmp/ is ignored) and commits with the
+#   check   every time, before the commit: refuses a branch that isn't issue N's, a missing
+#           .tmp/N/pr-body.md, and replies pr_threads.py wouldn't post, so nothing is pushed first
+#   commit  when the tree has changes: commits what stage.py staged, as the report showed it, with the
 #           message in .tmp/N/commit.txt, then deletes that file, so the next change needs a new one.
-#           Refuses a message that says fixes #<n>: branch commits say refs, and the PR title fixes.
-#           Under Ship (PR_STAGED=1) it commits what Go staged, and refuses a change made since
+#           Refuses any change that isn't staged, untracked files included, naming each, and a
+#           message that says fixes #<n>: branch commits say refs, and the PR title fixes.
 #   fetch   every time: fetches origin, and stops before the push when that fails. Refuses a
 #           GitHub branch with commits the local one lacks, so a push never drops them
 #   rebase  when the branch lacks origin's tip of the default branch: rebases onto it, so the PR isn't
@@ -22,6 +24,8 @@
 #   findings when .tmp/N/ holds round files, <k>-findings.md or <k>-outcomes.md: sends them to
 #           Redmine in round order (findings.py send --outcomes). Each stays until Done finds it in
 #           Redmine. One not recorded is named, the review below still starts, and pr exits 1
+#   link    when the issue's Pull requests field doesn't link the PR, or Redmine can't say: prints
+#           the redmine-set line that links it, for a person to run
 #   review  when neither a round file nor a Redmine round names HEAD, and origin's base or HEAD has
 #           REVIEW.md: starts Claude's review in the background as the issue's next round, which
 #           runs scripts/assess, writes .tmp/N/<k>-findings.md and sends it to Redmine (review.py
@@ -116,6 +120,17 @@ case $state in
     exit "$unsent" ;;
 esac
 
+# What a commit and push would otherwise find only after them.
+issue_of_branch=$(printf '%s' "$branch" | sed -nE 's,^([^/]+/)?([0-9]+)-.*,\2,p')
+[ "$issue_of_branch" = "$n" ] ||
+  { echo "pr: the branch $branch isn't #$n's" >&2; exit 2; }
+[ -f ".tmp/$n/pr-body.md" ] || { echo "pr: .tmp/$n/pr-body.md is missing" >&2; exit 2; }
+if [ "$state" = OPEN ] && [ -d ".tmp/$n/replies" ]; then
+  py310 ||
+    { echo "pr: .tmp/$n/ has replies to send, and python3 is older than 3.10" >&2; exit 2; }
+  python3 "$scripts/pr_threads.py" "$(gh pr view "$branch" --json number --jq .number)" --check ".tmp/$n/replies"
+fi
+
 # Redmine scans every branch of the shared .git, so a branch commit's fixes #<n> closes the issue
 # at the next fetch, before the PR merges. Only the squash commit, titled by gh pc, says fixes.
 # The pattern is Redmine's: any case, after a space, ( [ , - or the start, then : or spaces, which
@@ -131,13 +146,9 @@ if [ -n "$(git status --porcelain)" ]; then
     printf '%s\n' "$fixes" | sed 's/^/  line /' >&2
     exit 2
   fi
-  if [ -n "${PR_STAGED:-}" ]; then
-    # From Ship: commit what Go staged and showed, never a change made since.
-    late=$(git diff --name-only; git ls-files --others --exclude-standard)
-    [ -z "$late" ] || { echo "pr: changed since Go staged the tree, so not reviewed; press Go again:" >&2; echo "$late" >&2; exit 2; }
-  else
-    git add -A
-  fi
+  # Commit what stage.py staged for the report, never a change made since or a file nobody listed.
+  late=$(git diff --name-only; git ls-files --others --exclude-standard)
+  [ -z "$late" ] || { echo "pr: not staged, so not in the report; add each to .tmp/$n/manifest.txt and run stage.py $n, or delete or ignore it:" >&2; echo "$late" >&2; exit 2; }
   git commit -q -F "$message"
   rm "$message"
   git log --oneline --stat -1
@@ -252,6 +263,13 @@ echo "$url"
 pr_path=${url#https://github.com/}
 git config "branch.$branch.github-pr-owner-number" "$(echo "$pr_path" | sed 's|/pull/|#|; s|/|#|')"
 open "vscode://github.vscode-pull-request-github/open-pull-request-webview?uri=$(python3 -c 'import sys, urllib.parse; print(urllib.parse.quote(sys.argv[1], safe=""))' "$url")"
+
+# The line that links the PR in Redmine, for a person to run; none once the field links it.
+linked=$(python3 "$scripts/redmine_set.py" --check issue "$n" --pr "$url" 2>/dev/null || true)
+case $linked in
+  *"already as asked"*) ;;
+  *) echo "pr: link the PR: redmine-set issue $n --pr $url" ;;
+esac
 
 # The review of what this push brought (review.py), last, and in the background, so a review that
 # fails or runs long, or the assess it runs, holds up neither the PR, the replies nor Ship's link in

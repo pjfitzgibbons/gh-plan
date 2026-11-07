@@ -614,8 +614,8 @@ function runPr(root, id) {
   const folder = vscode.workspace.getWorkspaceFolder(vscode.Uri.file(root)) || vscode.TaskScope.Workspace;
   const task = new vscode.Task(
     { type: "plan", issue: id }, folder, `pr ${id}`, "plan",
-    // PR_STAGED: pr commits what Go staged, and refuses a change made since.
-    new vscode.ProcessExecution(pr, [String(id)], { cwd: root, env: { PR_STAGED: "1" } })
+    // pr commits what Go staged, and refuses a change made since.
+    new vscode.ProcessExecution(pr, [String(id)], { cwd: root })
   );
   task.presentationOptions = { reveal: vscode.TaskRevealKind.Always, panel: vscode.TaskPanelKind.Dedicated, clear: true };
   return new Promise((resolve, reject) => {

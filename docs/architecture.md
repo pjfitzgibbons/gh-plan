@@ -15,7 +15,7 @@
   - [6.3 Platform](#platform)
 - [7. Operations](#operations)
   - [7.1 Start](#start)
-  - [7.2 Go and Ship](#ship)
+  - [7.2 Ship](#ship)
   - [7.3 Finish](#finish)
   - [7.4 Tool commits](#tool-commits)
   - [7.5 Baselines](#freeze)
@@ -127,10 +127,12 @@ client of one of them:
 - **The extension** shows Next up in a panel, and holds the Start, Open, Go, Ship and Done
   buttons ([`vscode/README.md`](../vscode/README.md)).
 - **`pr`** commits, pushes, opens or updates the PR, and posts review replies. After a push, it
-  has Claude review the branch under `REVIEW.md` (`review.py`), unless a round file or a Redmine round already names that commit. Round `k`'s review writes its findings to `.tmp/<n>/<k>-findings.md`, and `findings.py send` records them in Redmine as the round. `pr` also sends the outcome lines a person accepted at Go, `.tmp/<n>/<k>-outcomes.md`. Nothing is posted. After a merge it
+  has Claude review the branch under `REVIEW.md` (`review.py`), unless a round file or a Redmine round already names that commit. Round `k`'s review writes its findings to `.tmp/<n>/<k>-findings.md`, and `findings.py send` records them in Redmine as the round. `pr` also sends the outcome lines a person accepted by running it, `.tmp/<n>/<k>-outcomes.md`. Nothing is posted. After a merge it
   sends only the replies, any unsent findings and the PR body, and leaves the cleanup to Done. It and its Python scripts live in
   `.claude/skills/gh-issues/scripts/`, with their tests. `~/.claude/skills/gh-issues` links to the
   main checkout's copy, so every repo uses the one skill and `~/.local/bin/pr` reaches it.
+- **`stage.py`**, beside `pr`, stages exactly what `.tmp/<n>/manifest.txt` names, so what the report
+  shows is what `pr` commits. `pr` never stages.
 - **The setup scripts**, `setup.rb`, `import.rb` and `backfill.rb`, run inside the container with
   `rails runner`, on the database directly, so they need no API key.
 - **The lane board plugin** adds the Lanes tab. It only reads.
@@ -191,8 +193,9 @@ too. When the review ends it runs `findings.py send` to record the round.
    ───────                       ─────────────────────────────             ────────────
    (1) START ──────────────────▶ branch <type>/<n>-<slug>, off the base ─▶ In Progress,
                                                                             start date, note
-                                 work · .tmp/<n>/commit.txt, pr-body.md
-   (2) GO, then SHIP ──────────▶ pr <n>: commit, push, PR ───────────────▶ Pull requests
+                                 work · .tmp/<n>/commit.txt, pr-body.md,
+                                 manifest.txt, staged, then report.html
+   (2) SHIP ───────────────────▶ pr <n>: commit, push, PR ───────────────▶ Pull requests
                                  PR body: the Done list, ticked
                                  review rounds: replies/
    (3) squash merge, title ends (fixes #<n>)
@@ -225,29 +228,28 @@ the panel loaded. A lock file per issue keeps two windows from starting it at on
 ([failure modes, *Start*](failure-modes.md)).
 
 <a id="ship"></a>
-### 7.2 Go and Ship
+### 7.2 Ship
 
 A round is written into `.tmp/<n>/`: `commit.txt` when the tree has changes, `pr-body.md`, whose
-`## Done` section copies the issue's Done list and ticks the lines the PR meets, and a reply to
-each review thread in `replies/<comment id>.md`. Once the PR body and something beside it are
-written, the extension opens them all for review.
+`## Done` section copies the issue's Done list and ticks the lines the PR meets, a reply to each
+review thread in `replies/<comment id>.md`, and `manifest.txt`, each file or directory to ship on
+a line of its own.
 
-Go, in the title bar of any of them, saves them and refuses by name a missing PR body, a missing
-commit message while the tree has changes, or a branch that isn't the issue's. It then stages every
-change, as `pr`'s commit will, and shows the staged diff and commit message in the issue's Review
-tab, so what it shows is what Ship commits. Only Ship
-runs `pr`: it saves and checks again, refuses by name any file changed since Go staged the tree,
-then runs `pr <n>` in a terminal in the worktree. Under Ship, `pr` commits the index Go staged and
-refuses a change made since, rather than staging again. Go and Ship refuse a worktree file with
-unsaved edits, which neither the stage nor the commit would hold.
+`stage.py <n>` resets the index and stages exactly what the manifest names, never `git add -A`, and
+refuses by name a manifest that names the whole tree, or any change it leaves out. The report is
+written last, from the staged diff, so what it shows is what `pr` commits. That leaves one step:
+a person runs `pr <n>`. It refuses by name a branch that isn't the issue's, a missing PR body, a
+reply it couldn't send, a missing commit message while the tree has changes, and any change that
+isn't staged, untracked files included; it never stages. Commands are printed for a person to copy
+and run ([ADR 0014](adr/0014-terminal-client.md)).
 
 Before the commit message is written, `scripts/assess` runs every check. The PR's `assess` check
 runs it again on GitHub on every PR and push to `main`, which is what Dependabot's PRs rely on; a
 round doesn't read it. `main`'s branch protection requires every review thread resolved before a
-merge. Before Go, `/code-review low` runs on the uncommitted changes, and before the first Go
-Claude writes the submission report, its fixes, the whole diff, `commit.txt` and `pr-body.md`,
+merge. Before the report, `/code-review low` runs on the uncommitted changes, and before the first
+`pr` Claude writes the submission report, its fixes, the whole diff, `commit.txt` and `pr-body.md`,
 for the Review tab.
-Each commit Ship pushes gets a review round from `pr`'s `review.py`, which runs `scripts/assess`
+Each commit `pr` pushes gets a review round from `pr`'s `review.py`, which runs `scripts/assess`
 itself, and Claude answers the round in the Review tab
 ([`vscode/README.md`](../vscode/README.md)).
 
@@ -255,8 +257,9 @@ itself, and Claude answers the round in the Review tab
 reply to its thread and resolves the thread. Each reply is deleted once sent, so a second `pr`
 sends nothing twice. After the merge, `pr` sends only the replies and the PR body, so a Done line
 ticked after the merge reaches the PR. The issue's description is never written: an `issue.md` left from before the
-PR held the Done ticks is named as no longer sent, and left where it is. After the first `pr`, the
-issue's `Pull requests` field links the PR, with a journal note. A `pr` whose push adds commits
+PR held the Done ticks is named as no longer sent, and left where it is. `pr` prints the
+`redmine-set issue <n> --pr <url>` line for a person to run until the issue's `Pull requests` field
+links the PR. A `pr` whose push adds commits
 to an open PR also asks Copilot to review it again, for the commits that answer a review; `gh pc` asks for a new PR.
 `gh pr edit --help` (2.102.0) says `--add-reviewer` adds or re-requests a reviewer.
 

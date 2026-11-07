@@ -40,7 +40,9 @@ Source Control's does on a Git refresh.
   and shows them, with the commit message, below the report in the issue's `Review #<n>` tab,
   opening the tab when the issue has no report yet, so what it shows is what Ship commits. A diff
   git can't hand over in one go, over 1 MB, opens in VS Code's Staged Changes instead, and Go says
-  why. With nothing to commit, it shows nothing.
+  why. With nothing to commit, it shows nothing. ADR 0014 takes the extension off the code path: in
+  the terminal, `stage.py <n>` stages what `.tmp/<n>/manifest.txt` names, never every change, and
+  `pr <n>` is the one step left.
 - **Ship** is the button Go becomes in the Review tab, and the rocket Go puts on the review files
   and on Staged Changes when they open there. Only
   Ship runs `pr`: it saves and checks again, refuses by name a file changed since Go staged the

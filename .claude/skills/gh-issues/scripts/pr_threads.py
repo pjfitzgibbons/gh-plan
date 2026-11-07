@@ -240,6 +240,11 @@ def main(argv=None) -> int:
         help="folder to write each open thread's <comment id>.md context into",
     )
     p.add_argument(
+        "--check",
+        type=Path,
+        help="folder of <comment id>.md replies; refuses what --post would refuse, posting nothing",
+    )
+    p.add_argument(
         "--post",
         type=Path,
         help="folder of <comment id>.md replies; posts, resolves and deletes each",
@@ -250,6 +255,12 @@ def main(argv=None) -> int:
     if a.drafts:
         for f in write_drafts(a.drafts, found):
             print(f)
+        return 0
+    if a.check:
+        try:
+            read_reply_dir(a.check, a.pr, found)
+        except ValueError as e:
+            sys.exit(f"pr_threads.py: {e}; nothing posted")
         return 0
     if a.post:
         try:
