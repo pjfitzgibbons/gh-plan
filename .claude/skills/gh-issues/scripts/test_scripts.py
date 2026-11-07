@@ -44,12 +44,6 @@ os.environ["REDMINE_KEYCHAIN"] = "gh-plan-test-no-such-item"
 os.environ["REDMINE_URL"] = "http://127.0.0.1:9"
 
 
-def outside_env() -> dict:
-    """os.environ without PR_STAGED, which Ship sets for its pr: a pr.sh test that inherited it
-    would take the staged path."""
-    return {k: v for k, v in os.environ.items() if k != "PR_STAGED"}
-
-
 GLOBAL = "| L1 Security | q |\n| L2 Privacy and data | q |\n"
 REPO = "| L11 Invariants | q |\n- **Sections:** the global ones, then `### Notes`.\n"
 
@@ -230,7 +224,7 @@ class PrDone(unittest.TestCase):
         )
         (bin / "gh").chmod(0o755)
         self.env = {
-            **outside_env(),
+            **os.environ,
             "PATH": f"{bin}:{os.environ['PATH']}",
             "GIT_AUTHOR_NAME": "T",
             "GIT_AUTHOR_EMAIL": "t@example.com",
@@ -316,19 +310,19 @@ class PrDone(unittest.TestCase):
 
 
 class PrStaged(unittest.TestCase):
-    """pr.sh from Ship, which sets PR_STAGED: it commits what Go staged, and nothing changed since.
-    PrDone's fixture, with the PR open."""
+    """pr.sh commits what was staged, and refuses anything else. PrDone's fixture, with the PR
+    open."""
 
     repo, tearDown, pr = PrDone.setUp, PrDone.tearDown, PrDone.pr
 
     def setUp(self):
         self.repo()
         self.state.write_text("OPEN\n")
-        self.env["PR_STAGED"] = "1"
         message = self.tree / ".tmp" / "9" / "commit.txt"
         message.parent.mkdir(parents=True)
         message.write_text("Reviewed (refs #9)\n")
-        (self.tree / "reviewed.txt").write_text("staged by Go")
+        (message.parent / "pr-body.md").write_text("Fixes #9.\n")
+        (self.tree / "reviewed.txt").write_text("staged for the report")
         subprocess.run(["git", "add", "-A"], cwd=self.tree, check=True)
 
     def committed(self):
@@ -339,17 +333,44 @@ class PrStaged(unittest.TestCase):
             text=True,
         ).stdout.split()
 
-    def test_a_change_made_after_go_is_refused_and_nothing_is_committed(self):
-        (self.tree / "reviewed.txt").write_text("edited after Go")
-        (self.tree / "late.txt").write_text("new after Go")
+    def test_a_change_made_after_staging_is_refused_and_nothing_is_committed(self):
+        (self.tree / "reviewed.txt").write_text("edited after staging")
+        (self.tree / "late.txt").write_text("new after staging")
         run = self.pr()
         self.assertEqual(run.returncode, 2)
-        self.assertIn("changed since Go staged the tree", run.stderr)
+        self.assertIn("not staged, so not in the report", run.stderr)
+        self.assertIn(".tmp/9/manifest.txt", run.stderr)
         self.assertIn("late.txt\n", run.stderr)
         self.assertIn("reviewed.txt\n", run.stderr)
         self.assertEqual(self.committed(), ["start"])
 
-    def test_what_go_staged_is_committed(self):
+    def test_a_file_nobody_staged_is_refused_with_nothing_staged(self):
+        subprocess.run(["git", "reset", "-q"], cwd=self.tree, check=True)
+        run = self.pr()
+        self.assertEqual(run.returncode, 2)
+        self.assertIn("reviewed.txt\n", run.stderr)
+        self.assertEqual(self.committed(), ["start"])
+
+    def test_a_branch_of_another_issue_is_refused_before_the_commit(self):
+        run = self.pr("8")
+        self.assertEqual(run.returncode, 2)
+        self.assertIn("the branch fix/9-x isn't #8's", run.stderr)
+        self.assertEqual(self.committed(), ["start"])
+
+    def test_a_branch_with_no_issue_number_is_refused_even_given_one(self):
+        subprocess.run(["git", "switch", "-q", "-c", "scratch"], cwd=self.tree, check=True)
+        run = self.pr("9")
+        self.assertEqual(run.returncode, 2)
+        self.assertIn("the branch scratch isn't #9's", run.stderr)
+
+    def test_a_missing_pr_body_is_refused_before_the_commit(self):
+        (self.tree / ".tmp" / "9" / "pr-body.md").unlink()
+        run = self.pr()
+        self.assertEqual(run.returncode, 2)
+        self.assertIn(".tmp/9/pr-body.md is missing", run.stderr)
+        self.assertEqual(self.committed(), ["start"])
+
+    def test_what_was_staged_is_committed(self):
         self.pr()  # The fetch then fails: the fixture has no origin.
         self.assertEqual(self.committed(), ["Reviewed", "(refs", "#9)", "reviewed.txt"])
 
@@ -376,6 +397,213 @@ class PrStaged(unittest.TestCase):
         self.assertEqual(self.committed()[:3], ["Reviewed", "(refs", "#9)"])
 
 
+class Stage(unittest.TestCase):
+    """stage.py against a real repo: the index ends as HEAD plus what the manifest names."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.tree = Path(self.tmp.name)
+        self.env = {
+            **os.environ,
+            "GIT_AUTHOR_NAME": "T",
+            "GIT_AUTHOR_EMAIL": "t@example.com",
+            "GIT_COMMITTER_NAME": "T",
+            "GIT_COMMITTER_EMAIL": "t@example.com",
+            "GIT_CONFIG_GLOBAL": "/dev/null",
+        }
+        self.git("init", "-q", "-b", "main")
+        (self.tree / ".gitignore").write_text(".tmp\n")
+        (self.tree / "kept.txt").write_text("one\n")
+        self.git("add", "-A")
+        self.git("commit", "-q", "-m", "start")
+        self.manifest = self.tree / ".tmp" / "9" / "manifest.txt"
+        self.manifest.parent.mkdir(parents=True)
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def git(self, *args):
+        done = subprocess.run(
+            ["git", *args], cwd=self.tree, env=self.env, check=True, capture_output=True, text=True
+        )
+        return done.stdout
+
+    def stage(self, cwd=None):
+        return subprocess.run(
+            [sys.executable, str(Path(__file__).parent / "stage.py"), "9"],
+            cwd=cwd or self.tree,
+            env=self.env,
+            capture_output=True,
+            text=True,
+        )
+
+    def test_a_subdirectory_reads_the_manifest_from_the_root(self):
+        """The manifest's kept.txt is the root's, though docs/ has one too."""
+        docs = self.tree / "docs"
+        docs.mkdir()
+        (docs / "kept.txt").write_text("docs\n")
+        self.git("add", "-A")
+        self.git("commit", "-q", "-m", "docs")
+        (self.tree / "kept.txt").write_text("two\n")
+        (docs / "kept.txt").write_text("changed\n")
+        self.manifest.write_text("kept.txt\n")
+        done = self.stage(cwd=docs)
+        self.assertEqual(done.returncode, 2, done.stderr)
+        self.assertIn("docs/kept.txt", done.stderr)
+        self.assertEqual(self.staged(), ["kept.txt"])
+
+    def staged(self):
+        return self.git("diff", "--cached", "--name-only").split()
+
+    def test_files_and_directories_are_staged_and_listed(self):
+        (self.tree / "kept.txt").write_text("two\n")
+        (self.tree / "dir").mkdir()
+        (self.tree / "dir" / "new.txt").write_text("new\n")
+        self.manifest.write_text("kept.txt\n\ndir\n")
+        run = self.stage()
+        self.assertEqual(run.returncode, 0, run.stderr)
+        self.assertEqual(self.staged(), ["dir/new.txt", "kept.txt"])
+        self.assertIn("A\tdir/new.txt\n", run.stdout)
+
+    def test_a_deleted_file_is_staged_as_deleted(self):
+        (self.tree / "kept.txt").unlink()
+        self.manifest.write_text("kept.txt\n")
+        self.assertEqual(self.stage().returncode, 0)
+        self.assertEqual(self.git("diff", "--cached", "--name-status"), "D\tkept.txt\n")
+
+    def test_a_change_the_manifest_leaves_out_is_refused_by_name(self):
+        (self.tree / "kept.txt").write_text("two\n")
+        (self.tree / "tmux-1.log").write_text("stray\n")
+        self.manifest.write_text("kept.txt\n")
+        run = self.stage()
+        self.assertEqual(run.returncode, 2)
+        self.assertIn("  tmux-1.log\n", run.stderr)
+        self.assertEqual(self.staged(), ["kept.txt"])
+
+    def test_a_file_staged_earlier_and_dropped_from_the_manifest_doesnt_ship(self):
+        (self.tree / "dropped.txt").write_text("old\n")
+        (self.tree / "kept.txt").write_text("two\n")
+        self.git("add", "dropped.txt")
+        self.manifest.write_text("kept.txt\n")
+        run = self.stage()
+        self.assertEqual(run.returncode, 2)
+        self.assertIn("  dropped.txt\n", run.stderr)
+        self.assertEqual(self.staged(), ["kept.txt"])
+
+    def test_the_whole_tree_is_refused_with_nothing_staged(self):
+        (self.tree / "stray.txt").write_text("stray\n")
+        for entry in (".", "./", "dir/..", str(self.tree)):
+            with self.subTest(entry):
+                self.manifest.write_text(f"{entry}\n")
+                run = self.stage()
+                self.assertEqual(run.returncode, 2)
+                self.assertIn("names the whole tree", run.stderr)
+                self.assertEqual(self.staged(), [])
+
+    def test_a_glob_is_a_literal_path(self):
+        (self.tree / "stray.txt").write_text("stray\n")
+        self.manifest.write_text("*.txt\n")
+        run = self.stage()
+        self.assertEqual(run.returncode, 2)
+        self.assertIn("*.txt", run.stderr)
+        self.assertEqual(self.staged(), [])
+
+    def test_a_missing_or_empty_manifest_is_refused(self):
+        run = self.stage()
+        self.assertEqual(run.returncode, 2)
+        self.assertIn("manifest.txt is missing", run.stderr)
+        self.manifest.write_text("\n  \n")
+        run = self.stage()
+        self.assertEqual(run.returncode, 2)
+        self.assertIn("names nothing", run.stderr)
+
+    def test_a_manifest_that_isnt_text_is_refused_without_a_traceback(self):
+        self.manifest.write_bytes("kept.txt\n".encode("utf-16"))
+        run = self.stage()
+        self.assertEqual(run.returncode, 2)
+        self.assertIn("can't be read", run.stderr)
+        self.assertNotIn("Traceback", run.stderr)
+
+    def test_outside_a_repo_is_refused_without_a_traceback(self):
+        with tempfile.TemporaryDirectory() as elsewhere:
+            run = subprocess.run(
+                [sys.executable, str(Path(__file__).parent / "stage.py"), "9"],
+                cwd=elsewhere,
+                env=self.env,
+                capture_output=True,
+                text=True,
+            )
+        self.assertEqual(run.returncode, 2)
+        self.assertNotIn("Traceback", run.stderr)
+
+    def commit_kept(self, text):
+        (self.tree / "kept.txt").write_text(text)
+        self.git("commit", "-q", "-am", text)
+
+    def diverge(self):
+        """Give side and main commits that conflict in kept.txt, leaving main checked out."""
+        self.git("checkout", "-q", "-b", "side")
+        self.commit_kept("side\n")
+        self.git("checkout", "-q", "main")
+        self.commit_kept("main\n")
+
+    def stop_on_a_conflict(self, *command):
+        """Run a git command expected to stop on a conflict, which is a non-zero exit."""
+        stopped = subprocess.run(
+            ["git", *command], cwd=self.tree, env=self.env, capture_output=True
+        )
+        self.assertNotEqual(stopped.returncode, 0, stopped.stdout)
+
+    def assert_stage_refuses(self, operation):
+        """stage.py names the operation and leaves it where it was, with the file in the manifest."""
+        self.manifest.write_text("kept.txt\n")
+        before = self.git("status")
+        run = self.stage()
+        self.assertEqual(run.returncode, 2, run.stdout)
+        self.assertIn(f"a {operation} is in progress", run.stderr)
+        self.assertNotIn("Traceback", run.stderr)
+        self.assertEqual(self.git("status"), before)
+
+    def test_a_merge_in_progress_is_refused_and_kept(self):
+        self.diverge()
+        self.stop_on_a_conflict("merge", "side")
+        self.assert_stage_refuses("merge")
+
+    def test_a_rebase_in_progress_is_refused_and_kept(self):
+        self.diverge()
+        self.git("checkout", "-q", "side")
+        self.stop_on_a_conflict("rebase", "main")
+        self.assert_stage_refuses("rebase")
+
+    def test_a_cherry_pick_in_progress_is_refused_and_kept(self):
+        self.diverge()
+        self.stop_on_a_conflict("cherry-pick", "side")
+        self.assert_stage_refuses("cherry-pick")
+
+    def test_a_revert_in_progress_is_refused_and_kept(self):
+        self.commit_kept("reverted\n")
+        self.commit_kept("later\n")
+        self.stop_on_a_conflict("revert", "--no-edit", "HEAD~1")
+        self.assert_stage_refuses("revert")
+
+    def test_a_failing_last_step_is_refused_without_a_traceback(self):
+        """A git that fails only on the final listing, once everything else has worked."""
+        shim = self.tree / ".tmp" / "bin"
+        shim.mkdir()
+        (shim / "git").write_text(
+            '#!/bin/sh\n[ "$1 $2" != "diff --cached" ] || { echo broken >&2; exit 1; }\n'
+            f'exec {shutil.which("git")} "$@"\n'
+        )
+        (shim / "git").chmod(0o755)
+        self.env["PATH"] = f"{shim}{os.pathsep}{self.env['PATH']}"
+        (self.tree / "kept.txt").write_text("two\n")
+        self.manifest.write_text("kept.txt\n")
+        run = self.stage()
+        self.assertEqual(run.returncode, 2, run.stdout)
+        self.assertIn("stage: broken", run.stderr)
+        self.assertNotIn("Traceback", run.stderr)
+
+
 class GhBody(unittest.TestCase):
     """ghbody.sh, which gh pc and gh pb run, with GHBODY_DRY: the PR title is the first commit's
     subject, its (refs #N) made (fixes #N) when the body opens Fixes #N."""
@@ -388,7 +616,7 @@ class GhBody(unittest.TestCase):
         (bin / "gh").write_text('#!/bin/sh\ncase "$*" in "repo view"*) echo main ;; esac\n')
         (bin / "gh").chmod(0o755)
         self.env = {
-            **outside_env(),
+            **os.environ,
             "PATH": f"{bin}:{os.environ['PATH']}",
             "GHBODY_DRY": "1",
             "GIT_AUTHOR_NAME": "T",
@@ -494,7 +722,7 @@ class PrRebase(unittest.TestCase):
         for tool in ("gh", "open", "git"):
             (bin / tool).chmod(0o755)
         self.env = {
-            **outside_env(),
+            **os.environ,
             "PATH": f"{bin}:{os.environ['PATH']}",
             "GIT_AUTHOR_NAME": "T",
             "GIT_AUTHOR_EMAIL": "t@example.com",
@@ -511,6 +739,9 @@ class PrRebase(unittest.TestCase):
         self.tree = top / "tree"
         self.git(top, "clone", "-q", str(self.origin), str(self.tree))
         (self.tree / ".git" / "info" / "exclude").write_text(".tmp\n")
+        self.body = self.tree / ".tmp" / "9" / "pr-body.md"
+        self.body.parent.mkdir(parents=True)
+        self.body.write_text("Fixes #9.\n")
         self.git(self.tree, "checkout", "-q", "-b", "feat/9-x")
         self.commit(self.tree, "a.txt", "one\nbranch\n", "Work (refs #9)")
         self.git(self.tree, "push", "-q", "-u", "origin", "HEAD")
@@ -547,20 +778,6 @@ class PrRebase(unittest.TestCase):
             text=True,
         )
 
-    def test_ships_pr_staged_never_reaches_a_pr_sh_test(self):
-        # Ship's pr runs the suite's pr.sh tests with PR_STAGED set; each fixture leaves it out.
-        self.tearDown()
-        with mock.patch.dict(os.environ, PR_STAGED="1"):
-            self.setUp()
-        message = self.tree / ".tmp" / "9" / "commit.txt"
-        message.parent.mkdir(parents=True)
-        message.write_text("More\n")
-        # Unstaged, which a staged pr refuses as changed since Go.
-        (self.tree / "b.txt").write_text("more\n")
-        run = self.pr()
-        self.assertEqual(run.returncode, 0, run.stderr)
-        self.assertEqual(self.git(self.tree, "log", "-1", "--format=%s"), "More")
-
     def test_a_branch_commit_that_says_fixes_is_refused_before_the_push(self):
         pushed = self.on_origin("feat/9-x")
         self.commit(self.tree, "b.txt", "more\n", "More\n\nThis fixes #9 at last")
@@ -591,9 +808,10 @@ class PrRebase(unittest.TestCase):
     def test_a_rebase_with_a_new_commit_pushes_it(self):
         self.advance_main()
         message = self.tree / ".tmp" / "9" / "commit.txt"
-        message.parent.mkdir(parents=True)
+        message.parent.mkdir(parents=True, exist_ok=True)
         message.write_text("More\n")
         (self.tree / "b.txt").write_text("more\n")
+        self.git(self.tree, "add", "b.txt")
         run = self.pr()
         self.assertEqual(run.returncode, 0, run.stderr)
         self.assertIn("rebased onto", run.stdout)
@@ -602,9 +820,10 @@ class PrRebase(unittest.TestCase):
 
     def test_a_branch_on_mains_tip_is_pushed_without_a_rebase_or_force(self):
         message = self.tree / ".tmp" / "9" / "commit.txt"
-        message.parent.mkdir(parents=True)
+        message.parent.mkdir(parents=True, exist_ok=True)
         message.write_text("More\n")
         (self.tree / "b.txt").write_text("more\n")
+        self.git(self.tree, "add", "b.txt")
         before = self.git(self.tree, "rev-parse", "HEAD")
         run = self.pr()
         self.assertEqual(run.returncode, 0, run.stderr)
@@ -784,7 +1003,7 @@ class PrRebase(unittest.TestCase):
         self.assertEqual(self.on_origin("feat/9-x"), merge)
 
     def test_an_ignored_file_main_starts_tracking_is_refused_before_the_rebase(self):
-        (self.tree / ".git" / "info" / "exclude").write_text("local.cfg\n")
+        (self.tree / ".git" / "info" / "exclude").write_text(".tmp\nlocal.cfg\n")
         (self.tree / "local.cfg").write_text("mine\n")
         self.advance_main("local.cfg", "main's\n")
         before = self.git(self.tree, "rev-parse", "HEAD")
@@ -802,7 +1021,7 @@ class PrRebase(unittest.TestCase):
         self.git(self.other, "mv", "old.cfg", "local.cfg")
         self.git(self.other, "commit", "-q", "-m", "Rename")
         self.git(self.other, "push", "-q", "origin", "HEAD:main")
-        (self.tree / ".git" / "info" / "exclude").write_text("local.cfg\n")
+        (self.tree / ".git" / "info" / "exclude").write_text(".tmp\nlocal.cfg\n")
         (self.tree / "local.cfg").write_text("mine\n")
         run = self.pr()
         self.assertEqual(run.returncode, 2)
@@ -810,7 +1029,7 @@ class PrRebase(unittest.TestCase):
         self.assertEqual((self.tree / "local.cfg").read_text(), "mine\n")
 
     def test_an_ignored_file_at_a_non_ascii_path_main_adds_is_refused(self):
-        (self.tree / ".git" / "info" / "exclude").write_text("é.cfg\n")
+        (self.tree / ".git" / "info" / "exclude").write_text(".tmp\né.cfg\n")
         (self.tree / "é.cfg").write_text("mine\n")
         self.advance_main("é.cfg", "main's\n")
         run = self.pr()
@@ -1450,7 +1669,11 @@ class FakePlan:
             "status": dict(self.STATUSES[2]),
             "fixed_version": {"id": 1, "name": "M0"},
             "description": "### Task\r\nOld.\r\n",
-            "custom_fields": [{"id": 1, "value": "3"}],
+            "custom_fields": [
+                {"id": 1, "name": "Points", "value": "3"},
+                {"id": 6, "name": "Ordinal", "value": None},
+                {"id": 7, "name": "Pull requests", "value": ""},
+            ],
             "journals": [{"id": 1, "notes": "Started."}],
         }
         self.writes = []
@@ -1524,14 +1747,19 @@ class FakePlan:
             i["fixed_version"] = {"id": v["id"], "name": v["name"]} if v else None
         if "subject" in put:
             i["subject"] = put["subject"]
-        if "custom_fields" in put:
-            i["custom_fields"] = put["custom_fields"]
+        for sent in put.get("custom_fields", []):
+            held = next(f for f in i["custom_fields"] if f["id"] == sent["id"])
+            held["value"] = sent["value"]
         if "description" in put:
             i["description"] = put["description"].replace("\n", "\r\n")
         if "notes" in put:
             i["journals"] = i["journals"] + [
                 {"id": max([j["id"] for j in i["journals"]], default=0) + 1, "notes": put["notes"]}
             ]
+
+
+PR_URL = "https://github.com/owner/gh-plan/pull/154"
+PR_LINK = f"[gh-plan#154]({PR_URL})"
 
 
 class RedmineSet(unittest.TestCase):
@@ -1636,6 +1864,110 @@ class RedmineSet(unittest.TestCase):
         self.assertEqual(
             self.issue(r, "--note", "Reopened."), "#69 is already as asked; nothing written"
         )
+
+    def test_points_and_ordinal_and_pr_go_in_one_write(self):
+        r = FakePlan()
+        self.issue(r, "--points", "5", "--ordinal", "30", "--pr", PR_URL)
+        self.assertEqual(len(r.writes), 1)
+        self.assertEqual(
+            r.writes[0][2]["issue"]["custom_fields"],
+            [
+                {"id": 1, "value": "5"},
+                {"id": 6, "value": "30"},
+                {"id": 7, "value": PR_LINK},
+            ],
+        )
+
+    def test_ordinal_sets_changes_and_a_rerun_writes_nothing(self):
+        r = FakePlan()
+        self.issue(r, "--ordinal", "010")
+        self.assertEqual(r.writes[0][2], {"issue": {"custom_fields": [{"id": 6, "value": "10"}]}})
+        self.assertIn("ordinal: none → 10", self.out.getvalue())
+        self.assertIn("already as asked", self.issue(r, "--ordinal", "10"))
+        self.issue(r, "--ordinal", "000")
+        self.assertIn("ordinal: 10 → 0", self.out.getvalue())
+        self.issue(r, "--ordinal", "20")
+        self.assertIn("ordinal: 0 → 20", self.out.getvalue())
+
+    def test_an_ordinal_that_is_not_a_whole_number_is_refused_before_any_write(self):
+        r = FakePlan()
+        for bad in ("3.5", "-1", "soon", "", "²", "٣"):
+            with self.assertRaisesRegex(Refused, "isn't a whole number"):
+                self.issue(r, "--ordinal", bad)
+        self.assertEqual(r.writes, [])
+
+    def test_a_pr_is_linked_with_a_note_and_a_rerun_writes_nothing(self):
+        r = FakePlan()
+        self.issue(r, "--pr", PR_URL)
+        self.assertEqual(
+            r.writes[0][2],
+            {
+                "issue": {
+                    "custom_fields": [{"id": 7, "value": PR_LINK}],
+                    "notes": f"Opened {PR_LINK}",
+                }
+            },
+        )
+        self.assertIn("already as asked", self.issue(r, "--pr", PR_URL))
+        self.assertEqual(len(r.writes), 1)
+
+    def test_a_pr_is_added_after_what_the_field_holds(self):
+        r = FakePlan()
+        r.issue["custom_fields"][2]["value"] = "154"
+        self.issue(r, "--pr", PR_URL)
+        self.assertEqual(r.issue["custom_fields"][2]["value"], f"154, {PR_LINK}")
+
+    def test_a_pr_the_field_links_in_a_list_is_left_alone(self):
+        r = FakePlan()
+        r.issue["custom_fields"][2]["value"] = f"[x#1](https://github.com/o/x/pull/1), {PR_LINK}"
+        self.assertIn("already as asked", self.issue(r, "--pr", PR_URL))
+        self.assertEqual(r.writes, [])
+
+    def test_a_longer_pr_number_does_not_read_as_linked(self):
+        r = FakePlan()
+        r.issue["custom_fields"][2]["value"] = f"[gh-plan#1540]({PR_URL}0)"
+        self.issue(r, "--pr", PR_URL)
+        self.assertEqual(len(r.writes), 1)
+
+    def test_a_note_replaces_the_pr_s_own(self):
+        r = FakePlan()
+        self.issue(r, "--pr", PR_URL, "--note", "Linked by hand")
+        self.assertEqual(r.writes[0][2]["issue"]["notes"], "Linked by hand")
+
+    def test_check_prints_a_pr_and_writes_nothing(self):
+        r = FakePlan()
+        a = redmine_set.parser().parse_args(["--check", "issue", "69", "--pr", PR_URL])
+        said = redmine_set.set_issue(r, 69, a, self.lenses, self.extra)
+        self.assertEqual(r.writes, [])
+        self.assertIn("2 changes to make; nothing written", said)
+        self.assertIn(f"pull requests: none → {PR_LINK}", self.out.getvalue())
+        self.assertIn(f"note: Opened {PR_LINK}", self.out.getvalue())
+
+    def test_a_url_that_is_not_a_pr_is_refused_before_any_write(self):
+        r = FakePlan()
+        not_for_done = "https://github.com/o/ré/pull/1"  # vscode/done.js reads ASCII names only
+        for bad in ("154", "https://github.com/o/r/issues/1", f"{PR_URL}/files", not_for_done):
+            with self.assertRaisesRegex(Refused, "isn't a GitHub pull request's URL"):
+                self.issue(r, "--pr", bad)
+        self.assertEqual(r.writes, [])
+
+    def test_an_issue_without_the_field_is_refused_before_any_write(self):
+        r = FakePlan()
+        r.issue["custom_fields"] = [{"id": 1, "name": "Points", "value": "3"}]
+        with self.assertRaisesRegex(Refused, "no issue custom field 'Ordinal'"):
+            self.issue(r, "--ordinal", "3")
+        with self.assertRaisesRegex(Refused, "no issue custom field 'Pull requests'"):
+            self.issue(r, "--pr", PR_URL)
+        self.assertEqual(r.writes, [])
+
+    def test_a_field_redmine_did_not_keep_is_named(self):
+        r = FakePlan()
+        wrote = r.put_issue
+        r.put_issue = lambda put: wrote({"custom_fields": put["custom_fields"][:1]})
+        with self.assertRaisesRegex(
+            Refused, "didn't keep: ordinal, pull requests, note; it kept: points"
+        ):
+            self.issue(r, "--points", "5", "--ordinal", "3", "--pr", PR_URL)
 
     def test_points_with_no_listed_values_are_taken_as_given(self):
         r = FakePlan()
@@ -2841,9 +3173,9 @@ class Review(unittest.TestCase):
         self.assertEqual(got["state"], "none")
         self.assertIn("has no scripts/assess, so the round isn't complete", review.ci_line(got))
 
-    def test_assess_runs_without_ships_pr_staged_or_the_repos_venv(self):
-        with mock.patch.dict(os.environ, PR_STAGED="1", VIRTUAL_ENV="/repo/.venv"):
-            got, _ = self.assess('echo "assess: [${PR_STAGED:-}${VIRTUAL_ENV:-}]"\n')
+    def test_assess_runs_without_the_repos_venv(self):
+        with mock.patch.dict(os.environ, VIRTUAL_ENV="/repo/.venv"):
+            got, _ = self.assess('echo "assess: [${VIRTUAL_ENV:-}]"\n')
         self.assertEqual(got["summary"], "assess: []")
 
     def test_echo_reads_past_a_byte_that_isnt_utf_8(self):
@@ -3100,7 +3432,7 @@ class PrReview(unittest.TestCase):
         assess.chmod(0o755)
         self.head = self.commit(self.tree, "a.txt", "one\nbranch\nmore\n", "More")
         self.reply = self.tree / ".tmp" / "9" / "replies" / "11.md"
-        self.reply.parent.mkdir(parents=True)
+        self.reply.parent.mkdir(parents=True, exist_ok=True)
         self.reply.write_text("Fixed: it's done.\n")
         self.store = self.redmine_up()
 
@@ -3272,6 +3604,39 @@ class PrReview(unittest.TestCase):
         (check,) = findings.read(self.round_file(2))["review_findings"]
         mark = linemap.fingerprint(self.tree, self.head, "a.txt", 2, 2)
         self.assertEqual((check["outcome"], check["fingerprint"]), ("fixed", mark))
+
+    def test_a_reply_pr_couldnt_send_stops_it_before_the_commit(self):
+        self.reply.write_text("<!-- context only -->\n")
+        (self.tree / ".tmp" / "9" / "commit.txt").write_text("More (refs #9)\n")
+        (self.tree / "b.txt").write_text("more\n")
+        self.git(self.tree, "add", "b.txt")
+        run = self.pr()
+        self.assertNotEqual(run.returncode, 0)
+        self.assertIn("nothing posted", run.stderr)
+        self.assertEqual(self.git(self.tree, "rev-parse", "HEAD"), self.head)
+        self.assertTrue(self.reply.exists())
+
+    def test_the_link_line_is_printed_when_redmine_cant_say_the_pr_is_linked(self):
+        run = self.pr()
+        link = "pr: link the PR: redmine-set issue 9 --pr https://github.com/o/r/pull/1\n"
+        self.assertIn(link, run.stdout)
+
+    def redmine_set_says(self, said):
+        """A python3 on PATH that answers for redmine_set.py with said, and is python3 otherwise."""
+        python3 = Path(self.tmp.name) / "bin" / "python3"
+        python3.write_text(
+            f"#!/bin/sh\ncase \"$1\" in *redmine_set.py) echo '{said}'; exit 0 ;; esac\n"
+            f'exec "{sys.executable}" "$@"\n'
+        )
+        python3.chmod(0o755)
+
+    def test_no_link_line_once_redmine_says_nothing_would_change(self):
+        self.redmine_set_says("redmine-set: #9 is already as asked; nothing written")
+        self.assertNotIn("pr: link the PR", self.pr().stdout)
+
+    def test_a_proposed_change_quoting_the_no_change_words_still_prints_the_link_line(self):
+        self.redmine_set_says("Pull requests: already as asked -> a link")
+        self.assertIn("pr: link the PR", self.pr().stdout)
 
     def test_a_failed_review_is_named_and_the_replies_are_still_sent(self):
         self.broken.touch()

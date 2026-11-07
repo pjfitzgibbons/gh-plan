@@ -3,7 +3,8 @@
 
     redmine_set.py issue 69 --status "In Progress" --note "Reopened: the fix didn't hold"
     redmine_set.py issue 69 --version "M2 Many windows"     # or --no-version to clear it
-    redmine_set.py issue 69 --subject "…" --points 3
+    redmine_set.py issue 69 --subject "…" --points 3 --ordinal 30
+    redmine_set.py issue 69 --pr https://github.com/owner/repo/pull/154   # adds it to Pull requests
     redmine_set.py issue 69 --description .tmp/69/issue-69-body.md --expect 3f2a9c01d4e5  # from --check
     redmine_set.py version "M1 Claude review" --status closed
     redmine_set.py version "M5 Next" --create --description "…"    # shared with the project tree
@@ -12,14 +13,17 @@
 
 Every name and value is looked up in Redmine and checked before the first write: the status
 against the issue's workflow, the version among those the issue's project can use, open ones only
-for a new one, and the points among the Points field's values. A description file must pass
-outline.py's check, run from inside the repo so the repo's lenses count, and its write needs the
---expect that --check prints, so an edit made in Redmine since isn't overwritten. Reopening an issue in a
-closed version is refused before any write, as Redmine would refuse it.
+for a new one, the points among the Points field's values, the ordinal as a whole number and the
+PR as a GitHub pull request's URL. A description file must pass outline.py's check, run from
+inside the repo so the repo's lenses count, and its write needs the --expect that --check prints,
+so an edit made in Redmine since isn't overwritten. Reopening an issue in a closed version is
+refused before any write, as Redmine would refuse it.
 
 Each run prints the fields it changes, then reads the issue or version back and names any field
 Redmine didn't keep. A field already as asked is left alone, and a note that is already the issue's
 latest isn't added again, so a second run with the same arguments writes nothing and says so.
+--pr keeps what the Pull requests field holds and appends [<repo>#<number>](<url>), as Ship does,
+with a journal note, which --note replaces; a field already linking the URL is left alone.
 Relations are new_issue's for an issue it creates and issue_relations' between issues that
 exist, and a change over many issues is a list of these lines in a script.
 
@@ -40,6 +44,7 @@ import argparse
 import re
 import shlex
 import sys
+from dataclasses import dataclass
 from pathlib import Path
 
 import outline
@@ -59,6 +64,22 @@ from redmine import (
 VERSION_STATUSES = ["open", "locked", "closed"]
 # A rule id, as the review_findings plugin's ReviewFinding::RULE takes it.
 RULE = re.compile(r"[a-z0-9]+(?:-[a-z0-9]+)*")
+# The URLs vscode/done.js takes from the Pull requests field; JavaScript's \w and \d are ASCII.
+PR_URL = re.compile(r"https://github\.com/[\w.-]+/([\w.-]+)/pull/(\d+)", re.ASCII)
+WHOLE_NUMBER = re.compile(r"[0-9]+")
+# What separates a URL from what surrounds it in the field, as linkPullRequest in vscode/ship.js.
+LINK_EDGES = re.compile(r"[\s,()\[\]]+")
+PULL_REQUESTS = "pull requests"
+
+
+@dataclass(frozen=True)
+class CustomChange:
+    """One custom field a write changes; field names it in the printed lines."""
+
+    field: str
+    id: int
+    value: str
+    line: str
 
 
 def points_id(redmine, issue: dict, points: str) -> int:
@@ -78,8 +99,81 @@ def custom(issue: dict, field_id: int):
     )
 
 
+def points_change(redmine, issue: dict, points: str) -> CustomChange | None:
+    field = points_id(redmine, issue, points)
+    now = custom(issue, field) or "none"
+    return (
+        None
+        if points == now
+        else CustomChange("points", field, points, f"points: {now} → {points}")
+    )
+
+
+def own_field_id(issue: dict, name: str) -> int:
+    """The id of a field on the issue, which holds every field its tracker and project use."""
+    return by_name(issue.get("custom_fields", []), name, "issue custom field")["id"]
+
+
+def ordinal_change(issue: dict, ordinal: str) -> CustomChange | None:
+    if not WHOLE_NUMBER.fullmatch(ordinal):
+        raise Refused(f"ordinal: {ordinal!r} isn't a whole number")
+    field = own_field_id(issue, "Ordinal")
+    wanted = ordinal.lstrip("0") or "0"  # 010 and 10 are one place in the order
+    now = custom(issue, field) or "none"
+    if wanted == now:
+        return None
+    return CustomChange("ordinal", field, wanted, f"ordinal: {now} → {wanted}")
+
+
+def pr_link(url: str) -> str:
+    """The PR as Ship and backfill.rb link it: [<repo>#<number>](<url>)."""
+    found = PR_URL.fullmatch(url)
+    if not found:
+        raise Refused(f"pr: {url!r} isn't a GitHub pull request's URL")
+    repo, number = found.groups()
+    return f"[{repo}#{number}]({url})"
+
+
+def links_url(value: str, url: str) -> bool:
+    return url in LINK_EDGES.split(value)
+
+
+def pr_change(issue: dict, url: str) -> CustomChange | None:
+    link = pr_link(url)
+    field = own_field_id(issue, "Pull requests")
+    now = custom(issue, field) or ""
+    if links_url(now, url):
+        return None
+    wanted = f"{now}, {link}" if now else link
+    return CustomChange(PULL_REQUESTS, field, wanted, f"pull requests: {now or 'none'} → {wanted}")
+
+
+def custom_changes(redmine, issue: dict, a) -> list[CustomChange]:
+    """Each custom field asked for that doesn't already hold its value."""
+    asked = []
+    if a.points is not None:
+        asked.append(points_change(redmine, issue, a.points))
+    if a.ordinal is not None:
+        asked.append(ordinal_change(issue, a.ordinal))
+    if a.pr is not None:
+        asked.append(pr_change(issue, a.pr))
+    return [change for change in asked if change]
+
+
+def journal_note(a, fields: list[CustomChange]) -> str | None:
+    """The note to send: --note, else the line that says a PR was linked."""
+    if a.note:
+        return a.note
+    if any(change.field == PULL_REQUESTS for change in fields):
+        return f"Opened {pr_link(a.pr)}"
+    return None
+
+
 def plan_issue(redmine, n: int, a, lenses: list[str], extra: list[str]):
-    """The issue, the PUT that moves it as asked, and (field, line) for each change; Refused before any write."""
+    """The issue, the PUT that moves it as asked, (field, line) for each change, and the custom fields' names by id.
+
+    Refused before any write.
+    """
     issue = fetch(redmine, n, "allowed_statuses,journals" if a.note else "allowed_statuses")
     put, changes = {}, []
     listed = []
@@ -142,12 +236,10 @@ def plan_issue(redmine, n: int, a, lenses: list[str], extra: list[str]):
         put["subject"] = a.subject
         changes.append(("subject", f"subject: {issue['subject']} → {a.subject}"))
 
-    if a.points is not None:
-        points = points_id(redmine, issue, a.points)
-        now = custom(issue, points) or "none"
-        if a.points != now:
-            put["custom_fields"] = [{"id": points, "value": a.points}]
-            changes.append(("points", f"points: {now} → {a.points}"))
+    fields = custom_changes(redmine, issue, a)
+    if fields:
+        put["custom_fields"] = [{"id": change.id, "value": change.value} for change in fields]
+        changes += [(change.field, change.line) for change in fields]
 
     if a.description is not None:
         try:
@@ -170,18 +262,19 @@ def plan_issue(redmine, n: int, a, lenses: list[str], extra: list[str]):
                 )
             )
 
-    if a.note:
+    note = journal_note(a, fields)
+    if note:
         # A rerun repeats nothing; a note with a change is sent even when it repeats the last one.
-        if not put and latest_note(issue.get("journals", [])) == a.note:
+        if not put and latest_note(issue.get("journals", [])) == note:
             print(f"redmine-set: #{n}'s latest note is already this one; not added again")
         else:
-            put["notes"] = a.note
-            changes.append(("note", f"note: {a.note}"))
-    return issue, put, changes
+            put["notes"] = note
+            changes.append(("note", f"note: {note}"))
+    return issue, put, changes, {change.id: change.field for change in fields}
 
 
 def set_issue(redmine, n: int, a, lenses: list[str], extra: list[str]) -> str:
-    issue, put, changes = plan_issue(redmine, n, a, lenses, extra)
+    issue, put, changes, names = plan_issue(redmine, n, a, lenses, extra)
     if not changes:
         return f"#{n} is already as asked; nothing written"
     for _, line in changes:
@@ -193,8 +286,7 @@ def set_issue(redmine, n: int, a, lenses: list[str], extra: list[str]) -> str:
             said += f"; to write it, run the same command without --check and with --expect {now}"
         return said
     redmine.send("PUT", f"/issues/{n}.json", {"issue": put})
-    points = {f["id"]: "points" for f in put.get("custom_fields", [])}
-    lost = unkept(fetch(redmine, n, "journals" if "notes" in put else ""), put, points)
+    lost = unkept(fetch(redmine, n, "journals" if "notes" in put else ""), put, names)
     if lost:
         kept = [field for field, _ in changes if field not in lost]
         raise Refused(
@@ -313,7 +405,9 @@ def parser() -> argparse.ArgumentParser:
     sub = p.add_subparsers(dest="what", required=True)
 
     i = sub.add_parser(
-        "issue", help="change an issue's status, version, subject, points, description or journal"
+        "issue",
+        help="change an issue's status, version, subject, points, ordinal, PR links, description "
+        "or journal",
     )
     i.add_argument("issue", type=lambda s: int(s.lstrip("#")), help="the issue's number")
     i.add_argument("--status", help="a status by name, as In Progress or Closed")
@@ -322,6 +416,10 @@ def parser() -> argparse.ArgumentParser:
     which.add_argument("--no-version", action="store_true", help="clear the issue's version")
     i.add_argument("--subject", help="the new title")
     i.add_argument("--points", help="one of the Points field's values: 1, 2, 3, 5, 8 or 13")
+    i.add_argument("--ordinal", help="the issue's place within its milestone, a whole number")
+    i.add_argument(
+        "--pr", metavar="URL", help="a GitHub PR to add to the Pull requests field, with a note"
+    )
     i.add_argument(
         "--description", type=Path, metavar="FILE", help="the new description, in the issue outline"
     )
