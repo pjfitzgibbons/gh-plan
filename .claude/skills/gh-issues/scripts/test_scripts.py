@@ -2342,6 +2342,14 @@ class Every(unittest.TestCase):
         self.assertEqual(r.paths[0], "/issues.json?sort=id&limit=100&offset=0")
         self.assertEqual(r.paths[-1], "/issues.json?sort=id&limit=100&offset=4")
 
+    def test_an_empty_answer_is_refused(self):
+        class Empty:
+            def send(self, method, path):
+                return None
+
+        with self.assertRaisesRegex(Refused, "an empty answer"):
+            every(Empty(), "/issues.json", "issues")
+
     def test_a_path_without_a_query_and_a_listing_without_a_count(self):
         r = self.Pages([{"id": 1}, {"id": 2}, {"id": 3}], total=False)
         self.assertEqual(every(r, "/issues.json", "issues"), [{"id": 1}, {"id": 2}])
