@@ -267,7 +267,7 @@ open "vscode://github.vscode-pull-request-github/open-pull-request-webview?uri=$
 # The line that links the PR in Redmine, for a person to run; none once the field links it.
 linked=$(python3 "$scripts/redmine_set.py" --check issue "$n" --pr "$url" 2>/dev/null || true)
 case $linked in
-  *"already as asked"*) ;;
+  "redmine-set: #$n is already as asked; nothing written") ;;
   *) echo "pr: link the PR: redmine-set issue $n --pr $url" ;;
 esac
 

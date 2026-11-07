@@ -517,6 +517,13 @@ class Stage(unittest.TestCase):
         self.assertEqual(run.returncode, 2)
         self.assertIn("names nothing", run.stderr)
 
+    def test_a_manifest_that_isnt_text_is_refused_without_a_traceback(self):
+        self.manifest.write_bytes("kept.txt\n".encode("utf-16"))
+        run = self.stage()
+        self.assertEqual(run.returncode, 2)
+        self.assertIn("can't be read", run.stderr)
+        self.assertNotIn("Traceback", run.stderr)
+
     def test_outside_a_repo_is_refused_without_a_traceback(self):
         with tempfile.TemporaryDirectory() as elsewhere:
             run = subprocess.run(
@@ -3613,6 +3620,23 @@ class PrReview(unittest.TestCase):
         run = self.pr()
         link = "pr: link the PR: redmine-set issue 9 --pr https://github.com/o/r/pull/1\n"
         self.assertIn(link, run.stdout)
+
+    def redmine_set_says(self, said):
+        """A python3 on PATH that answers for redmine_set.py with said, and is python3 otherwise."""
+        python3 = Path(self.tmp.name) / "bin" / "python3"
+        python3.write_text(
+            f"#!/bin/sh\ncase \"$1\" in *redmine_set.py) echo '{said}'; exit 0 ;; esac\n"
+            f'exec "{sys.executable}" "$@"\n'
+        )
+        python3.chmod(0o755)
+
+    def test_no_link_line_once_redmine_says_nothing_would_change(self):
+        self.redmine_set_says("redmine-set: #9 is already as asked; nothing written")
+        self.assertNotIn("pr: link the PR", self.pr().stdout)
+
+    def test_a_proposed_change_quoting_the_no_change_words_still_prints_the_link_line(self):
+        self.redmine_set_says("Pull requests: already as asked -> a link")
+        self.assertIn("pr: link the PR", self.pr().stdout)
 
     def test_a_failed_review_is_named_and_the_replies_are_still_sent(self):
         self.broken.touch()

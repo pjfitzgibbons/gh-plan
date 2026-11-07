@@ -57,11 +57,19 @@ def refuse_an_operation_in_progress() -> None:
         raise Refused(f"a {operation} is in progress; finish or abort it, then run stage.py again")
 
 
-def entries(manifest: Path) -> list[str]:
-    """The manifest's paths, refusing a manifest that's missing or names nothing."""
+def manifest_text(manifest: Path) -> str:
+    """The manifest's text, refusing one that's missing or can't be read as text."""
     if not manifest.is_file():
         raise Refused(f"{manifest} is missing; list each file or directory to ship, one per line")
-    lines = [line.strip() for line in manifest.read_text().splitlines()]
+    try:
+        return manifest.read_text()
+    except (OSError, UnicodeDecodeError) as e:
+        raise Refused(f"{manifest} can't be read: {e}") from None
+
+
+def entries(manifest: Path) -> list[str]:
+    """The manifest's paths, refusing a manifest that names nothing."""
+    lines = [line.strip() for line in manifest_text(manifest).splitlines()]
     named = [line for line in lines if line]
     if not named:
         raise Refused(f"{manifest} names nothing")
