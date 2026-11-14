@@ -3,7 +3,7 @@
 # checksum, and its assets are compiled here, so a recreated container keeps it.
 # An exact tag, the one place Redmine's version lives. Dependabot bumps patches; README, Upgrading,
 # has the checks a new tag needs, the lane board's among them.
-FROM redmine:7.0.2 AS live
+FROM redmine:7.0.3 AS live
 
 ADD --checksum=sha256:5e43d5cdd30cabe790e7702c9add093c8448bfe87862dc32490daf3dd76552c9 \
     https://github.com/gagnieray/opale/releases/download/1.7.2/opale-1.7.2.zip /tmp/opale.zip
